@@ -1,0 +1,58 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ShibaPack",
+  "version": "../package.json",
+  "identifier": "app.shibapack.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1430",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "ShibaPack",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 920,
+        "minHeight": 560,
+        "center": true,
+        "decorations": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost",
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Utility",
+    "shortDescription": "软件安装包管理器",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJBQTM5OTE5MTQzNTY2NjcKUldSblpqVVVHWm1qdXJ4dFVDT2wyVXZzQWJFaldJYitnRXlyQ3RVUzBSd2pkVEpKOFdncVpoYkkK",
+      "endpoints": [
+        "https://github.com/Wonvy/ShibaPack/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

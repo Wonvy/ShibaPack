@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>ShibaPack</title>
+    <style>
+      /* 样式表加载前先铺好底色，启动时不闪白 */
+      html[data-theme="dark"] { background: #0f1012; }
+      html[data-theme="light"] { background: #ffffff; }
+    </style>
+    <script>
+      // 主题在样式加载前就定好。上次用的主题记在本机，仓库打开后再以仓库里的设置为准
+      try {
+        var theme = localStorage.getItem("shibapack.theme") || "system";
+        if (theme === "system") theme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        document.documentElement.dataset.theme = theme;
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

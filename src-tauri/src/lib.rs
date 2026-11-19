@@ -9,7 +9,7 @@ use shibapack_core::{
     installed,
     sources::{self, Candidate, SourceError},
     summary, Assignment, BackupInfo, Category, ImportHint, ImportReport, InstalledApp, Library, Release, Repo, Settings,
-    SoftwareEdit, SourceKind, Stats, Storage, Subscription, Suggestion, VerifyReport, VersionEdit,
+    SoftwareEdit, SourceKind, Stats, Storage, Subscription, Suggestion, VerifyReport, VersionEdit, VersionRef,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -233,6 +233,18 @@ fn update_version(
 #[tauri::command(async)]
 fn delete_software(state: State<AppState>, id: String, delete_files: bool) -> CmdResult<Library> {
     mutate(&state, |repo| repo.delete_software(&id, delete_files).map(trash_external))
+}
+
+/// 多选删除。
+#[tauri::command(async)]
+fn delete_software_many(state: State<AppState>, ids: Vec<String>, delete_files: bool) -> CmdResult<Library> {
+    mutate(&state, |repo| repo.delete_software_many(&ids, delete_files).map(trash_external))
+}
+
+/// 清理旧版本：一次删掉多个版本。
+#[tauri::command(async)]
+fn delete_versions(state: State<AppState>, targets: Vec<VersionRef>, delete_files: bool) -> CmdResult<Library> {
+    mutate(&state, |repo| repo.delete_versions(&targets, delete_files).map(trash_external))
 }
 
 #[tauri::command(async)]
@@ -694,7 +706,9 @@ pub fn run() {
             update_software,
             update_version,
             delete_software,
+            delete_software_many,
             delete_version,
+            delete_versions,
             delete_file,
             run_file,
             reveal_file,

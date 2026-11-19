@@ -4,17 +4,19 @@ import {
   ArrowUpCircle,
   ChevronRight,
   HardDrive,
+  Inbox,
   LayoutGrid,
   type LucideIcon,
   MonitorCheck,
   Pencil,
   Plus,
+  RefreshCw,
   Settings,
   Sparkles,
   Star,
   Trash2,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { canMoveCategory, classify, moveCategory } from "../lib/actions";
 import { api } from "../lib/api";
 import { beginDrag, useDrag } from "../lib/drag";
@@ -38,6 +40,9 @@ export function Sidebar() {
   const setRoute = useApp((state) => state.setRoute);
   const patch = useApp((state) => state.patch);
   const apply = useApp((state) => state.apply);
+  const checkUpdates = useApp((state) => state.checkUpdates);
+  const checking = useApp((state) => state.checking !== null);
+  const installedCount = useApp((state) => state.installed?.length);
   const width = usePrefs((state) => state.sidebarWidth);
   const [editing, setEditing] = useState<Editing | null>(null);
 
@@ -103,8 +108,23 @@ export function Sidebar() {
           highlight={updates > 0}
           active={isScope({ kind: "updates" })}
           onClick={() => setScope({ kind: "updates" })}
+          action={
+            // 检查在线更新：鼠标停在这一行上时出现，检查期间一直转着
+            <span className={cx("flex", !checking && "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100")}>
+              <IconButton
+                label={t("scan.updates")}
+                className="size-6"
+                disabled={checking}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void checkUpdates();
+                }}
+              >
+                <RefreshCw size={13} strokeWidth={1.75} className={checking ? "animate-spin" : ""} />
+              </IconButton>
+            </span>
+          }
         />
-        <NavRow icon={MonitorCheck} label={t("nav.installed")} active={route === "installed"} onClick={() => setRoute("installed")} />
       </div>
 
       <div className="mt-3 flex h-7 shrink-0 items-center justify-between pr-2 pl-4">
@@ -131,6 +151,8 @@ export function Sidebar() {
         {library.categories.length === 0 && <div className="px-2 py-1.5 text-[12px] text-fg-4">{t("cat.empty")}</div>}
         {(uncategorized.length > 0 || draggingSoftware) && (
           <NavRow
+            icon={Inbox}
+            inTree
             label={t("nav.uncategorized")}
             count={uncategorized.length}
             muted
@@ -143,7 +165,15 @@ export function Sidebar() {
         )}
       </div>
 
+      {/* 下面是和这台电脑有关的：本机装的软件、仓库存储、设置 */}
       <div className="flex shrink-0 flex-col gap-px border-t border-line p-2">
+        <NavRow
+          icon={MonitorCheck}
+          label={t("nav.installed")}
+          count={installedCount}
+          active={route === "installed"}
+          onClick={() => setRoute("installed")}
+        />
         <NavRow icon={HardDrive} label={t("nav.storage")} active={route === "storage"} onClick={() => setRoute("storage")} />
         <NavRow icon={Settings} label={t("app.settings")} active={settingsOpen} onClick={() => patch({ settingsOpen: true })} />
       </div>
@@ -163,6 +193,8 @@ function NavRow({
   drop,
   dropping,
   menu,
+  action,
+  inTree,
   onClick,
 }: {
   icon?: LucideIcon;
@@ -176,15 +208,22 @@ function NavRow({
   drop?: string;
   dropping?: boolean;
   menu?: MenuEntry[];
+  /** 数字左边的小按钮。 */
+  action?: ReactNode;
+  /** 放在分类树里：图标和文字跟顶层分类对齐。 */
+  inTree?: boolean;
   onClick: () => void;
 }) {
   const row = (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       data-drop={drop}
       onClick={onClick}
+      onKeyDown={(event) => event.target === event.currentTarget && event.key === "Enter" && onClick()}
       className={cx(
-        "flex h-8 w-full shrink-0 items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors",
+        "group flex h-8 w-full shrink-0 items-center rounded-md text-left text-[13px] transition-colors",
+        inTree ? "gap-1 pr-2 pl-1" : "gap-2 px-2",
         dropping
           ? "bg-accent-soft text-accent"
           : active
@@ -192,12 +231,15 @@ function NavRow({
             : cx(muted ? "text-fg-3" : "text-fg-2", "hover:bg-hover hover:text-fg"),
       )}
     >
-      {Icon ? <Icon size={16} strokeWidth={1.75} aria-hidden className="shrink-0" /> : <span className="w-4 shrink-0" />}
+      {/* 分类树里每行前面有展开箭头的位置 */}
+      {inTree && <span className="w-4 shrink-0" />}
+      {Icon ? <Icon size={16} strokeWidth={1.75} aria-hidden className={cx("shrink-0", inTree && "mr-1")} /> : <span className="w-4 shrink-0" />}
       <span className="min-w-0 flex-1 truncate">{label}</span>
+      {action}
       {count !== undefined && count > 0 && (
         <span className={cx("tabular text-[12px]", highlight ? "font-medium text-accent" : "text-fg-3")}>{count}</span>
       )}
-    </button>
+    </div>
   );
   return menu ? <ContextMenu items={menu}>{row}</ContextMenu> : row;
 }

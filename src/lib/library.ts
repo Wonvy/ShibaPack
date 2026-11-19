@@ -2,6 +2,51 @@
 
 import type { Asset, Category, Language, Platform, Release, Software, Version } from "./types";
 
+/** 软件库列表的筛选条件。 */
+export interface ListFilter {
+  scope: { kind: "all" | "starred" | "updates" | "uncategorized" } | { kind: "category"; id: string };
+  platform: Platform | "all";
+  installFilter: "all" | "installed" | "missing";
+  /** 仓库里的软件 id → 对应的已安装软件 id。 */
+  links: Record<string, string>;
+  search: string;
+}
+
+/** 按左侧入口、平台、安装状态和搜索词筛出列表里的软件（不排序）。 */
+export function filterSoftware(software: Software[], categories: Category[], filter: ListFilter): Software[] {
+  const { scope, platform, installFilter, links, search } = filter;
+  let items = software;
+  if (scope.kind === "starred") items = items.filter((s) => s.starred);
+  if (scope.kind === "updates") items = items.filter(hasUpdate);
+  if (scope.kind === "uncategorized") items = items.filter((s) => !s.categoryId);
+  if (scope.kind === "category") {
+    const ids = withDescendants(categories, scope.id);
+    items = items.filter((s) => s.categoryId !== null && ids.has(s.categoryId));
+  }
+  if (platform !== "all") items = items.filter((s) => softwarePlatforms(s).includes(platform));
+  if (installFilter !== "all") items = items.filter((s) => s.id in links === (installFilter === "installed"));
+  const query = search.trim().toLowerCase();
+  if (query) {
+    items = items.filter(
+      (s) =>
+        s.name.toLowerCase().includes(query) ||
+        s.publisher.toLowerCase().includes(query) ||
+        s.versions.some((v) => v.files.some((f) => f.name.toLowerCase().includes(query))),
+    );
+  }
+  return items;
+}
+
+/**
+ * 只保留最新 `keep` 个版本时要删掉的版本（从新到旧）。
+ * 手动固定的默认版本、本机装着的那个版本（`protect`）总是留着。
+ */
+export function prunable(software: Software, keep: number, protect?: string): Version[] {
+  return sortedVersions(software)
+    .slice(Math.max(1, keep))
+    .filter((v) => v.id !== software.defaultVersionId && !(protect && sameVersion(v.version, protect)));
+}
+
 export const PLATFORMS: Platform[] = ["windows", "macos", "linux", "android", "ios", "cross"];
 
 /** 按数字段比较版本号："1.10" 比 "1.9" 新。 */
@@ -20,6 +65,23 @@ export function compareVersions(a: string, b: string): number {
     return x < y ? -1 : 1;
   }
   return 0;
+}
+
+/**
+ * `candidate` 是否比 `current` 新。两边可能带前后缀（“Build 4189”、“v1.2.3”），
+ * 只比较里面第一段数字版本号；任何一边取不出数字就当作不新。
+ */
+export function newerThan(candidate: string, current: string): boolean {
+  const core = (value: string) => value.match(/\d+(?:[._-]\d+)*/)?.[0] ?? null;
+  const [a, b] = [core(candidate), core(current)];
+  return a !== null && b !== null && compareVersions(a, b) > 0;
+}
+
+/** 两个版本号的数字部分是否相同（“1.95.3”和“v1.95.3”算同一个）。 */
+export function sameVersion(a: string, b: string): boolean {
+  const core = (value: string) => value.match(/\d+(?:[._-]\d+)*/)?.[0] ?? null;
+  const [x, y] = [core(a), core(b)];
+  return x !== null && y !== null && compareVersions(x, y) === 0;
 }
 
 /** 版本从新到旧。 */

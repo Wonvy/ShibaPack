@@ -4,9 +4,9 @@ import { confirm } from "../components/dialogs";
 import { api, hostPlatform } from "./api";
 import type { DropTarget } from "./drag";
 import { translate } from "./i18n";
-import { sortedVersions, withDescendants } from "./library";
+import { newerThan, sortedVersions, withDescendants } from "./library";
 import { useApp } from "./store";
-import type { Asset, Category, InstalledApp, PackageFile, Software, Version } from "./types";
+import type { Asset, Category, InstalledApp, PackageFile, Software, SoftwareEdit, Version } from "./types";
 
 function language() {
   return useApp.getState().library?.settings.language ?? "zh-CN";
@@ -33,6 +33,33 @@ export async function deleteSoftware(software: Software) {
   if (withFiles !== null) await useApp.getState().apply(() => api.deleteSoftware(software.id, withFiles));
 }
 
+/** 多选删除：问一次，一次删完。 */
+export async function deleteSoftwareMany(list: Software[]) {
+  if (list.length === 0) return;
+  if (list.length === 1) return deleteSoftware(list[0]);
+  const withFiles = await askDelete(translate(language(), "batch.deleteTitle", { n: list.length }));
+  if (withFiles === null) return;
+  const app = useApp.getState();
+  if (await app.apply(() => api.deleteSoftwareMany(list.map((s) => s.id), withFiles))) app.select(null);
+}
+
+/**
+ * 删掉一批旧版本（清理旧版本用）。`targets` 可以跨软件。
+ * 返回 true 表示真的删了；用户取消或出错时返回 false。
+ */
+export async function deleteVersions(targets: { software: Software; version: Version }[], withFiles: boolean): Promise<boolean> {
+  if (targets.length === 0) return false;
+  const app = useApp.getState();
+  const ok = await app.apply(() =>
+    api.deleteVersions(
+      targets.map(({ software, version }) => ({ softwareId: software.id, versionId: version.id })),
+      withFiles,
+    ),
+  );
+  if (ok) app.notify(translate(language(), "prune.done", { n: targets.length }));
+  return ok;
+}
+
 export async function deleteVersion(software: Software, version: Version) {
   const label = version.version || translate(language(), "detail.unknownVersion");
   const withFiles = await askDelete(translate(language(), "del.version.title", { version: label }));
@@ -49,32 +76,65 @@ export async function deleteFile(software: Software, version: Version, file: Pac
 
 // ── 安装与卸载 ───────────────────────────────────────────────
 
+/** 一个版本里能在本机运行的安装包：本机平台的优先，其次是跨平台的。 */
+export function installerIn(version: Version): PackageFile | null {
+  return version.files.find((f) => f.platform === hostPlatform) ?? version.files.find((f) => f.platform === "cross") ?? null;
+}
+
 /** 这个软件里适合在本机运行的安装包：默认版本优先，其次从新到旧。 */
 export function installerFor(software: Software): { version: Version; file: PackageFile } | null {
   const chosen = software.versions.find((v) => v.id === software.defaultVersionId);
   const versions = chosen ? [chosen, ...sortedVersions(software).filter((v) => v !== chosen)] : sortedVersions(software);
   for (const version of versions) {
-    const file = version.files.find((f) => f.platform === hostPlatform) ?? version.files.find((f) => f.platform === "cross");
+    const file = installerIn(version);
     if (file) return { version, file };
   }
   return null;
 }
 
-/** 运行安装包来安装（先确认）。 */
-export async function installSoftware(software: Software) {
+/** 本机装的版本比仓库里能装的旧时，返回用来升级的安装包；否则 null。 */
+export function upgradeFor(software: Software, installed: InstalledApp | undefined): { version: Version; file: PackageFile } | null {
+  if (!installed?.version) return null;
+  const pick = installerFor(software);
+  return pick && newerThan(pick.version.version, installed.version) ? pick : null;
+}
+
+/** 运行安装包来安装或升级（先确认）。给了 `version` 就装那个版本，否则装默认版本。 */
+export async function installSoftware(software: Software, upgrade = false, version?: Version) {
   const lang = language();
   const app = useApp.getState();
-  const pick = installerFor(software);
+  const file = version ? installerIn(version) : null;
+  const pick = version ? (file ? { version, file } : null) : installerFor(software);
   if (!pick) {
     app.notify(translate(lang, "link.noInstaller"), "error");
     return;
   }
+  const action = translate(lang, upgrade ? "link.upgrade" : "link.install");
   const { ok } = await confirm({
-    title: translate(lang, "link.install"),
-    body: translate(lang, "link.installConfirm", { file: pick.file.name, name: software.name }),
-    confirmLabel: translate(lang, "link.install"),
+    title: action,
+    body: upgrade
+      ? translate(lang, "link.upgradeConfirm", { file: pick.file.name, name: software.name, version: pick.version.version })
+      : translate(lang, "link.installConfirm", { file: pick.file.name, name: software.name }),
+    confirmLabel: action,
   });
   if (ok) await app.attempt(() => api.runFile({ softwareId: software.id, versionId: pick.version.id, fileId: pick.file.id }));
+}
+
+/**
+ * 换默认版本：列表里显示、点“安装”时装的就是它。`null` 表示不固定，始终用最新的版本。
+ */
+export async function setDefaultVersion(software: Software, versionId: string | null) {
+  if (software.defaultVersionId === versionId) return;
+  const edit: SoftwareEdit = {
+    name: software.name,
+    publisher: software.publisher,
+    homepage: software.homepage,
+    note: software.note,
+    categoryId: software.categoryId,
+    starred: software.starred,
+    defaultVersionId: versionId,
+  };
+  await useApp.getState().apply(() => api.updateSoftware(software.id, edit));
 }
 
 /** 卸载一个已安装的软件（先确认）。 */
@@ -112,6 +172,32 @@ export function bestAsset(software: Software): Asset | null {
 
 export async function toggleStar(software: Software) {
   await useApp.getState().apply(() => api.setStarred(software.id, !software.starred));
+}
+
+/** 多选收藏或取消收藏。 */
+export async function starMany(list: Software[], starred: boolean) {
+  const app = useApp.getState();
+  for (const software of list) {
+    if (software.starred !== starred && !(await app.apply(() => api.setStarred(software.id, starred)))) return;
+  }
+}
+
+/** 多选移到一个分类（null 为未分类）。放进已有分类时一次改完。 */
+export async function moveManyTo(ids: string[], categoryId: string | null) {
+  if (categoryId !== null) {
+    await useApp.getState().apply(() => api.applyClassification(ids.map((softwareId) => ({ softwareId, categoryId }))));
+    return;
+  }
+  for (const id of ids) await moveSoftwareTo(id, null);
+}
+
+/** 键盘上的 Enter：本机比仓库旧就升级，没装就安装，已是最新就什么都不做。 */
+export async function installOrUpgrade(software: Software) {
+  const app = useApp.getState();
+  const linked = app.links[software.id];
+  const installed = linked ? app.installed?.find((item) => item.id === linked) : undefined;
+  if (upgradeFor(software, installed)) await installSoftware(software, true);
+  else if (!installed && installerFor(software)) await installSoftware(software);
 }
 
 /** 打开智能分类的预览窗口。 */

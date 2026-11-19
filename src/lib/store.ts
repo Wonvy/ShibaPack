@@ -3,9 +3,22 @@
 import { create } from "zustand";
 import { api, onCheckProgress, onDownloadProgress, onImportProgress } from "./api";
 import { type Key, type Translate, type Vars, errorText, setLangPacks, translate } from "./i18n";
-import { hasUpdate } from "./library";
+import { filterSoftware, hasUpdate } from "./library";
 import { applyTheme } from "./theme";
-import type { Asset, CheckProgress, InstalledApp, LangPack, Language, Library, Platform, Progress, Settings, Status, Storage } from "./types";
+import type {
+  Asset,
+  CheckProgress,
+  ImportHint,
+  InstalledApp,
+  LangPack,
+  Language,
+  Library,
+  Platform,
+  Progress,
+  Settings,
+  Status,
+  Storage,
+} from "./types";
 
 export type Route = "library" | "installed" | "storage";
 const ROUTES: Route[] = ["library", "installed", "storage"];
@@ -57,15 +70,22 @@ interface AppState {
   search: string;
   platform: Platform | "all";
   installFilter: InstallFilter;
+  /** 选中的软件；多选时是最先选的那个（Shift 连选从它算起）。 */
   selectedId: string | null;
+  /** 多选时所有选中的软件；单选时只有 selectedId 一个。 */
+  selectedIds: string[];
   progress: Progress | null;
   dropping: boolean;
+  /** 从系统拖文件进来、正停在某个软件上时，那个软件的 id。 */
+  dropSoftwareId: string | null;
   toast: Toast | null;
   settingsOpen: boolean;
 
   /** 这台电脑上已安装的软件。还没列出来时是 null。 */
   installed: InstalledApp[] | null;
   installedLoading: boolean;
+  /** 上次列完已安装软件的时间（毫秒），用来决定窗口回到前台时要不要重新扫描。 */
+  installedScannedAt: number;
   /** 已安装软件占用的空间，统计完才有。 */
   sizes: Record<string, number>;
   /** 仓库里的软件 id → 对应的已安装软件 id。 */
@@ -88,7 +108,12 @@ interface AppState {
   init: () => Promise<void>;
   setRoute: (route: Route) => void;
   setScope: (scope: Scope) => void;
+  /** 单选一个软件（null 为不选）。 */
   select: (id: string | null) => void;
+  /** 多选：`primary` 是连选的起点。 */
+  setSelection: (ids: string[], primary: string | null) => void;
+  /** 选中一个软件；它被当前的筛选挡住时，先回到“全部软件”并清掉筛选。 */
+  reveal: (id: string) => void;
   patch: (
     patch: Partial<
       Pick<
@@ -97,6 +122,7 @@ interface AppState {
         | "platform"
         | "installFilter"
         | "dropping"
+        | "dropSoftwareId"
         | "settingsOpen"
         | "selectedInstalledId"
         | "classifyIds"
@@ -110,7 +136,8 @@ interface AppState {
   /** 执行一个不返回索引的操作，失败时弹出提示。 */
   attempt: <T>(task: () => Promise<T>) => Promise<T | undefined>;
   chooseRepo: (path: string) => Promise<void>;
-  importPaths: (paths: string[], mode?: Storage) => Promise<void>;
+  /** `hint.name` 给了时，所有文件都归到这个软件下（拖到某个软件上导入）。 */
+  importPaths: (paths: string[], mode?: Storage, hint?: ImportHint) => Promise<void>;
   saveSettings: (patch: Partial<Settings>) => Promise<void>;
   /** 重新列出已安装的软件，并更新和仓库的对应关系。 */
   loadInstalled: () => Promise<void>;
@@ -226,10 +253,12 @@ export const useApp = create<AppState>()((set, get) => {
     }
     // 选中的软件、筛选用的分类如果已经不在了，就退回默认
     const state = get();
-    const selectedId = library.software.some((s) => s.id === state.selectedId) ? state.selectedId : null;
+    const exists = new Set(library.software.map((s) => s.id));
+    const selectedIds = state.selectedIds.filter((id) => exists.has(id));
+    const selectedId = state.selectedId && exists.has(state.selectedId) ? state.selectedId : (selectedIds[0] ?? null);
     const scopeGone =
       state.scope.kind === "category" && !library.categories.some((c) => c.id === (state.scope as { id: string }).id);
-    set({ library, selectedId, ...(scopeGone ? { scope: { kind: "all" } as Scope } : {}) });
+    set({ library, selectedId, selectedIds, ...(scopeGone ? { scope: { kind: "all" } as Scope } : {}) });
     void refreshLinks();
     void fillIcons();
     queueSummaries(library);
@@ -244,12 +273,15 @@ export const useApp = create<AppState>()((set, get) => {
     platform: "all",
     installFilter: "all",
     selectedId: null,
+    selectedIds: [],
     progress: null,
     dropping: false,
+    dropSoftwareId: null,
     toast: null,
     settingsOpen: false,
     installed: null,
     installedLoading: false,
+    installedScannedAt: 0,
     sizes: {},
     links: {},
     selectedInstalledId: null,
@@ -302,7 +334,17 @@ export const useApp = create<AppState>()((set, get) => {
       set({ scope });
     },
 
-    select: (id) => set({ selectedId: id }),
+    select: (id) => set({ selectedId: id, selectedIds: id ? [id] : [] }),
+    setSelection: (ids, primary) => set({ selectedIds: ids, selectedId: primary ?? ids[0] ?? null }),
+    reveal: (id) => {
+      const state = get();
+      const library = state.library;
+      if (!library) return;
+      const visible = filterSoftware(library.software, library.categories, state).some((s) => s.id === id);
+      if (!visible) set({ scope: { kind: "all" }, platform: "all", installFilter: "all", search: "" });
+      get().setRoute("library");
+      get().select(id);
+    },
     patch: (patch) => set(patch),
 
     notify: (text, kind = "info") => {
@@ -335,18 +377,18 @@ export const useApp = create<AppState>()((set, get) => {
       const status = await get().attempt(() => api.setRepoRoot(path));
       if (!status) return;
       askedSummaries.clear();
-      set({ status, selectedId: null, scope: { kind: "all" }, links: {} });
+      set({ status, selectedId: null, selectedIds: [], scope: { kind: "all" }, links: {} });
       await get().apply(() => api.getLibrary());
       if (get().installed === null) void get().loadInstalled();
       void api.listLangPacks().then(get().useLangPacks, () => {});
     },
 
-    importPaths: async (paths, mode) => {
+    importPaths: async (paths, mode, hint) => {
       const library = get().library;
       if (!library || paths.length === 0 || get().progress) return;
       set({ progress: { phase: "collect", current: 0, total: 0, file: "" } });
       try {
-        const result = await api.importPaths(paths, mode ?? library.settings.defaultStorage);
+        const result = await api.importPaths(paths, mode ?? library.settings.defaultStorage, hint);
         adopt(result.library);
         const { imported, duplicates, failed, items } = result.report;
         if (items.length === 0) {
@@ -355,7 +397,10 @@ export const useApp = create<AppState>()((set, get) => {
           get().notify(translate(language(), "import.done", { imported, duplicates, failed }), failed ? "error" : "info");
           // 只导入了一个软件时直接选中它
           const ids = new Set(items.filter((i) => i.status === "imported").map((i) => i.softwareId));
-          if (ids.size === 1) set({ selectedId: [...ids][0], route: "library" });
+          if (ids.size === 1) {
+            get().setRoute("library");
+            get().select([...ids][0]);
+          }
         }
       } catch (error) {
         get().notify(errorText(language(), error), "error");
@@ -382,7 +427,7 @@ export const useApp = create<AppState>()((set, get) => {
         const selectedInstalledId = installed.some((app) => app.id === get().selectedInstalledId)
           ? get().selectedInstalledId
           : null;
-        set({ installed, selectedInstalledId });
+        set({ installed, selectedInstalledId, installedScannedAt: Date.now() });
         void refreshLinks();
         void fillIcons();
         // 占用空间统计得慢，列表先出来，大小随后补上

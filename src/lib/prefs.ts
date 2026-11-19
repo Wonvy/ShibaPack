@@ -15,7 +15,10 @@ interface Prefs {
   packageView: PackageView;
   sortKey: SortKey;
   sortAsc: boolean;
+  /** 列表和文件夹视图在“全部软件”里按分类分组。 */
   groupByCategory: boolean;
+  /** 网格视图单独记：卡片按组排时每组常常只有一两张，默认不分组。 */
+  gridGroupByCategory: boolean;
   collapsed: string[];
   /** 右边的详情栏是否展开。 */
   detailOpen: boolean;
@@ -37,6 +40,7 @@ export const usePrefs = create<Prefs>()(
       sortKey: "name",
       sortAsc: true,
       groupByCategory: true,
+      gridGroupByCategory: false,
       collapsed: [],
       detailOpen: true,
       detailMoreOpen: false,

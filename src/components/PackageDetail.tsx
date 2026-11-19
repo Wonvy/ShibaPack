@@ -5,16 +5,24 @@ import {
   ArrowUp,
   ChevronRight,
   CircleCheck,
+  CircleDashed,
+  CloudDownload,
   Copy,
   Download,
   Ellipsis,
   ExternalLink,
   FolderOpen,
   MousePointerClick,
+  Eraser,
   Pencil,
+  Pin,
+  PinOff,
   Play,
+  Plus,
+  RefreshCw,
   Sparkles,
   Star,
+  StickyNote,
   Trash2,
   X,
 } from "lucide-react";
@@ -23,14 +31,22 @@ import {
   classify,
   deleteFile,
   deleteSoftware,
+  deleteSoftwareMany,
   deleteVersion,
+  deleteVersions,
   installSoftware,
   installerFor,
+  installerIn,
+  moveManyTo,
+  setDefaultVersion,
+  starMany,
   toggleStar,
   uninstallApp,
+  upgradeFor,
 } from "../lib/actions";
-import { api, hostPlatform } from "../lib/api";
-import { flattenTree, formatDate, formatSize, hasUpdate, primaryVersion, sortedVersions } from "../lib/library";
+import { useState } from "react";
+import { api, hostPlatform, pickFiles } from "../lib/api";
+import { flattenTree, formatDate, formatSize, hasUpdate, primaryVersion, prunable, sameVersion, sortedVersions } from "../lib/library";
 import { usePrefs } from "../lib/prefs";
 import { useApp, useLanguage, useT } from "../lib/store";
 import type { PackageFile, Software, SoftwareEdit, Version } from "../lib/types";
@@ -38,14 +54,241 @@ import { prompt } from "./dialogs";
 import { PlatformChip } from "./PlatformIcon";
 import { SoftwareIcon, useSoftwareIcon } from "./SoftwareIcon";
 import { SourceSection } from "./SourcePanel";
-import { Button, Chip, Dropdown, EmptyState, IconButton, Select, cx } from "./ui";
+import { Button, Checkbox, Chip, Dropdown, IconButton, MiddleTruncate, Modal, Select, cx } from "./ui";
 
 export function PackageDetail() {
-  const t = useT();
+  const multi = useApp((state) => state.selectedIds.length > 1);
   const software = useApp((state) => state.library?.software.find((s) => s.id === state.selectedId));
-  if (!software) return <EmptyState icon={MousePointerClick} title={t("detail.empty")} />;
+  if (multi) return <BatchPanel />;
+  if (!software) return <Overview />;
   // 换一个软件就整个重建，输入框里没保存的内容不会串到别的软件上
   return <Detail key={software.id} software={software} />;
+}
+
+/** 没选中软件时详情栏显示的概况：待更新、本机可升级、未分类、最近添加，点一行就选中那个软件。 */
+function Overview() {
+  const t = useT();
+  const language = useLanguage();
+  const library = useApp((state) => state.library)!;
+  const links = useApp((state) => state.links);
+  const installed = useApp((state) => state.installed);
+  const setScope = useApp((state) => state.setScope);
+  const checkUpdates = useApp((state) => state.checkUpdates);
+  const checking = useApp((state) => state.checking !== null);
+
+  const all = library.software;
+  const linked = all.some((s) => s.subscription);
+  const updates = all.filter(hasUpdate);
+  const upgrades = all.flatMap((software) => {
+    const app = installed?.find((item) => item.id === links[software.id]);
+    const pick = upgradeFor(software, app);
+    return pick && app ? [{ software, from: app.version, to: pick.version.version }] : [];
+  });
+  const uncategorized = all.filter((s) => !s.categoryId);
+  const recent = [...all].sort((a, b) => b.addedAt.localeCompare(a.addedAt)).slice(0, 5);
+  const files = all.reduce((sum, s) => sum + s.versions.reduce((n, v) => n + v.files.length, 0), 0);
+  const size = all.reduce((sum, s) => sum + s.versions.reduce((n, v) => n + v.files.reduce((m, f) => m + f.size, 0), 0), 0);
+  const LIMIT = 5;
+
+  return (
+    <div className="h-full overflow-y-auto px-4 pt-4 pb-8">
+      <h3 className="m-0 text-[14px] font-semibold">{t("overview.title")}</h3>
+      <div className="tabular mt-1 text-[12px] text-fg-3">
+        {t("status.software", { n: all.length })} · {t("status.files", { n: files })} · {formatSize(size)}
+      </div>
+
+      <OverviewSection
+        title={t("nav.updates")}
+        count={updates.length}
+        accent
+        action={
+          linked && (
+            <Button variant="ghost" busy={checking} onClick={() => void checkUpdates()}>
+              {!checking && <RefreshCw size={13} strokeWidth={1.75} aria-hidden />}
+              {t("overview.check")}
+            </Button>
+          )
+        }
+      >
+        {updates.length === 0 ? (
+          <div className="py-1 text-[12px] text-fg-3">{linked ? t("overview.upToDate") : t("updates.none")}</div>
+        ) : (
+          <>
+            {updates.slice(0, LIMIT).map((software) => (
+              <OverviewRow key={software.id} software={software} detail={`→ ${software.subscription!.latest!.version}`} tone="text-accent" />
+            ))}
+            {updates.length > LIMIT && <MoreRow n={updates.length} onClick={() => setScope({ kind: "updates" })} />}
+          </>
+        )}
+      </OverviewSection>
+
+      {upgrades.length > 0 && (
+        <OverviewSection title={t("overview.upgrades")} count={upgrades.length}>
+          {upgrades.slice(0, LIMIT).map(({ software, from, to }) => (
+            <OverviewRow key={software.id} software={software} detail={`${from} → ${to}`} tone="text-warning" />
+          ))}
+        </OverviewSection>
+      )}
+
+      {uncategorized.length > 0 && (
+        <OverviewSection
+          title={t("nav.uncategorized")}
+          count={uncategorized.length}
+          action={
+            <Button variant="ghost" onClick={() => classify(uncategorized.map((s) => s.id))}>
+              <Sparkles size={13} strokeWidth={1.75} aria-hidden />
+              {t("classify.menu")}
+            </Button>
+          }
+        >
+          {uncategorized.slice(0, LIMIT).map((software) => (
+            <OverviewRow key={software.id} software={software} detail={software.publisher} />
+          ))}
+          {uncategorized.length > LIMIT && <MoreRow n={uncategorized.length} onClick={() => setScope({ kind: "uncategorized" })} />}
+        </OverviewSection>
+      )}
+
+      <OverviewSection title={t("overview.recent")}>
+        {recent.map((software) => (
+          <OverviewRow key={software.id} software={software} detail={formatDate(software.addedAt, language)} />
+        ))}
+      </OverviewSection>
+
+      <div className="mt-6 flex items-center justify-center gap-1.5 text-[12px] text-fg-4">
+        <MousePointerClick size={13} strokeWidth={1.75} aria-hidden />
+        {t("detail.empty")}
+      </div>
+      <div className="mt-1.5 text-center text-[12px] leading-relaxed text-fg-4">{t("overview.keys")}</div>
+    </div>
+  );
+}
+
+function OverviewSection({
+  title,
+  count,
+  accent,
+  action,
+  children,
+}: {
+  title: string;
+  count?: number;
+  accent?: boolean;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="mt-5">
+      <div className="mb-1 flex min-h-7 items-center gap-1.5">
+        <h4 className="m-0 text-[12px] font-medium text-fg-3">{title}</h4>
+        {count !== undefined && count > 0 && <span className={cx("tabular text-[12px]", accent ? "font-medium text-accent" : "text-fg-3")}>{count}</span>}
+        <span className="flex-1" />
+        {action}
+      </div>
+      <div className="flex flex-col">{children}</div>
+    </section>
+  );
+}
+
+function OverviewRow({ software, detail, tone }: { software: Software; detail: string; tone?: string }) {
+  // 当前列表被筛选挡住时，reveal 会先回到“全部软件”，免得选中了却在列表里找不到
+  const reveal = useApp((state) => state.reveal);
+  const icon = useSoftwareIcon(software);
+  return (
+    <button
+      type="button"
+      onClick={() => reveal(software.id)}
+      className="-mx-2 flex h-8 items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors hover:bg-hover"
+    >
+      <SoftwareIcon name={software.name} icon={icon} size={20} />
+      <span className="min-w-0 flex-1 truncate">{software.name}</span>
+      <span className={cx("tabular max-w-[50%] shrink-0 truncate text-[12px]", tone ?? "text-fg-3")}>{detail}</span>
+    </button>
+  );
+}
+
+function MoreRow({ n, onClick }: { n: number; onClick: () => void }) {
+  const t = useT();
+  return (
+    <button type="button" onClick={onClick} className="-mx-2 h-7 rounded-md px-2 text-left text-[12px] text-fg-3 hover:bg-hover hover:text-fg-2">
+      {t("overview.more", { n })}
+    </button>
+  );
+}
+
+/** 多选时的详情栏：一起收藏、移动分类、智能分类、删除。 */
+function BatchPanel() {
+  const t = useT();
+  const library = useApp((state) => state.library)!;
+  const ids = useApp((state) => state.selectedIds);
+  const select = useApp((state) => state.select);
+  const chosen = library.software
+    .filter((s) => ids.includes(s.id))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+  const versions = chosen.reduce((sum, s) => sum + s.versions.length, 0);
+  const files = chosen.reduce((sum, s) => sum + s.versions.reduce((n, v) => n + v.files.length, 0), 0);
+  const size = chosen.reduce((sum, s) => sum + s.versions.reduce((n, v) => n + v.files.reduce((m, f) => m + f.size, 0), 0), 0);
+  const allStarred = chosen.every((s) => s.starred);
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-4">
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <h3 className="m-0 text-[15px] font-semibold">{t("batch.title", { n: chosen.length })}</h3>
+            <div className="tabular mt-1 text-[12px] text-fg-3">{t("batch.summary", { versions, files, size: formatSize(size) })}</div>
+          </div>
+          <Button variant="ghost" size="sm" onClick={() => select(null)}>
+            {t("batch.clear")}
+          </Button>
+        </div>
+
+        <div className="mt-4 flex flex-col gap-2">
+          <Button className="w-full" onClick={() => void starMany(chosen, !allStarred)}>
+            <Star size={14} strokeWidth={1.75} fill={allStarred ? "currentColor" : "none"} aria-hidden />
+            {allStarred ? t("batch.unstar") : t("batch.star")}
+          </Button>
+          <Select
+            aria-label={t("batch.move")}
+            value=""
+            onChange={(event) => {
+              const value = event.target.value;
+              if (value) void moveManyTo(ids, value === "__none" ? null : value);
+            }}
+          >
+            <option value="" disabled>
+              {t("batch.move")}
+            </option>
+            <option value="__none">{t("nav.uncategorized")}</option>
+            {flattenTree(library.categories).map(({ category, depth }) => (
+              <option key={category.id} value={category.id}>
+                {"　".repeat(depth) + category.name}
+              </option>
+            ))}
+          </Select>
+          <Button className="w-full" onClick={() => classify(ids)}>
+            <Sparkles size={14} strokeWidth={1.75} aria-hidden />
+            {t("classify.menu")}
+          </Button>
+        </div>
+
+        <section className="mt-5">
+          <h4 className="m-0 mb-1 text-[12px] font-medium text-fg-3">{t("batch.list")}</h4>
+          <div className="flex flex-col">
+            {chosen.map((software) => (
+              <OverviewRow key={software.id} software={software} detail={primaryVersion(software)?.version ?? ""} />
+            ))}
+          </div>
+        </section>
+      </div>
+      <div className="flex shrink-0 flex-col gap-2 border-t border-line p-3">
+        <Button variant="caution" className="w-full" onClick={() => void deleteSoftwareMany(chosen)}>
+          <Trash2 size={14} strokeWidth={1.75} aria-hidden />
+          {t("batch.delete", { n: chosen.length })}
+        </Button>
+        <div className="text-center text-[12px] text-fg-4">{t("batch.keys")}</div>
+      </div>
+    </div>
+  );
 }
 
 function Detail({ software }: { software: Software }) {
@@ -58,6 +301,8 @@ function Detail({ software }: { software: Software }) {
   const setPrefs = usePrefs((state) => state.set);
   const icon = useSoftwareIcon(software);
   const summary = library.summaries[software.name];
+  // 从系统拖文件进来、停在详情栏上时：作为这个软件的新版本导入
+  const dropping = useApp((state) => state.dropSoftwareId === software.id);
 
   const save = (patch: Partial<SoftwareEdit>) => {
     const edit: SoftwareEdit = {
@@ -82,13 +327,15 @@ function Detail({ software }: { software: Software }) {
   };
   const blurOnEnter = (event: React.KeyboardEvent<HTMLInputElement>) => event.key === "Enter" && event.currentTarget.blur();
 
-  const main = primaryVersion(software);
   const homepage = /^https?:\/\//i.test(software.homepage) ? software.homepage : null;
   const plain = "w-full rounded-md border border-transparent bg-transparent px-1.5 outline-none transition-colors hover:border-line-strong focus:border-accent focus:bg-bg";
   const field = "selectable w-full rounded-md border border-line-strong bg-bg px-2.5 text-[13px] outline-none placeholder:text-fg-4 focus:border-accent";
 
   return (
-    <div className="h-full overflow-y-auto px-4 pt-4 pb-8">
+    <div
+      data-software-id={software.id}
+      className={cx("h-full overflow-y-auto px-4 pt-4 pb-8 transition-colors", dropping && "bg-accent-soft ring-2 ring-accent ring-inset")}
+    >
       {/* 头部：图标、名字、发布者；右边是收藏和更多操作 */}
       <div className="flex items-start gap-3">
         <SoftwareIcon name={software.name} icon={icon} size={44} />
@@ -143,14 +390,7 @@ function Detail({ software }: { software: Software }) {
 
       <StatusBlock software={software} />
 
-      <Section title={`${t("detail.versions")} · ${software.versions.length}`}>
-        {software.versions.length === 0 && <div className="text-[12px] text-fg-4">{t("detail.noFiles")}</div>}
-        <div className="flex flex-col gap-3">
-          {sortedVersions(software).map((version) => (
-            <VersionBlock key={version.id} software={software} version={version} isMain={version.id === main?.id} onSave={save} />
-          ))}
-        </div>
-      </Section>
+      <Versions software={software} />
 
       {/* 更多信息：不常改的都在这里 */}
       <button
@@ -218,7 +458,10 @@ function Detail({ software }: { software: Software }) {
   );
 }
 
-/** 安装状态和在线源上的新版本，各占一行；都没有就不显示。 */
+/**
+ * 安装状态，最多三行，都没有就不显示：
+ * 本机装没装（没装就给“安装”）、本机比仓库里旧时的“升级”、在线源上的新版本。
+ */
 function StatusBlock({ software }: { software: Software }) {
   const t = useT();
   const installedApp = useApp((state) => {
@@ -231,43 +474,57 @@ function StatusBlock({ software }: { software: Software }) {
   const asset = update ? bestAsset(software) : null;
   const download = useApp((state) => (asset ? state.downloads[asset.url] : undefined));
   const installer = installerFor(software);
+  const upgrade = upgradeFor(software, installedApp);
   if (!installedApp && !installer && !update) return null;
 
   const percent = download?.total ? Math.min(100, Math.round((download.received / download.total) * 100)) : null;
   const row = "flex min-h-8 items-center gap-2";
+  const text = "flex min-w-0 flex-1 items-center gap-1.5 text-[13px]";
   return (
     <div className="mt-4 flex flex-col gap-1.5 rounded-lg bg-hover px-3 py-2">
-      {(installedApp || installer) && (
+      {installedApp ? (
         <div className={row}>
-          {installedApp ? (
-            <>
-              <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px] text-success">
-                <CircleCheck size={15} strokeWidth={2} aria-hidden className="shrink-0" />
-                <span className="truncate">
-                  {installedApp.version ? t("link.installedVersion", { version: installedApp.version }) : t("link.installed")}
-                </span>
-              </span>
-              {installedApp.uninstallable && (
-                <Button variant="ghost" className="text-danger hover:text-danger" onClick={() => void uninstallApp(installedApp)}>
-                  {t("link.uninstall")}
-                </Button>
-              )}
-            </>
-          ) : (
-            <>
-              <span className="min-w-0 flex-1 text-[13px] text-fg-3">{t("link.missing")}</span>
-              <Button variant="primary" onClick={() => void installSoftware(software)}>
-                <Download size={14} strokeWidth={2} aria-hidden />
-                {t("link.install")}
-              </Button>
-            </>
+          <span className={cx(text, upgrade ? "text-warning" : "text-success")}>
+            <CircleCheck size={15} strokeWidth={2} aria-hidden className="shrink-0" />
+            <span className="truncate">
+              {installedApp.version ? t("link.installedVersion", { version: installedApp.version }) : t("link.installed")}
+            </span>
+          </span>
+          {installedApp.uninstallable && (
+            <Button variant="ghost" className="text-danger hover:text-danger" onClick={() => void uninstallApp(installedApp)}>
+              {t("link.uninstall")}
+            </Button>
           )}
+        </div>
+      ) : (
+        installer && (
+          <div className={row}>
+            <span className={cx(text, "text-fg-3")}>
+              <CircleDashed size={15} strokeWidth={2} aria-hidden className="shrink-0" />
+              <span className="truncate">{t("link.missing")}</span>
+            </span>
+            <Button variant="primary" title={installer.file.name} onClick={() => void installSoftware(software)}>
+              <Download size={14} strokeWidth={2} aria-hidden />
+              {t("link.installVersion", { version: installer.version.version || t("detail.unknownVersion") })}
+            </Button>
+          </div>
+        )
+      )}
+      {upgrade && (
+        <div className={row}>
+          <span className={cx(text, "text-fg-2")}>
+            <ArrowUp size={15} strokeWidth={2.25} aria-hidden className="shrink-0" />
+            <span className="truncate">{t("link.upgradeTo", { version: upgrade.version.version })}</span>
+          </span>
+          <Button variant="primary" title={upgrade.file.name} onClick={() => void installSoftware(software, true)}>
+            {t("link.upgrade")}
+          </Button>
         </div>
       )}
       {update && (
         <div className={row}>
-          <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px] text-accent">
-            <ArrowUp size={15} strokeWidth={2.25} aria-hidden className="shrink-0" />
+          <span className={cx(text, "text-accent")}>
+            <CloudDownload size={15} strokeWidth={1.75} aria-hidden className="shrink-0" />
             <span className="truncate">{t("source.updateTo", { version: update.version })}</span>
           </span>
           {download ? (
@@ -288,15 +545,6 @@ function StatusBlock({ software }: { software: Software }) {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="mt-5">
-      <h3 className="m-0 mb-2 text-[12px] font-medium text-fg-3">{title}</h3>
-      {children}
-    </section>
-  );
-}
-
 function Labeled({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
@@ -306,20 +554,184 @@ function Labeled({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-function VersionBlock({
-  software,
-  version,
-  isMain,
-  onSave,
-}: {
-  software: Software;
-  version: Version;
-  isMain: boolean;
-  onSave: (patch: Partial<SoftwareEdit>) => Promise<boolean>;
-}) {
+/**
+ * 版本：多于一个时上面一排版本号，点一个只看那个版本的安装包。
+ * 一开始选中默认版本；“默认”和“本机”（本机装着的就是这个版本）直接标在版本号上。
+ */
+function Versions({ software }: { software: Software }) {
   const t = useT();
+  const installed = useApp((state) => {
+    const id = state.links[software.id];
+    return id ? state.installed?.find((app) => app.id === id)?.version : undefined;
+  });
+  const importPaths = useApp((state) => state.importPaths);
+  const [picked, setPicked] = useState<string | null>(null);
+  const [pruning, setPruning] = useState(false);
+  const versions = sortedVersions(software);
+  const main = primaryVersion(software);
+  const current = versions.find((v) => v.id === picked) ?? main ?? versions[0];
+
+  // 选的文件都归到这个软件下，版本号从文件名里认
+  const addFiles = async () => {
+    const paths = await pickFiles();
+    if (paths.length > 0) await importPaths(paths, undefined, { name: software.name });
+  };
+
+  return (
+    <section className="mt-5">
+      <div className="mb-2 flex min-h-7 items-center gap-0.5">
+        <h3 className="m-0 flex-1 text-[12px] font-medium text-fg-3">{`${t("detail.versions")} · ${versions.length}`}</h3>
+        <Button variant="ghost" size="sm" title={t("version.addHint", { name: software.name })} onClick={() => void addFiles()}>
+          <Plus size={13} strokeWidth={2} aria-hidden />
+          {t("version.add")}
+        </Button>
+        {versions.length > 1 && (
+          <Button variant="ghost" size="sm" onClick={() => setPruning(true)}>
+            <Eraser size={13} strokeWidth={1.75} aria-hidden />
+            {t("version.prune")}
+          </Button>
+        )}
+      </div>
+      {versions.length === 0 && <div className="text-[12px] text-fg-4">{t("detail.noFiles")}</div>}
+      {versions.length > 1 && (
+        <div role="tablist" aria-label={t("detail.versions")} className="mb-2 flex flex-wrap gap-1.5">
+          {versions.map((version) => {
+            const selected = version.id === current?.id;
+            const isMain = version.id === main?.id;
+            const local = installed !== undefined && sameVersion(version.version, installed);
+            return (
+              <button
+                key={version.id}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                title={[local ? t("version.localHint") : "", version.note].filter(Boolean).join("\n") || undefined}
+                onClick={() => setPicked(version.id)}
+                className={cx(
+                  "tabular inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[12px] transition-colors",
+                  selected ? "border-accent bg-accent-soft text-accent" : "border-line-strong text-fg-2 hover:bg-hover hover:text-fg",
+                )}
+              >
+                {version.version || t("detail.unknownVersion")}
+                {isMain && <span className="opacity-70">· {t("detail.default")}</span>}
+                {local && <CircleCheck size={12} strokeWidth={2.25} aria-label={t("version.local")} className="text-success" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {/* 按版本 id 重建：换版本时正在编辑的备注不会串到别的版本上 */}
+      {current && <VersionBlock key={current.id} software={software} version={current} isMain={current.id === main?.id} installed={installed} />}
+      {pruning && <PruneDialog software={software} installed={installed} onClose={() => setPruning(false)} />}
+    </section>
+  );
+}
+
+/** 清理旧版本：选保留最新几个，列出会删掉哪些、能省多少空间。 */
+function PruneDialog({ software, installed, onClose }: { software: Software; installed?: string; onClose: () => void }) {
+  const t = useT();
+  const versions = sortedVersions(software);
+  const [keep, setKeep] = useState(Math.min(2, versions.length - 1));
+  const [keepLocal, setKeepLocal] = useState(true);
+  const [withFiles, setWithFiles] = useState(true);
+  const [busy, setBusy] = useState(false);
+  // 本机装着的版本在仓库里有，才需要问要不要留
+  const local = installed !== undefined && versions.some((v) => sameVersion(v.version, installed)) ? installed : undefined;
+  const doomed = prunable(software, keep, keepLocal ? local : undefined);
+  const doomedIds = new Set(doomed.map((v) => v.id));
+  const freed = doomed.reduce((sum, v) => sum + v.files.reduce((n, f) => n + f.size, 0), 0);
+  const pinned = versions.find((v) => v.id === software.defaultVersionId);
+  const pinnedOld = pinned !== undefined && versions.indexOf(pinned) >= keep;
+
+  const run = async () => {
+    setBusy(true);
+    const done = await deleteVersions(
+      doomed.map((version) => ({ software, version })),
+      withFiles,
+    );
+    setBusy(false);
+    if (done) onClose();
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={t("prune.title", { name: software.name })}
+      width={420}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            {t("common.cancel")}
+          </Button>
+          <Button variant="danger" busy={busy} disabled={doomed.length === 0} onClick={() => void run()}>
+            {t("prune.confirm", { n: doomed.length })}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3">
+        <label className="flex items-center gap-2 text-[13px]">
+          {t("prune.keep")}
+          <Select compact className="w-auto" value={String(keep)} onChange={(event) => setKeep(Number(event.target.value))}>
+            {Array.from({ length: versions.length - 1 }, (_, i) => i + 1).map((n) => (
+              <option key={n} value={n}>
+                {t("lib.versions", { n })}
+              </option>
+            ))}
+          </Select>
+        </label>
+        {local && (
+          <Checkbox checked={keepLocal} onChange={setKeepLocal}>
+            {t("prune.keepLocal", { version: local })}
+          </Checkbox>
+        )}
+        {pinnedOld && <p className="m-0 text-[12px] text-fg-3">{t("prune.pinnedKept", { version: pinned.version })}</p>}
+        <div className="rounded-lg border border-line">
+          {versions.map((version) => {
+            const gone = doomedIds.has(version.id);
+            return (
+              <div key={version.id} className="flex h-8 items-center gap-2 border-b border-line px-2.5 text-[13px] last:border-b-0">
+                <span className={cx("tabular min-w-0 flex-1 truncate", gone ? "text-fg-3 line-through" : "")}>
+                  {version.version || t("detail.unknownVersion")}
+                </span>
+                <span className="tabular text-[12px] text-fg-3">{formatSize(version.files.reduce((n, f) => n + f.size, 0))}</span>
+                <span className={cx("w-10 text-right text-[12px]", gone ? "text-danger" : "text-fg-3")}>
+                  {gone ? t("common.delete") : t("version.keep")}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        <div className="text-[13px] font-medium">
+          {doomed.length > 0 ? t("prune.summary", { n: doomed.length, size: formatSize(freed) }) : t("prune.nothing")}
+        </div>
+        <div>
+          <Checkbox checked={withFiles} onChange={setWithFiles}>
+            {t("del.alsoDisk")}
+          </Checkbox>
+          <p className="m-0 mt-1 pl-6 text-[12px] leading-relaxed text-fg-3">{withFiles ? t("del.diskHint") : t("del.recordOnly")}</p>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function VersionBlock({ software, version, isMain, installed }: { software: Software; version: Version; isMain: boolean; installed?: string }) {
+  const t = useT();
+  const language = useLanguage();
   const apply = useApp((state) => state.apply);
   const pinned = software.defaultVersionId === version.id;
+  const local = installed !== undefined && sameVersion(version.version, installed);
+  const installer = installerIn(version);
+  const size = version.files.reduce((sum, file) => sum + file.size, 0);
+  const [editingNote, setEditingNote] = useState(false);
+
+  const saveNote = async (value: string) => {
+    setEditingNote(false);
+    const note = value.trim();
+    if (note !== version.note) await apply(() => api.updateVersion(software.id, version.id, { version: version.version, note }));
+  };
 
   const rename = async () => {
     const value = await prompt({ title: t("detail.editVersion"), label: t("detail.versionPrompt"), initial: version.version });
@@ -330,22 +742,74 @@ function VersionBlock({
 
   return (
     <div className="rounded-lg border border-line">
-      <div className="flex h-8 items-center gap-2 border-b border-line pr-1 pl-2.5">
-        <span className="tabular truncate text-[13px] font-medium">{version.version || t("detail.unknownVersion")}</span>
-        {isMain && <Chip className={pinned ? "bg-accent-soft text-accent" : ""}>{t("detail.default")}</Chip>}
-        <div className="ml-auto">
-          <Dropdown
-            items={[
-              { label: t("detail.setDefault"), icon: Star, disabled: pinned, onSelect: () => void onSave({ defaultVersionId: version.id }) },
-              { label: t("detail.editVersion"), icon: Pencil, onSelect: () => void rename() },
-              { label: t("detail.deleteVersion"), icon: Trash2, danger: true, separated: true, onSelect: () => void deleteVersion(software, version) },
-            ]}
-          >
-            <IconButton label={t("common.edit")} className="size-6">
-              <Ellipsis size={15} strokeWidth={1.75} />
-            </IconButton>
-          </Dropdown>
+      <div className="border-b border-line pt-1 pr-1 pb-1.5 pl-2.5">
+        <div className="flex h-7 items-center gap-1.5">
+          <span className="tabular truncate text-[13px] font-medium">{version.version || t("detail.unknownVersion")}</span>
+          {isMain && <Chip className={pinned ? "bg-accent-soft text-accent" : ""}>{t("detail.default")}</Chip>}
+          {local && <Chip className="text-success">{t("version.local")}</Chip>}
+          <div className="ml-auto">
+            <Dropdown
+              items={[
+                ...(pinned
+                  ? [{ label: t("version.auto"), icon: PinOff, onSelect: () => void setDefaultVersion(software, null) }]
+                  : [{ label: t("detail.setDefault"), icon: Pin, onSelect: () => void setDefaultVersion(software, version.id) }]),
+                { label: version.note ? t("version.editNote") : t("version.addNote"), icon: StickyNote, onSelect: () => setEditingNote(true) },
+                { label: t("detail.editVersion"), icon: Pencil, onSelect: () => void rename() },
+                { label: t("detail.deleteVersion"), icon: Trash2, danger: true, separated: true, onSelect: () => void deleteVersion(software, version) },
+              ]}
+            >
+              <IconButton label={t("common.edit")} className="size-6">
+                <Ellipsis size={15} strokeWidth={1.75} />
+              </IconButton>
+            </Dropdown>
+          </div>
         </div>
+        <div className="flex min-h-6 items-center gap-1.5">
+          <span className="tabular min-w-0 flex-1 truncate text-[12px] text-fg-3" title={t("version.addedAt", { date: formatDate(version.addedAt, language) })}>
+            {t("lib.files", { n: version.files.length })} · {formatSize(size)}
+          </span>
+          {/* 默认版本的安装和升级在上面的状态卡片里，这里只给别的版本 */}
+          {!isMain && (
+            <Button variant="ghost" size="sm" onClick={() => void setDefaultVersion(software, version.id)}>
+              {t("version.makeDefault")}
+            </Button>
+          )}
+          {!isMain && installer && !local && (
+            <Button variant="soft" size="sm" title={installer.name} onClick={() => void installSoftware(software, false, version)}>
+              {t("version.installThis")}
+            </Button>
+          )}
+        </div>
+        {/* 版本备注：点一下就能改，失焦保存，Esc 放弃 */}
+        {editingNote ? (
+          <textarea
+            autoFocus
+            rows={2}
+            defaultValue={version.note}
+            aria-label={t("version.editNote")}
+            placeholder={t("version.notePlaceholder")}
+            onBlur={(event) => void saveNote(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.stopPropagation();
+                setEditingNote(false);
+              }
+            }}
+            className="selectable mt-1 mr-1.5 block w-[calc(100%-6px)] resize-y rounded-md border border-line-strong bg-bg px-2 py-1 text-[12px] leading-relaxed outline-none placeholder:text-fg-4 focus:border-accent"
+          />
+        ) : (
+          version.note && (
+            <button
+              type="button"
+              title={t("version.editNote")}
+              onClick={() => setEditingNote(true)}
+              className="mt-0.5 mr-1.5 flex w-[calc(100%-6px)] items-start gap-1.5 rounded-md px-1 py-0.5 -ml-1 text-left text-[12px] leading-relaxed whitespace-pre-wrap text-fg-2 hover:bg-hover"
+            >
+              <StickyNote size={12} strokeWidth={1.75} aria-hidden className="mt-[3px] shrink-0 text-fg-3" />
+              <span className="min-w-0">{version.note}</span>
+            </button>
+          )
+        )}
       </div>
       {version.files.map((file) => (
         <FileRow key={file.id} software={software} version={version} file={file} />
@@ -370,9 +834,7 @@ function FileRow({ software, version, file }: { software: Software; version: Ver
   return (
     <div className="flex items-center gap-1 border-b border-line py-1.5 pr-1 pl-2.5 last:border-b-0">
       <div className="min-w-0 flex-1">
-        <div className="selectable truncate text-[12px]" title={file.path}>
-          {file.name}
-        </div>
+        <MiddleTruncate text={file.name} title={file.path} className="selectable text-[12px]" />
         <div className="mt-1 flex flex-wrap items-center gap-1 text-[12px] text-fg-3">
           <PlatformChip platform={file.platform} />
           {file.arch && <Chip>{file.arch}</Chip>}

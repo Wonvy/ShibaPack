@@ -6,13 +6,11 @@ import {
   FilePlus,
   FolderInput,
   FolderSearch,
-  FolderSync,
   Globe,
   Minus,
   PanelRightClose,
   PanelRightOpen,
   Plus,
-  RefreshCw,
   ScanSearch,
   Search,
   Square,
@@ -38,15 +36,15 @@ export function Logo({ size = 18 }: { size?: number }) {
   );
 }
 
-/** 顶栏：左边是名字，中间是搜索，右边是“检查更新”和“添加”。空白处可以拖动窗口。`bare` 用在引导页。 */
+/**
+ * 顶栏：左边是名字，中间是搜索，右边是“添加”。空白处可以拖动窗口。`bare` 用在引导页。
+ * 检查在线更新在侧栏“有更新”那一行上，整理散落文件在“存储与备份”里。
+ */
 export function TopBar({ bare = false }: { bare?: boolean }) {
   const t = useT();
   const route = useApp((state) => state.route);
   const importPaths = useApp((state) => state.importPaths);
   const patch = useApp((state) => state.patch);
-  const checkUpdates = useApp((state) => state.checkUpdates);
-  const checking = useApp((state) => state.checking !== null);
-  const tidyRoot = useApp((state) => state.tidyRoot);
   // macOS 的红黄绿按钮在左上角，给它们让出位置；其他系统的窗口按钮自己画在右边
   const nativeLights = isTauri && isMac;
   const ownControls = isTauri && !isMac;
@@ -69,26 +67,20 @@ export function TopBar({ bare = false }: { bare?: boolean }) {
       {!bare && route !== "storage" && <SearchBox />}
       <div data-tauri-drag-region className="h-full min-w-4 flex-1" />
       {!bare && (
-        <>
-          <IconButton label={t("scan.updates")} disabled={checking} onClick={() => void checkUpdates()}>
-            <RefreshCw size={15} strokeWidth={1.75} className={checking ? "animate-spin" : ""} />
-          </IconButton>
-          {/* 把软件收进仓库的方式都在这一个菜单里 */}
-          <Dropdown
-            items={[
-              { label: t("add.files"), icon: FilePlus, onSelect: () => void importFiles() },
-              { label: t("add.folder"), icon: FolderInput, onSelect: () => void importFolder() },
-              { label: t("scan.folder"), icon: ScanSearch, separated: true, onSelect: () => void importFolder("indexed") },
-              { label: t("scan.tidy"), icon: FolderSync, onSelect: () => void tidyRoot() },
-              { label: t("add.online"), icon: Globe, separated: true, onSelect: () => patch({ sourceDialog: { softwareId: null } }) },
-            ]}
-          >
-            <Button variant="primary" className="ml-1">
-              <Plus size={15} strokeWidth={2} aria-hidden />
-              {t("app.add")}
-            </Button>
-          </Dropdown>
-        </>
+        // 把软件收进仓库的方式都在这一个菜单里
+        <Dropdown
+          items={[
+            { label: t("add.files"), icon: FilePlus, onSelect: () => void importFiles() },
+            { label: t("add.folder"), icon: FolderInput, onSelect: () => void importFolder() },
+            { label: t("scan.folder"), icon: ScanSearch, separated: true, onSelect: () => void importFolder("indexed") },
+            { label: t("add.online"), icon: Globe, separated: true, onSelect: () => patch({ sourceDialog: { softwareId: null } }) },
+          ]}
+        >
+          <Button variant="primary" className="ml-1">
+            <Plus size={15} strokeWidth={2} aria-hidden />
+            {t("app.add")}
+          </Button>
+        </Dropdown>
       )}
       {ownControls && <WindowControls />}
     </header>
@@ -147,14 +139,14 @@ function SearchBox() {
   );
 }
 
-/** 展开或收起右边的详情栏。放在列表工具栏最右边，和视图切换在一起。 */
+/** 展开或收起右边的详情栏。放在列表工具栏最右边；图标本身表示开关状态，不再用强调色。 */
 export function DetailToggle() {
   const t = useT();
   const open = usePrefs((state) => state.detailOpen);
   const set = usePrefs((state) => state.set);
   const label = open ? t("layout.hideDetail") : t("layout.showDetail");
   return (
-    <IconButton label={label} active={open} onClick={() => set({ detailOpen: !open })}>
+    <IconButton label={label} aria-pressed={open} onClick={() => set({ detailOpen: !open })}>
       {open ? <PanelRightClose size={16} strokeWidth={1.75} /> : <PanelRightOpen size={16} strokeWidth={1.75} />}
     </IconButton>
   );

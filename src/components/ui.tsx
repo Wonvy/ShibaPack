@@ -14,22 +14,32 @@ export function cx(...parts: (string | false | null | undefined)[]): string {
 export const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: "primary" | "secondary" | "ghost" | "danger";
+  /**
+   * `caution`：普通按钮的样子、红字，用在删除、清空这类操作上。
+   * `soft`：淡强调色底，用在列表里的“安装”。`quiet`：平时灰字，悬停变红，用在列表里的“卸载”。
+   */
+  variant?: "primary" | "secondary" | "ghost" | "danger" | "caution" | "soft" | "quiet";
+  /** `sm`：24px 高、12px 字，放在列表行和卡片里。 */
+  size?: "md" | "sm";
   busy?: boolean;
 }
 
-export function Button({ variant = "secondary", busy, className, children, disabled, ...rest }: ButtonProps) {
+export function Button({ variant = "secondary", size = "md", busy, className, children, disabled, ...rest }: ButtonProps) {
   return (
     <button
       type="button"
       disabled={disabled || busy}
       className={cx(
-        "inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium whitespace-nowrap transition-colors",
+        "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md font-medium whitespace-nowrap transition-colors",
+        size === "sm" ? "h-6 px-2 text-[12px]" : "h-7 px-2.5 text-[13px]",
         "disabled:pointer-events-none disabled:opacity-50",
         variant === "primary" && "bg-accent-strong text-white hover:brightness-110",
         variant === "secondary" && "border border-line-strong bg-hover text-fg hover:bg-active",
         variant === "ghost" && "text-fg-2 hover:bg-hover hover:text-fg",
         variant === "danger" && "bg-danger text-white hover:brightness-110",
+        variant === "caution" && "border border-line-strong bg-hover text-danger hover:bg-active",
+        variant === "soft" && "bg-accent-soft text-accent hover:bg-[color-mix(in_srgb,var(--accent)_26%,transparent)]",
+        variant === "quiet" && "text-fg-3 hover:bg-hover hover:text-danger",
         className,
       )}
       {...rest}
@@ -137,6 +147,39 @@ export function Segmented<T extends string>({
   );
 }
 
+/** 只有图标的分段按钮，用来切换视图。选中项是中性色，不用强调色。 */
+export function IconSegmented<T extends string>({
+  value,
+  options,
+  onChange,
+}: {
+  value: T;
+  options: { value: T; label: string; icon: ReactNode }[];
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div role="radiogroup" className="inline-flex shrink-0 rounded-md border border-line-strong bg-bg p-0.5">
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="radio"
+          aria-checked={option.value === value}
+          aria-label={option.label}
+          title={option.label}
+          onClick={() => onChange(option.value)}
+          className={cx(
+            "inline-flex size-6 items-center justify-center rounded-[5px] transition-colors",
+            option.value === value ? "bg-active text-fg" : "text-fg-3 hover:text-fg-2",
+          )}
+        >
+          {option.icon}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function Checkbox({ checked, onChange, children }: { checked: boolean; onChange: (checked: boolean) => void; children: ReactNode }) {
   return (
     <label className="flex items-start gap-2 text-[13px]">
@@ -172,6 +215,26 @@ export function Switch({ checked, onChange, label }: { checked: boolean; onChang
     >
       <span className={cx("inline-block size-3.5 rounded-full bg-white shadow-sm transition-transform", checked ? "translate-x-4" : "translate-x-0.5")} />
     </button>
+  );
+}
+
+/**
+ * 太长时从中间省略，保留开头和结尾。文件名的版本号、架构、扩展名多在结尾，
+ * 从末尾截断会把最有用的部分截掉。
+ */
+export function MiddleTruncate({ text, tail = 16, title, className }: { text: string; tail?: number; title?: string; className?: string }) {
+  if (text.length <= tail + 4) {
+    return (
+      <span className={cx("block truncate", className)} title={title ?? text}>
+        {text}
+      </span>
+    );
+  }
+  return (
+    <span className={cx("flex min-w-0", className)} title={title ?? text}>
+      <span className="truncate">{text.slice(0, text.length - tail)}</span>
+      <span className="shrink-0 whitespace-pre">{text.slice(text.length - tail)}</span>
+    </span>
   );
 }
 
@@ -240,8 +303,8 @@ export function Modal({
 
 // ── 菜单 ─────────────────────────────────────────────────────
 
-const menuClass = "z-50 min-w-[168px] animate-pop rounded-lg bg-panel p-1 shadow-pop outline-none";
-const itemClass =
+export const menuClass = "z-50 min-w-[168px] animate-pop rounded-lg bg-panel p-1 shadow-pop outline-none";
+export const itemClass =
   "flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-[13px] outline-none select-none " +
   "data-[highlighted]:bg-active data-[disabled]:pointer-events-none data-[disabled]:opacity-40";
 
@@ -318,11 +381,14 @@ export function FilterMenu<T extends string>({
   value,
   options,
   onChange,
+  compact,
 }: {
   label: string;
   value: T;
   options: FilterOption<T>[];
   onChange: (value: T) => void;
+  /** 放在 `@container` 里时，容器窄于 36rem 就只显示图标。 */
+  compact?: boolean;
 }) {
   const current = options.find((option) => option.value === value) ?? options[0];
   const filtering = value !== options[0].value;
@@ -332,14 +398,14 @@ export function FilterMenu<T extends string>({
         <button
           type="button"
           aria-label={label}
-          title={label}
+          title={compact ? `${label} · ${current.label}` : label}
           className={cx(
             "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[13px] whitespace-nowrap transition-colors outline-none",
             filtering ? "bg-accent-soft text-accent" : "text-fg-2 hover:bg-hover hover:text-fg data-[state=open]:bg-hover",
           )}
         >
           {current.icon && <span className="flex size-4 items-center justify-center">{current.icon}</span>}
-          {current.label}
+          <span className={compact ? "hidden @xl:inline" : undefined}>{current.label}</span>
           <ChevronDown size={13} strokeWidth={2} aria-hidden className="opacity-60" />
         </button>
       </DropdownPrimitive.Trigger>

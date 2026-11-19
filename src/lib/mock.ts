@@ -3,6 +3,7 @@
 
 import { newId } from "./library";
 import type {
+  ImportHint,
   BackupInfo,
   Candidate,
   Category,
@@ -105,7 +106,8 @@ const lib: Library = {
   software: [
     software("Visual Studio Code", "Microsoft", "editor", true, [
       ["1.96.2", [["VSCodeUserSetup-x64-1.96.2.exe", 104], ["VSCodeUserSetup-arm64-1.96.2.exe", 101], ["VSCode-darwin-universal.dmg", 221], ["code_1.96.2_amd64.deb", 98]]],
-      ["1.95.3", [["VSCodeUserSetup-x64-1.95.3.exe", 103]]],
+      ["1.95.3", [["VSCodeUserSetup-x64-1.95.3.exe", 103], ["VSCode-darwin-universal-1.95.3.dmg", 219]]],
+      ["1.94.2", [["VSCodeUserSetup-x64-1.94.2.exe", 101]]],
     ], 2),
     software("Sublime Text", "Sublime HQ", "editor", false, [["4189", [["sublime_text_build_4189_x64_setup.exe", 18], ["sublime_text_build_4189_mac.dmg", 41]]]], 40),
     software("Git", "Git SCM", "dev", false, [["2.47.1", [["Git-2.47.1-64-bit.exe", 66], ["git-2.47.1-intel-universal.dmg", 44]]]], 12),
@@ -288,7 +290,7 @@ function stats(): Stats {
   };
 }
 
-async function importPaths(paths: string[], mode: Storage) {
+async function importPaths(paths: string[], mode: Storage, hint?: ImportHint) {
   const emit = (progress: Progress) => listeners.forEach((handler) => handler(progress));
   // 选的是文件夹时，假装在里面找到了几个安装包
   const files = paths.flatMap((path) =>
@@ -302,7 +304,8 @@ async function importPaths(paths: string[], mode: Storage) {
     emit({ phase: "import", current: i + 1, total: files.length, file: base });
     await sleep(450);
     const match = base.match(/^(.*?)[-_ ](?:win64[-_ ])?v?(\d+(?:\.\d+)+)/);
-    const name = (match?.[1] ?? base.replace(/\.\w+$/, "")).replace(/[-_]/g, " ").trim();
+    // 拖到某个软件上导入时，名字以那个软件为准
+    const name = hint?.name ?? (match?.[1] ?? base.replace(/\.\w+$/, "")).replace(/[-_]/g, " ").trim();
     const version = match?.[2] ?? "";
     let target = lib.software.find((s) => s.name.toLowerCase() === name.toLowerCase());
     if (target?.versions.some((v) => v.version === version && v.files.some((f) => f.name === base))) {
@@ -341,7 +344,7 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
     case "get_library":
       return snapshot();
     case "import_paths":
-      return importPaths(args.paths as string[], args.mode as Storage);
+      return importPaths(args.paths as string[], args.mode as Storage, (args.hint as ImportHint | null) ?? undefined);
     case "update_software": {
       const edit = args.edit as SoftwareEdit;
       if (!edit.name.trim()) throw "invalid_name";
@@ -357,6 +360,20 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
     case "delete_software":
       lib.software = lib.software.filter((s) => s.id !== args.id);
       return snapshot();
+    case "delete_software_many": {
+      const ids = new Set(args.ids as string[]);
+      lib.software = lib.software.filter((s) => !ids.has(s.id));
+      return snapshot();
+    }
+    case "delete_versions": {
+      for (const { softwareId, versionId } of args.targets as { softwareId: string; versionId: string }[]) {
+        const owner = lib.software.find((s) => s.id === softwareId);
+        if (!owner) continue;
+        owner.versions = owner.versions.filter((v) => v.id !== versionId);
+        if (owner.defaultVersionId === versionId) owner.defaultVersionId = null;
+      }
+      return snapshot();
+    }
     case "delete_version": {
       const owner = find(args.softwareId);
       owner.versions = owner.versions.filter((v) => v.id !== args.versionId);

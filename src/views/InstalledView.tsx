@@ -1,18 +1,35 @@
 // 已安装软件：这台电脑上装着的程序，以及右侧的详情栏。
 
-import { ArrowDown, ArrowUp, FolderOpen, LoaderCircle, MonitorCheck, MousePointerClick, PackageCheck, PackageX, RefreshCw, SearchX, Trash2 } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  FolderOpen,
+  ListFilter,
+  LoaderCircle,
+  MonitorCheck,
+  MousePointerClick,
+  PackageCheck,
+  PackageX,
+  RefreshCw,
+  SearchX,
+  Trash2,
+} from "lucide-react";
 import { type ReactNode, useMemo, useState } from "react";
 import { DetailToggle } from "../components/chrome";
 import { SoftwareIcon } from "../components/SoftwareIcon";
-import { Button, Chip, EmptyState, IconButton, cx } from "../components/ui";
+import { Button, Chip, EmptyState, FilterMenu, IconButton, cx } from "../components/ui";
 import { uninstallApp } from "../lib/actions";
 import { api } from "../lib/api";
-import { compareVersions, formatDate, formatSize } from "../lib/library";
+import { compareVersions, formatDate, formatSize, primaryVersion } from "../lib/library";
 import { useApp, useLanguage, useT } from "../lib/store";
-import type { InstalledApp } from "../lib/types";
+import type { InstalledApp, Software } from "../lib/types";
 
 type Column = "name" | "version" | "date" | "size";
-const COLUMNS = "grid grid-cols-[minmax(0,1fr)_auto] @lg:grid-cols-[minmax(0,1fr)_110px_80px] @2xl:grid-cols-[minmax(0,1fr)_120px_92px_80px] items-center gap-x-3";
+// 列：名称、版本、仓库里有没有、安装日期、大小、卸载。栏窄时仓库、大小、安装日期收起，卸载一直在
+const COLUMNS =
+  "grid grid-cols-[minmax(0,1fr)_88px_64px] @lg:grid-cols-[minmax(0,1fr)_110px_96px_80px_64px] @2xl:grid-cols-[minmax(0,1fr)_120px_96px_92px_80px_64px] items-center gap-x-3";
+
+type RepoFilter = "all" | "in" | "out";
 
 export function InstalledView() {
   const t = useT();
@@ -24,14 +41,30 @@ export function InstalledView() {
   const patch = useApp((state) => state.patch);
   const reload = useApp((state) => state.loadInstalled);
   const search = useApp((state) => state.search);
+  const links = useApp((state) => state.links);
+  const software = useApp((state) => state.library?.software);
+  const reveal = useApp((state) => state.reveal);
+  const [repoFilter, setRepoFilter] = useState<RepoFilter>("all");
   const [sort, setSort] = useState<{ column: Column; asc: boolean }>({ column: "name", asc: true });
 
   const sizeOf = (app: InstalledApp) => app.size ?? sizes[app.id] ?? null;
 
+  // 已安装软件 id → 仓库里对应的软件
+  const stored = useMemo(() => {
+    const map = new Map<string, Software>();
+    for (const [softwareId, appId] of Object.entries(links)) {
+      const found = software?.find((s) => s.id === softwareId);
+      if (found) map.set(appId, found);
+    }
+    return map;
+  }, [links, software]);
+
   const list = useMemo(() => {
     const query = search.trim().toLowerCase();
     const items = (installed ?? []).filter(
-      (app) => !query || app.name.toLowerCase().includes(query) || app.publisher.toLowerCase().includes(query),
+      (app) =>
+        (!query || app.name.toLowerCase().includes(query) || app.publisher.toLowerCase().includes(query)) &&
+        (repoFilter === "all" || stored.has(app.id) === (repoFilter === "in")),
     );
     const byName = (a: InstalledApp, b: InstalledApp) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
     const compare: Record<Column, (a: InstalledApp, b: InstalledApp) => number> = {
@@ -41,7 +74,7 @@ export function InstalledView() {
       size: (a, b) => (a.size ?? sizes[a.id] ?? -1) - (b.size ?? sizes[b.id] ?? -1) || byName(a, b),
     };
     return items.sort((a, b) => compare[sort.column](a, b) * (sort.asc ? 1 : -1));
-  }, [installed, search, sort, sizes]);
+  }, [installed, search, sort, sizes, stored, repoFilter]);
 
   const header = (column: Column, label: string, className?: string) => {
     const Arrow = sort.asc ? ArrowUp : ArrowDown;
@@ -61,7 +94,18 @@ export function InstalledView() {
     <div className="@container flex min-h-0 flex-1 flex-col">
       <div className="flex h-11 shrink-0 items-center gap-1 border-b border-line pr-2 pl-4">
         <h2 className="m-0 min-w-0 truncate text-[14px] font-semibold">{t("installed.title")}</h2>
-        <span className="tabular ml-1.5 shrink-0 text-[12px] text-fg-3">{list.length}</span>
+        <span className="tabular mr-2 ml-1.5 shrink-0 text-[12px] text-fg-3">{list.length}</span>
+        <FilterMenu<RepoFilter>
+          compact
+          label={t("installed.repoFilter")}
+          value={repoFilter}
+          onChange={setRepoFilter}
+          options={[
+            { value: "all", label: t("installed.repoFilter"), icon: <ListFilter size={15} strokeWidth={1.75} /> },
+            { value: "in", label: t("installed.repoIn"), icon: <PackageCheck size={15} strokeWidth={1.75} /> },
+            { value: "out", label: t("installed.repoOut"), icon: <PackageX size={15} strokeWidth={1.75} /> },
+          ]}
+        />
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
           <IconButton label={t("installed.refresh")} disabled={loading} onClick={() => void reload()}>
             <RefreshCw size={15} strokeWidth={1.75} className={loading ? "animate-spin" : ""} />
@@ -74,14 +118,19 @@ export function InstalledView() {
       {installed === null ? (
         <EmptyState icon={LoaderCircle} title={t("installed.loading")} />
       ) : list.length === 0 ? (
-        <EmptyState icon={search.trim() ? SearchX : MonitorCheck} title={search.trim() ? t("lib.noMatch") : t("installed.empty")} />
+        <EmptyState
+          icon={search.trim() || repoFilter !== "all" ? SearchX : MonitorCheck}
+          title={search.trim() || repoFilter !== "all" ? t("lib.noMatch") : t("installed.empty")}
+        />
       ) : (
         <>
           <div className={cx(COLUMNS, "h-8 shrink-0 border-b border-line pr-5 pl-[58px] text-[12px] text-fg-3")}>
             {header("name", t("installed.col.name"))}
             {header("version", t("installed.col.version"))}
+            <span className="hidden @lg:block">{t("installed.col.repo")}</span>
             {header("date", t("installed.col.date"), "hidden justify-end @2xl:flex")}
             {header("size", t("installed.col.size"), "hidden justify-end @lg:flex")}
+            <span className="text-right">{t("lib.col.action")}</span>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pt-1 pb-3">
             {list.map((app) => {
@@ -104,8 +153,25 @@ export function InstalledView() {
                     </div>
                   </div>
                   <div className="tabular truncate text-[12px] text-fg-2">{app.version}</div>
+                  <div className="hidden min-w-0 @lg:flex">
+                    <RepoCell software={stored.get(app.id)} onOpen={(id) => reveal(id)} />
+                  </div>
                   <div className="tabular hidden text-right text-[12px] text-fg-3 @2xl:block">{app.installedAt && formatDate(app.installedAt, language)}</div>
                   <div className="tabular hidden text-right text-[12px] text-fg-2 @lg:block">{size === null ? "" : formatSize(size)}</div>
+                  <div className="flex justify-end">
+                    {app.uninstallable && (
+                      <Button
+                        variant="quiet"
+                        size="sm"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void uninstallApp(app);
+                        }}
+                      >
+                        {t("installed.uninstall")}
+                      </Button>
+                    )}
+                  </div>
                 </div>
               );
             })}
@@ -113,6 +179,26 @@ export function InstalledView() {
         </>
       )}
     </div>
+  );
+}
+
+/** “仓库”一列：仓库里有它的安装包时写默认版本号，点了到软件库里看；没有时写“未收录”。 */
+function RepoCell({ software, onOpen }: { software?: Software; onOpen: (id: string) => void }) {
+  const t = useT();
+  if (!software) return <span className="truncate text-[12px] text-fg-4">{t("installed.repoNone")}</span>;
+  const version = primaryVersion(software)?.version ?? "";
+  return (
+    <button
+      type="button"
+      title={t("installed.showInLibrary")}
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpen(software.id);
+      }}
+      className="tabular -ml-1 min-w-0 truncate rounded px-1 text-left text-[12px] text-fg-2 hover:bg-active hover:text-accent"
+    >
+      {version ? t("installed.repoHas", { version }) : software.name}
+    </button>
   );
 }
 
@@ -128,17 +214,12 @@ export function InstalledDetail() {
     return softwareId ? state.library?.software.find((s) => s.id === softwareId) : undefined;
   });
   const attempt = useApp((state) => state.attempt);
-  const setRoute = useApp((state) => state.setRoute);
-  const select = useApp((state) => state.select);
+  const reveal = useApp((state) => state.reveal);
 
   if (!app) return <EmptyState icon={MousePointerClick} title={t("installed.select")} />;
 
   const size = app.size ?? measured ?? null;
-  const showInLibrary = () => {
-    if (!linked) return;
-    select(linked.id);
-    setRoute("library");
-  };
+  const showInLibrary = () => linked && reveal(linked.id);
 
   return (
     <div className="flex h-full flex-col">
@@ -187,7 +268,7 @@ export function InstalledDetail() {
             <FolderOpen size={14} strokeWidth={1.75} aria-hidden />
             {t("installed.reveal")}
           </Button>
-          <Button className="flex-1 text-danger" disabled={!app.uninstallable} onClick={() => void uninstallApp(app)}>
+          <Button variant="caution" className="flex-1" disabled={!app.uninstallable} onClick={() => void uninstallApp(app)}>
             <Trash2 size={14} strokeWidth={1.75} aria-hidden />
             {t("installed.uninstall")}
           </Button>

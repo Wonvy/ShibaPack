@@ -57,6 +57,11 @@ export const api = {
   updateVersion: (softwareId: string, versionId: string, edit: VersionEdit) =>
     call<Library>("update_version", { softwareId, versionId, edit }),
   deleteSoftware: (id: string, deleteFiles: boolean) => call<Library>("delete_software", { id, deleteFiles }),
+  /** 多选删除，只存一次索引。 */
+  deleteSoftwareMany: (ids: string[], deleteFiles: boolean) => call<Library>("delete_software_many", { ids, deleteFiles }),
+  /** 清理旧版本：一次删掉多个版本。 */
+  deleteVersions: (targets: { softwareId: string; versionId: string }[], deleteFiles: boolean) =>
+    call<Library>("delete_versions", { targets, deleteFiles }),
   deleteVersion: (softwareId: string, versionId: string, deleteFiles: boolean) =>
     call<Library>("delete_version", { softwareId, versionId, deleteFiles }),
   deleteFile: (ref: FileRef, deleteFromDisk: boolean) => call<Library>("delete_file", { ...ref, deleteFromDisk }),
@@ -159,19 +164,31 @@ export async function onCheckProgress(handler: (progress: CheckProgress) => void
 }
 
 /** 把文件拖进窗口。`onHover` 在文件悬在窗口上方和离开时调用。 */
+/** 拖放时指针在网页里的位置（CSS 像素）。 */
+export type DropPoint = { x: number; y: number };
+
+/**
+ * 从系统拖文件进窗口。`onHover` 在指针移动时反复调用，带着指针位置，
+ * 好让界面判断文件正停在哪个软件上；离开窗口时 `over` 为 false。
+ */
 export async function onFileDrop(
-  onDrop: (paths: string[]) => void,
-  onHover: (over: boolean) => void,
+  onDrop: (paths: string[], point: DropPoint) => void,
+  onHover: (over: boolean, point: DropPoint | null) => void,
 ): Promise<() => void> {
   if (!isTauri) return () => {};
   const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+  // 事件里给的是物理像素，换成网页里的 CSS 像素
+  const toPoint = (position: { x: number; y: number }): DropPoint => ({
+    x: position.x / window.devicePixelRatio,
+    y: position.y / window.devicePixelRatio,
+  });
   return getCurrentWebview().onDragDropEvent((event) => {
     const payload = event.payload;
-    if (payload.type === "enter" || payload.type === "over") onHover(true);
-    else if (payload.type === "leave") onHover(false);
+    if (payload.type === "enter" || payload.type === "over") onHover(true, toPoint(payload.position));
+    else if (payload.type === "leave") onHover(false, null);
     else if (payload.type === "drop") {
-      onHover(false);
-      if (payload.paths.length > 0) onDrop(payload.paths);
+      onHover(false, null);
+      if (payload.paths.length > 0) onDrop(payload.paths, toPoint(payload.position));
     }
   });
 }

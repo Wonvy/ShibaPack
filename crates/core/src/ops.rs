@@ -44,6 +44,14 @@ pub struct VersionEdit {
     pub note: String,
 }
 
+/// 某个软件的某个版本，批量删除版本时用。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionRef {
+    pub software_id: String,
+    pub version_id: String,
+}
+
 impl Repo {
     fn software_at(&self, id: &str) -> Result<usize> {
         self.lib.software.iter().position(|s| s.id == id).ok_or(Error::Code("not_found"))
@@ -198,9 +206,40 @@ impl Repo {
     }
 
     pub fn delete_software(&mut self, id: &str, delete_files: bool) -> Result<Vec<PathBuf>> {
-        let s = self.software_at(id)?;
-        let removed = self.lib.software.remove(s);
-        let files: Vec<PackageFile> = removed.versions.into_iter().flat_map(|v| v.files).collect();
+        self.delete_software_many(&[id.to_string()], delete_files)
+    }
+
+    /// 一次删掉多个软件（多选删除），只存一次索引。找不到的 id 跳过。
+    pub fn delete_software_many(&mut self, ids: &[String], delete_files: bool) -> Result<Vec<PathBuf>> {
+        let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        if !self.lib.software.iter().any(|s| wanted.contains(s.id.as_str())) {
+            return Err(Error::Code("not_found"));
+        }
+        let (removed, kept): (Vec<Software>, Vec<Software>) =
+            std::mem::take(&mut self.lib.software).into_iter().partition(|s| wanted.contains(s.id.as_str()));
+        self.lib.software = kept;
+        let files: Vec<PackageFile> = removed.into_iter().flat_map(|s| s.versions).flat_map(|v| v.files).collect();
+        let external = self.discard(&files, delete_files)?;
+        self.save()?;
+        Ok(external)
+    }
+
+    /// 一次删掉多个版本（清理旧版本），只存一次索引。找不到的跳过；
+    /// 删掉的版本正好是默认版本时，改回“始终用最新版本”。
+    pub fn delete_versions(&mut self, targets: &[VersionRef], delete_files: bool) -> Result<Vec<PathBuf>> {
+        let mut files = Vec::new();
+        for target in targets {
+            let Ok(s) = self.software_at(&target.software_id) else { continue };
+            let Ok(v) = self.version_at(s, &target.version_id) else { continue };
+            let removed = self.lib.software[s].versions.remove(v);
+            if self.lib.software[s].default_version_id.as_deref() == Some(removed.id.as_str()) {
+                self.lib.software[s].default_version_id = None;
+            }
+            files.extend(removed.files);
+        }
+        if files.is_empty() {
+            return Ok(Vec::new());
+        }
         let external = self.discard(&files, delete_files)?;
         self.save()?;
         Ok(external)
@@ -582,6 +621,47 @@ mod tests {
         assert!(root.join("software.json").is_file() && root.join("index.html").is_file());
         let git = repo.lib.software.iter().find(|s| s.name == "Git").unwrap();
         assert_eq!(git.versions.len(), 2);
+    }
+
+    #[test]
+    fn batch_deletes() {
+        let (_r, _s, mut repo) = repo_with(&[
+            ("Git-2.47.1.exe", b"git 1"),
+            ("Git-2.46.0.exe", b"git 2"),
+            ("Git-2.45.2.exe", b"git 3"),
+            ("vlc-3.0.21.dmg", b"vlc"),
+            ("7z2409-x64.exe", b"7z"),
+        ]);
+        let git = repo.lib.software.iter().find(|s| s.name == "Git").unwrap().clone();
+        assert_eq!(git.versions.len(), 3);
+        let old: Vec<&Version> = git.versions.iter().filter(|v| v.version != "2.47.1").collect();
+        let mut edit = edit_of(&git);
+        edit.default_version_id = Some(old[0].id.clone());
+        repo.update_software(&git.id, edit).unwrap();
+
+        // 删掉两个旧版本，其中一个是默认版本；托管文件进回收站
+        let paths: Vec<PathBuf> = old.iter().map(|v| repo.abs_path(&v.files[0])).collect();
+        let mut targets: Vec<VersionRef> =
+            old.iter().map(|v| VersionRef { software_id: git.id.clone(), version_id: v.id.clone() }).collect();
+        targets.push(VersionRef { software_id: git.id.clone(), version_id: "missing".into() });
+        let external = repo.delete_versions(&targets, true).unwrap();
+        assert!(external.is_empty());
+        let after = repo.lib.software.iter().find(|s| s.id == git.id).unwrap();
+        assert_eq!(after.versions.iter().map(|v| v.version.as_str()).collect::<Vec<_>>(), ["2.47.1"]);
+        assert_eq!(after.default_version_id, None, "删掉的默认版本应当改回自动");
+        assert!(paths.iter().all(|p| !p.exists()), "旧版本的托管文件应当移走");
+        assert!(repo.delete_versions(&[], true).unwrap().is_empty());
+
+        // 一次删两个软件，只留记录不动文件
+        let ids: Vec<String> = repo.lib.software.iter().filter(|s| s.name != "Git").map(|s| s.id.clone()).collect();
+        assert_eq!(ids.len(), 2);
+        let files: Vec<PathBuf> = repo.lib.software.iter().filter(|s| s.name != "Git").map(|s| repo.abs_path(&s.versions[0].files[0])).collect();
+        repo.delete_software_many(&ids, false).unwrap();
+        assert_eq!(repo.lib.software.len(), 1);
+        assert!(files.iter().all(|p| p.exists()), "只删记录时文件留着");
+        assert!(repo.delete_software_many(&["nope".into()], false).is_err());
+        let reopened = Repo::open(repo.root()).unwrap();
+        assert_eq!(reopened.lib.software.len(), 1);
     }
 
     #[test]

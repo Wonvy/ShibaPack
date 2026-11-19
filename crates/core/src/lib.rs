@@ -17,7 +17,7 @@ pub use classify::{Assignment, NewCategory, Suggestion};
 pub use import::{ImportHint, ImportItem, ImportReport, Progress};
 pub use installed::InstalledApp;
 pub use model::*;
-pub use ops::{SoftwareEdit, VersionEdit};
+pub use ops::{SoftwareEdit, VersionEdit, VersionRef};
 pub use store::{BackupInfo, MissingFile, Repo, Stats, VerifyReport};
 
 /// 错误。`Code` 是给界面翻译用的短代码（如 `not_found`），其余是系统给出的原始信息。

@@ -250,6 +250,11 @@ let installedApps: InstalledApp[] = [
   app("VLC", "3.0.21", "VideoLAN", 148, 320),
 ];
 let configured = !location.search.includes("setup");
+// 地址后加 ?empty：仓库是空的，用来看欢迎页
+if (location.search.includes("empty")) {
+  lib.software = [];
+  lib.categories = [];
+}
 let backups: BackupInfo[] = [3, 26, 50].map((hours) => {
   const date = new Date(Date.now() - hours * 3600000);
   const pad = (n: number) => String(n).padStart(2, "0");

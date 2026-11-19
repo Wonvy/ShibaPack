@@ -12,15 +12,18 @@ import {
   CircleCheck,
   CircleDashed,
   File as FileIcon,
+  FilePlus,
   Folder,
   FolderOpen,
   FolderTree,
+  Globe,
   LayoutGrid,
   LayoutList,
   ListFilter,
   PackageOpen,
   Pin,
   RefreshCw,
+  ScanSearch,
   SearchX,
   SlidersHorizontal,
   Sparkles,
@@ -59,7 +62,7 @@ import {
   uninstallApp,
   upgradeFor,
 } from "../lib/actions";
-import { api } from "../lib/api";
+import { api, pickFiles, pickFolder } from "../lib/api";
 import { beginDrag } from "../lib/drag";
 import {
   PLATFORMS,
@@ -281,7 +284,7 @@ export function LibraryView() {
         filtering ? (
           <EmptyState icon={SearchX} title={t("lib.noMatch")} />
         ) : (
-          <EmptyState icon={PackageOpen} title={t("lib.empty.title")} body={t("lib.empty.body")} />
+          <Welcome />
         )
       ) : (
         <>
@@ -590,24 +593,81 @@ function VersionMenu({ software, installed, children }: { software: Software; in
   );
 }
 
+/** 仓库还是空的：一块拖放区，加上三种添加方式。 */
+function Welcome() {
+  const t = useT();
+  const importPaths = useApp((state) => state.importPaths);
+  const patch = useApp((state) => state.patch);
+  const dropping = useApp((state) => state.dropping);
+  const importFiles = async () => importPaths(await pickFiles());
+  const scanFolder = async () => {
+    const folder = await pickFolder();
+    if (folder) await importPaths([folder], "indexed");
+  };
+  const ways = [
+    { icon: FilePlus, title: t("welcome.files"), hint: t("welcome.filesHint"), run: () => void importFiles() },
+    { icon: ScanSearch, title: t("welcome.scan"), hint: t("welcome.scanHint"), run: () => void scanFolder() },
+    { icon: Globe, title: t("welcome.online"), hint: t("welcome.onlineHint"), run: () => patch({ sourceDialog: { softwareId: null } }) },
+  ];
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-6">
+      <div className="w-full max-w-[560px]">
+        <div
+          className={cx(
+            "flex flex-col items-center rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors",
+            dropping ? "border-accent bg-accent-soft" : "border-line-strong",
+          )}
+        >
+          <PackageOpen size={36} strokeWidth={1.5} aria-hidden className={dropping ? "text-accent" : "text-fg-3"} />
+          <h2 className="m-0 mt-4 text-[17px] font-semibold">{t("welcome.title")}</h2>
+          <p className="m-0 mt-2 max-w-[400px] text-[13px] leading-relaxed text-fg-2">{t("welcome.body")}</p>
+        </div>
+        <div className="mt-4 grid grid-cols-1 gap-2 @xl:grid-cols-3">
+          {ways.map((way) => (
+            <button
+              key={way.title}
+              type="button"
+              onClick={way.run}
+              className="flex items-start gap-3 rounded-lg border border-line p-3 text-left transition-colors hover:border-line-strong hover:bg-hover @xl:flex-col @xl:gap-2"
+            >
+              <way.icon size={18} strokeWidth={1.75} aria-hidden className="mt-0.5 shrink-0 text-accent" />
+              <span className="min-w-0">
+                <span className="block text-[13px] font-medium">{way.title}</span>
+                <span className="mt-0.5 block text-[12px] leading-relaxed text-fg-3">{way.hint}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /**
  * 安装 / 升级 / 卸载按钮，列表、卡片、文件夹视图共用。
+ * “升级”是需要处理的新情况，一直显示；安装、卸载只在鼠标停在这一行上、或这一行被选中时出现，
+ * 免得一整列按钮盖过软件名，也不容易误点卸载。所在的行要带 `group` 类。
  * 没有适合本机的安装包时显示一条短横线；装着但不能卸载（系统自带）时什么都不显示。
  */
 function ActionButton({
   software,
   installedApp,
   upgrade,
+  selected = false,
   dash = true,
 }: {
   software: Software;
   installedApp?: InstalledApp;
   upgrade: boolean;
+  /** 这一行被选中时，安装、卸载也一直显示。 */
+  selected?: boolean;
   /** 没有适合本机的安装包时是否画一条短横线（列表里画，卡片里不画）。 */
   dash?: boolean;
 }) {
   const t = useT();
   const installer = installerFor(software);
+  // 不占位置地藏起来：列对齐不变，鼠标一停上去就出现
+  const onHover = selected ? "" : "invisible group-hover:visible group-focus-within:visible";
   // 按下时不开始拖拽，点击时不改变选中
   const guard = { onPointerDown: (event: PointerEvent) => event.stopPropagation() };
   const run = (task: () => void) => (event: { stopPropagation: () => void }) => {
@@ -623,21 +683,21 @@ function ActionButton({
   }
   if (!installedApp && installer) {
     return (
-      <Button variant="soft" size="sm" title={installer.file.name} {...guard} onClick={run(() => void installSoftware(software))}>
+      <Button variant="soft" size="sm" className={onHover} title={installer.file.name} {...guard} onClick={run(() => void installSoftware(software))}>
         {t("link.install")}
       </Button>
     );
   }
   if (installedApp?.uninstallable) {
     return (
-      <Button variant="quiet" size="sm" {...guard} onClick={run(() => void uninstallApp(installedApp))}>
+      <Button variant="quiet" size="sm" className={onHover} {...guard} onClick={run(() => void uninstallApp(installedApp))}>
         {t("link.uninstall")}
       </Button>
     );
   }
   if (installedApp || !dash) return null;
   return (
-    <span title={t("link.noInstaller")} className="px-2 text-[12px] text-fg-4">
+    <span title={t("link.noInstaller")} className={cx("px-2 text-[12px] text-fg-4", onHover)}>
       —
     </span>
   );
@@ -669,7 +729,7 @@ function Row({ software, selected }: { software: Software; selected: boolean }) 
         {...handlers}
         className={cx(
           COLUMNS,
-          "min-h-[52px] rounded-md py-1.5 pr-3 pl-2.5 transition-colors",
+          "group min-h-[52px] rounded-md py-1.5 pr-3 pl-2.5 transition-colors",
           dropping ? "bg-accent-soft ring-2 ring-accent ring-inset" : selected ? "bg-active" : "hover:bg-hover",
         )}
       >
@@ -691,7 +751,7 @@ function Row({ software, selected }: { software: Software; selected: boolean }) 
         <div className="tabular hidden text-right text-[12px] text-fg-3 @2xl:block">{formatSize(softwareSize(software))}</div>
         <div className="tabular hidden text-right text-[12px] text-fg-3 @4xl:block">{formatDate(software.addedAt, language)}</div>
         <div className="flex justify-end">
-          <ActionButton software={software} installedApp={installedApp} upgrade={upgrade !== null} />
+          <ActionButton software={software} installedApp={installedApp} upgrade={upgrade !== null} selected={selected} />
         </div>
       </div>
     </ContextMenu>
@@ -709,7 +769,7 @@ function Card({ software, selected }: { software: Software; selected: boolean })
         aria-pressed={selected}
         {...handlers}
         className={cx(
-          "flex flex-col gap-2 rounded-lg border p-3 transition-colors",
+          "group flex flex-col gap-2 rounded-lg border p-3 transition-colors",
           dropping ? "border-accent bg-accent-soft ring-2 ring-accent" : selected ? "border-accent bg-accent-soft" : "border-line hover:bg-hover",
         )}
       >
@@ -725,7 +785,7 @@ function Card({ software, selected }: { software: Software; selected: boolean })
         </div>
         <div className="mt-auto flex min-h-6 items-center justify-between gap-2">
           <PlatformIcons platforms={softwarePlatforms(software)} />
-          <ActionButton software={software} installedApp={installedApp} upgrade={upgrade !== null} dash={false} />
+          <ActionButton software={software} installedApp={installedApp} upgrade={upgrade !== null} selected={selected} dash={false} />
         </div>
       </div>
     </ContextMenu>
@@ -756,7 +816,7 @@ function FolderNode({ software, selected }: { software: Software; selected: bool
             // 多选时只改选中，不展开
             if (!event.metaKey && !event.ctrlKey && !event.shiftKey) setOpen(!open);
           }}
-          className={cx(line, "pl-1.5", dropping ? "bg-accent-soft ring-2 ring-accent ring-inset" : selected ? "bg-active" : "hover:bg-hover")}
+          className={cx(line, "group pl-1.5", dropping ? "bg-accent-soft ring-2 ring-accent ring-inset" : selected ? "bg-active" : "hover:bg-hover")}
         >
           <ChevronRight size={13} strokeWidth={2} aria-hidden className={cx("shrink-0 text-fg-3 transition-transform", open && "rotate-90")} />
           <SoftwareIcon name={software.name} icon={icon} size={20} />
@@ -767,7 +827,7 @@ function FolderNode({ software, selected }: { software: Software; selected: bool
             {t("lib.versions", { n: software.versions.length })} · {formatSize(softwareSize(software))}
           </span>
           <span className="flex w-14 shrink-0 justify-end">
-            <ActionButton software={software} installedApp={installedApp} upgrade={upgrade !== null} />
+            <ActionButton software={software} installedApp={installedApp} upgrade={upgrade !== null} selected={selected} />
           </span>
         </div>
       </ContextMenu>

@@ -25,6 +25,7 @@ import {
   StickyNote,
   Trash2,
   X,
+  PackageMinus,
 } from "lucide-react";
 import {
   bestAsset,
@@ -51,7 +52,7 @@ import { usePrefs } from "../lib/prefs";
 import { useApp, useLanguage, useT } from "../lib/store";
 import type { PackageFile, Software, SoftwareEdit, Version } from "../lib/types";
 import { prompt } from "./dialogs";
-import { PlatformChip } from "./PlatformIcon";
+import { PlatformIcon } from "./PlatformIcon";
 import { SoftwareIcon, useSoftwareIcon } from "./SoftwareIcon";
 import { SourceSection } from "./SourcePanel";
 import { Button, Checkbox, Chip, Dropdown, IconButton, MiddleTruncate, Modal, Select, cx } from "./ui";
@@ -303,6 +304,10 @@ function Detail({ software }: { software: Software }) {
   const summary = library.summaries[software.name];
   // 从系统拖文件进来、停在详情栏上时：作为这个软件的新版本导入
   const dropping = useApp((state) => state.dropSoftwareId === software.id);
+  const installedApp = useApp((state) => {
+    const id = state.links[software.id];
+    return id ? state.installed?.find((app) => app.id === id) : undefined;
+  });
 
   const save = (patch: Partial<SoftwareEdit>) => {
     const edit: SoftwareEdit = {
@@ -340,15 +345,7 @@ function Detail({ software }: { software: Software }) {
       <div className="flex items-start gap-3">
         <SoftwareIcon name={software.name} icon={icon} size={44} />
         <div className="min-w-0 flex-1">
-          <input
-            aria-label={t("lib.col.name")}
-            defaultValue={software.name}
-            key={software.name}
-            spellCheck={false}
-            onBlur={commit("name")}
-            onKeyDown={blurOnEnter}
-            className={cx(plain, "-ml-1.5 h-7 text-[15px] font-semibold")}
-          />
+          <EditableTitle value={software.name} label={t("lib.col.name")} onCommit={(name) => save({ name })} />
           <input
             aria-label={t("detail.publisher")}
             defaultValue={software.publisher}
@@ -372,7 +369,10 @@ function Detail({ software }: { software: Software }) {
             items={[
               { label: t("classify.menu"), icon: Sparkles, onSelect: () => classify([software.id]) },
               { label: t("detail.openHomepage"), icon: ExternalLink, disabled: !homepage, onSelect: () => homepage && void attempt(() => api.openUrl(homepage)) },
-              { label: t("detail.deleteSoftware"), icon: Trash2, danger: true, separated: true, onSelect: () => void deleteSoftware(software) },
+              ...(installedApp?.uninstallable
+                ? [{ label: t("link.uninstall"), icon: PackageMinus, separated: true, onSelect: () => void uninstallApp(installedApp) }]
+                : []),
+              { label: t("detail.deleteSoftware"), icon: Trash2, danger: true, separated: !installedApp?.uninstallable, onSelect: () => void deleteSoftware(software) },
             ]}
           >
             <IconButton label={t("common.edit")}>
@@ -459,8 +459,9 @@ function Detail({ software }: { software: Software }) {
 }
 
 /**
- * 安装状态，最多三行，都没有就不显示：
- * 本机装没装（没装就给“安装”）、本机比仓库里旧时的“升级”、在线源上的新版本。
+ * 安装状态，至多两行，都没有就不显示：
+ * 第一行是本机的情况（没装给“安装”，比仓库旧给“升级”，装着的是最新就只显示版本）；
+ * 第二行是在线源上的新版本。每行只放一个往前走的按钮，卸载在头部的 ⋯ 菜单里。文字折行，不截断。
  */
 function StatusBlock({ software }: { software: Software }) {
   const t = useT();
@@ -479,69 +480,104 @@ function StatusBlock({ software }: { software: Software }) {
 
   const percent = download?.total ? Math.min(100, Math.round((download.received / download.total) * 100)) : null;
   const row = "flex min-h-8 items-center gap-2";
-  const text = "flex min-w-0 flex-1 items-center gap-1.5 text-[13px]";
+  const text = "flex min-w-0 flex-1 items-start gap-1.5 text-[13px] leading-snug";
+  const icon = "mt-[2px] shrink-0";
+  const unknown = t("detail.unknownVersion");
   return (
-    <div className="mt-4 flex flex-col gap-1.5 rounded-lg bg-hover px-3 py-2">
-      {installedApp ? (
+    <div className="mt-4 flex flex-col gap-1 rounded-lg bg-hover px-3 py-2">
+      {installedApp && upgrade ? (
         <div className={row}>
-          <span className={cx(text, upgrade ? "text-warning" : "text-success")}>
-            <CircleCheck size={15} strokeWidth={2} aria-hidden className="shrink-0" />
-            <span className="truncate">
-              {installedApp.version ? t("link.installedVersion", { version: installedApp.version }) : t("link.installed")}
-            </span>
+          <span className={cx(text, "text-warning")}>
+            <ArrowUp size={15} strokeWidth={2.25} aria-hidden className={icon} />
+            <span>{t("link.localUpgrade", { installed: installedApp.version || unknown, version: upgrade.version.version || unknown })}</span>
           </span>
-          {installedApp.uninstallable && (
-            <Button variant="ghost" className="text-danger hover:text-danger" onClick={() => void uninstallApp(installedApp)}>
-              {t("link.uninstall")}
-            </Button>
-          )}
+          <Button variant="primary" className="shrink-0" title={upgrade.file.name} onClick={() => void installSoftware(software, true)}>
+            {t("link.upgrade")}
+          </Button>
+        </div>
+      ) : installedApp ? (
+        <div className={row}>
+          <span className={cx(text, "text-success")}>
+            <CircleCheck size={15} strokeWidth={2} aria-hidden className={icon} />
+            <span>{installedApp.version ? t("link.installedVersion", { version: installedApp.version }) : t("link.installed")}</span>
+          </span>
         </div>
       ) : (
         installer && (
           <div className={row}>
             <span className={cx(text, "text-fg-3")}>
-              <CircleDashed size={15} strokeWidth={2} aria-hidden className="shrink-0" />
-              <span className="truncate">{t("link.missing")}</span>
+              <CircleDashed size={15} strokeWidth={2} aria-hidden className={icon} />
+              <span>{t("link.missing")}</span>
             </span>
-            <Button variant="primary" title={installer.file.name} onClick={() => void installSoftware(software)}>
+            <Button variant="primary" className="shrink-0" title={installer.file.name} onClick={() => void installSoftware(software)}>
               <Download size={14} strokeWidth={2} aria-hidden />
-              {t("link.installVersion", { version: installer.version.version || t("detail.unknownVersion") })}
+              {t("link.installVersion", { version: installer.version.version || unknown })}
             </Button>
           </div>
         )
       )}
-      {upgrade && (
-        <div className={row}>
-          <span className={cx(text, "text-fg-2")}>
-            <ArrowUp size={15} strokeWidth={2.25} aria-hidden className="shrink-0" />
-            <span className="truncate">{t("link.upgradeTo", { version: upgrade.version.version })}</span>
-          </span>
-          <Button variant="primary" title={upgrade.file.name} onClick={() => void installSoftware(software, true)}>
-            {t("link.upgrade")}
-          </Button>
-        </div>
-      )}
       {update && (
         <div className={row}>
           <span className={cx(text, "text-accent")}>
-            <CloudDownload size={15} strokeWidth={1.75} aria-hidden className="shrink-0" />
-            <span className="truncate">{t("source.updateTo", { version: update.version })}</span>
+            <CloudDownload size={15} strokeWidth={1.75} aria-hidden className={icon} />
+            <span>{t("source.updateTo", { version: update.version })}</span>
           </span>
           {download ? (
             <>
-              <span className="tabular text-[12px] text-accent">{percent !== null ? `${percent}%` : t("source.queued")}</span>
+              <span className="tabular shrink-0 text-[12px] text-accent">{percent !== null ? `${percent}%` : t("source.queued")}</span>
               <IconButton label={t("source.cancel")} onClick={() => void api.cancelDownload(asset!.url)}>
                 <X size={15} strokeWidth={1.75} />
               </IconButton>
             </>
           ) : asset ? (
-            <Button title={asset.name} onClick={() => void startDownload(software.id, asset)}>
+            <Button className="shrink-0" title={asset.name} onClick={() => void startDownload(software.id, asset)}>
               {t("source.download")}
             </Button>
           ) : null}
         </div>
       )}
     </div>
+  );
+}
+
+/** 软件名：平时是能折成两行的标题，点一下变成输入框；Enter 或失焦保存，Esc 放弃。保存失败时退回原名。 */
+function EditableTitle({ value, label, onCommit }: { value: string; label: string; onCommit: (value: string) => Promise<boolean> }) {
+  const [editing, setEditing] = useState(false);
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        title={value}
+        aria-label={label}
+        onClick={() => setEditing(true)}
+        className="-ml-1.5 block w-full rounded-md border border-transparent px-1.5 py-0.5 text-left text-[15px] leading-snug font-semibold break-words hover:border-line-strong"
+      >
+        <span className="line-clamp-2">{value}</span>
+      </button>
+    );
+  }
+  const finish = async (input: HTMLInputElement, keep: boolean) => {
+    const next = input.value.trim();
+    setEditing(false);
+    if (keep && next && next !== value) await onCommit(next);
+  };
+  return (
+    <input
+      autoFocus
+      aria-label={label}
+      defaultValue={value}
+      spellCheck={false}
+      onFocus={(event) => event.currentTarget.select()}
+      onBlur={(event) => void finish(event.currentTarget, true)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+        if (event.key === "Escape") {
+          event.stopPropagation();
+          void finish(event.currentTarget, false);
+        }
+      }}
+      className="-ml-1.5 h-[30px] w-full rounded-md border border-accent bg-bg px-1.5 text-[15px] font-semibold outline-none"
+    />
   );
 }
 
@@ -832,35 +868,35 @@ function FileRow({ software, version, file }: { software: Software; version: Ver
   };
 
   return (
-    <div className="flex items-center gap-1 border-b border-line py-1.5 pr-1 pl-2.5 last:border-b-0">
-      <div className="min-w-0 flex-1">
-        <MiddleTruncate text={file.name} title={file.path} className="selectable text-[12px]" />
-        <div className="mt-1 flex flex-wrap items-center gap-1 text-[12px] text-fg-3">
-          <PlatformChip platform={file.platform} />
-          {file.arch && <Chip>{file.arch}</Chip>}
-          <span className="tabular ml-0.5">{formatSize(file.size)}</span>
-        </div>
+    <div className="group relative border-b border-line py-1.5 pr-2 pl-2.5 last:border-b-0">
+      <MiddleTruncate text={file.name} title={file.path} className="selectable text-[12px]" />
+      <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] text-fg-3">
+        <PlatformIcon platform={file.platform} size={12} />
+        <span className="tabular truncate">{[platform, file.arch, formatSize(file.size)].filter(Boolean).join(" · ")}</span>
       </div>
-      <IconButton
-        label={runnable ? t("detail.run") : t("detail.runOther", { platform })}
-        disabled={!runnable}
-        onClick={() => void attempt(() => api.runFile(ref))}
-      >
-        <Play size={15} strokeWidth={1.75} />
-      </IconButton>
-      <IconButton label={t("detail.reveal")} onClick={() => void attempt(() => api.revealFile(ref))}>
-        <FolderOpen size={15} strokeWidth={1.75} />
-      </IconButton>
-      <Dropdown
-        items={[
-          { label: t("detail.copyHash"), icon: Copy, onSelect: () => void copyHash() },
-          { label: t("detail.deleteFile"), icon: Trash2, danger: true, separated: true, onSelect: () => void deleteFile(software, version, file) },
-        ]}
-      >
-        <IconButton label={t("common.edit")}>
-          <Ellipsis size={15} strokeWidth={1.75} />
+      {/* 菜单开着时（data-state=open）也保持显示，不然菜单会失去定位 */}
+      <div className="absolute top-1/2 right-1 hidden -translate-y-1/2 items-center gap-0.5 rounded-md bg-panel p-0.5 shadow-pop group-focus-within:flex group-hover:flex group-has-[[data-state=open]]:flex">
+        <IconButton
+          label={runnable ? t("detail.run") : t("detail.runOther", { platform })}
+          disabled={!runnable}
+          onClick={() => void attempt(() => api.runFile(ref))}
+        >
+          <Play size={15} strokeWidth={1.75} />
         </IconButton>
-      </Dropdown>
+        <IconButton label={t("detail.reveal")} onClick={() => void attempt(() => api.revealFile(ref))}>
+          <FolderOpen size={15} strokeWidth={1.75} />
+        </IconButton>
+        <Dropdown
+          items={[
+            { label: t("detail.copyHash"), icon: Copy, onSelect: () => void copyHash() },
+            { label: t("detail.deleteFile"), icon: Trash2, danger: true, separated: true, onSelect: () => void deleteFile(software, version, file) },
+          ]}
+        >
+          <IconButton label={t("common.edit")}>
+            <Ellipsis size={15} strokeWidth={1.75} />
+          </IconButton>
+        </Dropdown>
+      </div>
     </div>
   );
 }

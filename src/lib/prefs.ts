@@ -4,7 +4,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export const SIDEBAR = { min: 140, max: 360, initial: 180 };
-export const DETAIL = { min: 280, max: 560, initial: 340 };
+export const DETAIL = { min: 280, max: 560, initial: 380 };
 
 export type SortKey = "name" | "platform" | "size" | "added";
 export type PackageView = "list" | "grid" | "folder";

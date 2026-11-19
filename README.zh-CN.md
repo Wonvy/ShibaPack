@@ -163,10 +163,14 @@ npm run bundle
    git tag v0.2.0 && git push origin main --tags
    ```
 
-3. `.github/workflows/release.yml` 会在三个系统上构建，生成一个**草稿** Release，里面有安装包、带签名的更新包和 `latest.json`。
+3. `.github/workflows/release.yml` 会在三个系统上构建，生成一个**草稿** Release，里面有安装包；设好了签名私钥时，还有带签名的更新包和 `latest.json`。
 4. 在 GitHub 上检查这个草稿，点“Publish release”。之后已安装的用户启动时就会收到更新。
 
-第一次发布之前，要把签名私钥放进仓库的 Secrets（Settings → Secrets and variables → Actions → New repository secret）：
+#### 更新包签名私钥
+
+内置的自动更新只安装用 ShibaPack 私钥签过名的更新包（公钥在 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`）。这和苹果、微软的系统级签名是两回事。
+
+发布流程里这把私钥可以不设。不设时 Release 里只有安装包，没有更新包和 `latest.json`：已安装的 ShibaPack 不会自动更新到这个版本，要用户自己下载。想生成更新包，就把私钥放进仓库的 Secrets（Settings → Secrets and variables → Actions → New repository secret）：
 
 - 名称：`TAURI_SIGNING_PRIVATE_KEY`
 - 值：`~/.tauri/shibapack-updater.key` 这个文件的全部内容
@@ -177,7 +181,7 @@ npm run bundle
 pbcopy < ~/.tauri/shibapack-updater.key
 ```
 
-这把私钥没有设密码，也不在仓库里。请另外备份一份：丢了它，就没法再给已安装的用户推送更新。
+这把私钥没有设密码，也不在仓库里。请另外备份一份：丢了它，已安装的 ShibaPack 就再也不能自动更新了。
 
 ### 结构
 

@@ -1,12 +1,12 @@
 # 在三个系统上打包安装包和更新包。
 #
 # 推送形如 v0.2.0 的标签时运行（标签要和 package.json 里的 version 一致），也可以在 Actions 页面手动运行。
-# 结果是一个草稿 Release，里面有各系统的安装包、带签名的更新包和 latest.json。
+# 结果是一个草稿 Release，里面有各系统的安装包，以及（有签名私钥时）带签名的更新包和 latest.json。
 # 检查无误后在 GitHub 上点“发布”，已安装的 ShibaPack 就会收到这次更新。
 #
-# 需要先在仓库的 Settings → Secrets and variables → Actions 里添加：
-#   TAURI_SIGNING_PRIVATE_KEY   更新包的签名私钥（~/.tauri/shibapack-updater.key 的内容）
-# 没有这个密钥，构建会在签名那一步失败。
+# 更新包的签名私钥放在仓库的 Settings → Secrets and variables → Actions 里：
+#   TAURI_SIGNING_PRIVATE_KEY   ~/.tauri/shibapack-updater.key 的内容
+# 这一项可以不设：不设时只打安装包，不生成更新包和 latest.json，已安装的 ShibaPack 收不到这个版本的自动更新。
 #
 # 安装包本身没有做系统级签名：macOS 上首次打开要到“系统设置 → 隐私与安全性”里放行，
 # Windows 上 SmartScreen 弹出时点“更多信息 → 仍要运行”。
@@ -63,20 +63,25 @@ jobs:
           targets: ${{ matrix.targets }}
       - uses: Swatinem/rust-cache@v2
 
-      - name: 检查更新包的签名私钥
+      # 有签名私钥就生成带签名的更新包；没有就只打安装包（Tauri 要生成更新包时必须有私钥）
+      - name: 更新包签名
+        id: signing
         shell: bash
         env:
           KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          if [ -z "$KEY" ]; then
-            echo "::error title=缺少签名私钥::仓库 Secret TAURI_SIGNING_PRIVATE_KEY 没有设置或是空的。到 Settings → Secrets and variables → Actions 添加，值是 ~/.tauri/shibapack-updater.key 的全部内容，然后重新运行。"
-            exit 1
+          if [ -n "$KEY" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=没有签名私钥::仓库 Secret TAURI_SIGNING_PRIVATE_KEY 没有设置，这次只打安装包，不生成更新包和 latest.json。已安装的 ShibaPack 收不到这个版本的自动更新。"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "UNSIGNED_ARGS=--config src-tauri/tauri.no-updater.conf.json" >> "$GITHUB_ENV"
           fi
 
       - run: npm ci
       - run: npm run typecheck
 
-      # 构建、给更新包签名、上传到草稿 Release，并生成更新用的 latest.json
+      # 构建、上传到草稿 Release；有签名私钥时还给更新包签名，并生成更新用的 latest.json
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -91,4 +96,5 @@ jobs:
             在下面的附件里下载对应系统的安装包。安装包还没有做系统级签名，首次打开的方法见 [README](https://github.com/Wonvy/ShibaPack/blob/main/README.zh-CN.md#下载)。
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }}
+          includeUpdaterJson: ${{ steps.signing.outputs.signed == 'true' }}
+          args: ${{ matrix.args }} ${{ env.UNSIGNED_ARGS }}

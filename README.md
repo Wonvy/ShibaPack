@@ -163,10 +163,14 @@ Installed copies of ShibaPack update themselves from GitHub Releases. To publish
    git tag v0.2.0 && git push origin main --tags
    ```
 
-3. `.github/workflows/release.yml` builds on macOS, Windows and Linux and creates a **draft** release with the installers, the signed update bundles and `latest.json`.
+3. `.github/workflows/release.yml` builds on macOS, Windows and Linux and creates a **draft** release with the installers and, if the signing key is set up, the signed update bundles and `latest.json`.
 4. Check the draft on GitHub and click **Publish release**. Installed copies receive the update the next time they start.
 
-Before the first release, add the signing key to the repository secrets (**Settings → Secrets and variables → Actions → New repository secret**):
+#### Update signing key
+
+The built-in updater only installs update bundles signed with ShibaPack's private key (the public half is in `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`). This is separate from Apple or Microsoft code signing.
+
+The key is optional for the workflow. Without it, a release has the installers only: no update bundles and no `latest.json`, so installed copies do not update to that release automatically and users download it themselves. To produce update bundles, add the key to the repository secrets (**Settings → Secrets and variables → Actions → New repository secret**):
 
 - Name: `TAURI_SIGNING_PRIVATE_KEY`
 - Value: the whole content of `~/.tauri/shibapack-updater.key`
@@ -177,7 +181,7 @@ Copy the key to the clipboard on macOS:
 pbcopy < ~/.tauri/shibapack-updater.key
 ```
 
-The key has no password and is not in the repository. Keep a backup: without it, no further updates can be delivered to installed copies.
+The key has no password and is not in the repository. Keep a backup: if it is lost, installed copies can never update automatically again.
 
 ### Project layout
 

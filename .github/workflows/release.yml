@@ -85,6 +85,10 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: ShibaPack v__VERSION__
+          releaseBody: |
+            Download the installer for your system from the assets below. The installers are not code-signed yet; see the [README](https://github.com/Wonvy/ShibaPack#download) for how to open ShibaPack the first time on macOS and Windows.
+
+            在下面的附件里下载对应系统的安装包。安装包还没有做系统级签名，首次打开的方法见 [README](https://github.com/Wonvy/ShibaPack/blob/main/README.zh-CN.md#下载)。
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}

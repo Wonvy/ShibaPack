@@ -1,12 +1,96 @@
 # ShibaPack
 
-跨平台软件安装包管理器。把本机或 NAS 上的安装包按“软件 → 版本 → 文件”整理起来，支持分类、收藏、智能分类、搜索、去重和一键运行。
+**English** · [简体中文](README.zh-CN.md)
 
-所有数据都放在你指定的仓库文件夹里，索引是根目录的 `software.json`，不使用数据库。方案和进度见 [docs/PLAN.md](docs/PLAN.md)。
+A cross-platform manager for software installers. ShibaPack keeps the `.exe`, `.dmg`, `.msi`, `.deb`, `.apk` and other installers on your computer or NAS organized as **app → version → file**, tells you what is installed on this machine, and keeps everything up to date from online sources.
 
-## 运行
+Everything lives in a folder you choose. The index is a plain `software.json` file at its root. There is no database.
 
-需要 Node.js 20 以上和 Rust（stable）。
+![The library: apps grouped by category, with versions, platforms and sizes, and an overview of updates on the right](docs/screenshots/en-library.png)
+
+## Features
+
+- **Organized by app and version.** Drop installers in and ShibaPack reads the app name, version, platform and architecture from the file name, then files them as `App/Version/file`. Duplicates are detected by SHA-256.
+- **Two ways to store files.** *Managed* copies installers into the library folder. *Indexed* only records where a file already is (for example on a NAS) and never moves it.
+- **Several versions per app.** Pick a default version or always use the newest, see which version is installed on this computer, and clean up old versions in one step.
+- **Categories, favorites and smart categorize.** Nested categories, drag and drop to file apps, and a built-in, offline rule set that suggests a category for about 300 well-known apps.
+- **Installed software.** Lists the apps installed on this computer, matches them with your library, and shows which ones can be upgraded from an installer you already have. Install, upgrade and uninstall from one place.
+- **Online sources.** Link an app to Homebrew Cask, GitHub Releases or winget to check for new versions and download them into the library.
+- **Real icons.** Icons are taken from installers and installed apps. For apps with a homepage or a GitHub repository, ShibaPack can also use the site icon or the repository owner's avatar. Apps without an icon get a plain gray letter tile.
+- **Safe by default.** The index is backed up automatically (last 8 copies), deleted files go to a trash folder for 30 days, and a check finds files that went missing or changed size.
+- **Offline catalog.** Optionally writes an `index.html` at the library root, so you can browse the library in any browser, even without ShibaPack.
+- **Updates itself.** ShibaPack checks GitHub Releases and can install its own updates.
+- Light and dark themes, English and Chinese interface, and importable language packs.
+
+## Screenshots
+
+**App details.** Summary, install status, versions and the files in each version.
+
+![Details of Visual Studio Code: an upgrade from the installed 1.95.3, a newer online version, and three stored versions](docs/screenshots/en-details.png)
+
+**Installed software.** What is installed here, and whether the library has an installer for it.
+
+![Installed software list, with the repository column showing which apps have installers in the library](docs/screenshots/en-installed.png)
+
+**Smart categorize.** Suggestions are shown first; nothing moves until you confirm.
+
+![Smart categorize dialog suggesting a new Chat category for Telegram and WeChat](docs/screenshots/en-classify.png)
+
+**Add from an online source.** Search Homebrew, GitHub or winget and download the right installer.
+
+![Add from an online source dialog with a Homebrew search for Obsidian and its installers](docs/screenshots/en-source.png)
+
+## Download
+
+Get the latest version from the [Releases page](https://github.com/Wonvy/ShibaPack/releases/latest).
+
+| System | File |
+|---|---|
+| macOS (Apple silicon and Intel) | `ShibaPack_<version>_universal.dmg` |
+| Windows | `ShibaPack_<version>_x64-setup.exe` or `ShibaPack_<version>_x64_en-US.msi` |
+| Linux | `.AppImage`, `.deb` or `.rpm` |
+
+The installers are not signed with an Apple or Microsoft certificate yet:
+
+- **macOS:** the first time you open ShibaPack, macOS blocks it. Go to **System Settings → Privacy & Security** and click **Open Anyway**. If macOS says the app is damaged, run `xattr -dr com.apple.quarantine /Applications/ShibaPack.app` once.
+- **Windows:** if SmartScreen appears, click **More info → Run anyway**.
+
+After that, ShibaPack updates itself from GitHub Releases.
+
+## Getting started
+
+1. On first launch, choose a folder for your library (a new empty folder, or one that already holds installers).
+2. Add installers: drag files or folders onto the window, use **Add → Import files / Import folder**, or **Add → Add from an online source**.
+3. Use **Smart categorize** on *Uncategorized* to file everything in one go.
+
+A library folder looks like this:
+
+```
+Library/
+├─ software.json            the index: categories, apps, versions, files, settings
+├─ index.html               optional offline catalog
+├─ Visual Studio Code/
+│  ├─ 1.96.2/
+│  │  ├─ VSCodeUserSetup-x64-1.96.2.exe
+│  │  └─ VSCode-darwin-universal.dmg
+│  └─ 1.95.3/
+│     └─ VSCodeUserSetup-x64-1.95.3.exe
+└─ .shibapack/              icons, index backups, trash, cache
+```
+
+Platforms, categories and favorites are only fields in the index, so changing them never moves files. If the index is ever lost, the `App/Version` folders are enough to rebuild it.
+
+## Network and privacy
+
+ShibaPack works offline. It goes online only for these:
+
+- **Summaries and icons** (can be turned off in Settings): app names are sent to Wikipedia and GitHub to look up a short description, and apps without an icon fetch one from their own homepage or their GitHub owner's avatar.
+- **Online sources**, when you link or check them: Homebrew (`formulae.brew.sh`), GitHub Releases, and the winget package list on GitHub.
+- **Its own updates**: GitHub Releases of this repository (can be turned off in Settings).
+
+## Development
+
+Requirements: Node.js 20 or later and Rust (stable).
 
 ```bash
 npm install
@@ -16,17 +100,17 @@ npm install
 npm run app
 ```
 
-`npm run app` 会启动桌面窗口，改动代码后自动刷新或重启。
+`npm run app` opens the desktop window and reloads or restarts when the code changes.
 
-只想看界面时可以不启动桌面窗口，在浏览器里用模拟数据预览：
+To work on the interface without the desktop window, run it in a browser with mock data:
 
 ```bash
 npm run dev
 ```
 
-然后打开 <http://localhost:1430>。地址后加 `?setup` 可以看首次启动的引导页。
+Then open <http://localhost:1430>. Add `?setup` to the address to see the first-run screen, `?empty` for an empty library, or `?en` for English demo data.
 
-## 检查
+### Checks
 
 ```bash
 npm run test:core
@@ -36,18 +120,17 @@ npm run test:core
 npm run typecheck
 ```
 
-`test:core` 运行核心库的单元测试（索引读写、备份恢复、文件名识别、导入去重、增删改、图标提取、已安装软件、在线源解析、下载、离线目录）。
+`test:core` runs the unit tests of the core library: reading and writing the index, backup and recovery, file name recognition, import and deduplication, edits, icon extraction, installed software, online sources, downloads, web icons and the offline catalog.
 
-需要联网的测试平时不跑，要跑的时候加上 `--ignored`：
+Tests that need the network are skipped by default. Run them with `--ignored`:
 
 ```bash
 cargo test -p shibapack-core -- --ignored
 ```
 
-### 自检
+### Self-test
 
-单元测试和浏览器预览都够不着“真实窗口里前后端是否连通、图标能否显示”这一层。
-带着下面三个环境变量启动桌面应用，它会用一个临时仓库把这些链路走一遍，结果打印在终端，然后自己退出：
+Unit tests and the browser preview cannot reach the layer of "does the real window talk to the backend, and do icons show". Start the desktop app with the three variables below and it walks through those paths in a temporary library, prints the results to the terminal, and exits:
 
 ```bash
 mkdir -p /tmp/shibapack-selftest/repo && echo '{"repoRoot": "/tmp/shibapack-selftest/repo"}' > /tmp/shibapack-selftest/config.json
@@ -57,52 +140,50 @@ mkdir -p /tmp/shibapack-selftest/repo && echo '{"repoRoot": "/tmp/shibapack-self
 SHIBAPACK_CONFIG=/tmp/shibapack-selftest/config.json SHIBAPACK_CACHE=/tmp/shibapack-selftest/cache SHIBAPACK_SELFTEST=/path/to/some-installer.exe ./target/debug/shibapack
 ```
 
-需要先有 `npm run dev` 在运行，并且已经 `cargo build -p shibapack`（用发布构建出来的程序则不需要 `npm run dev`）。`SHIBAPACK_SELFTEST` 指向任意一个安装包；它旁边如果有一个 `lang.json`，会顺带测语言包导入。自检里的在线源几项需要联网。这两个目录变量也可以单独用来让应用使用另一份引导文件和缓存，不碰正式数据。
+`npm run dev` must be running and `cargo build -p shibapack` must have been run first (a release build does not need `npm run dev`). `SHIBAPACK_SELFTEST` points to any installer; if a `lang.json` sits next to it, importing language packs is tested too. The online-source checks need the network. The two directory variables can also be used on their own to run the app with a separate config and cache, without touching your real data.
 
-## 打包
+### Building
 
-本机打包当前系统的安装包（需要更新包的签名私钥 `~/.tauri/shibapack-updater.key`）：
+Build installers for the current system (needs the update signing key `~/.tauri/shibapack-updater.key`):
 
 ```bash
 npm run bundle
 ```
 
-产物在 `target/release/bundle/` 下。
+The results are in `target/release/bundle/`.
 
-安装包没有做系统级签名。macOS 上首次打开要到“系统设置 → 隐私与安全性”里放行；Windows 上 SmartScreen 弹出时点“更多信息 → 仍要运行”。
+### Releasing
 
-## 发布新版本
+Installed copies of ShibaPack update themselves from GitHub Releases. To publish a new version:
 
-已安装的 ShibaPack 会从 GitHub Releases 自动更新。发布一个新版本的步骤：
-
-1. 把 `package.json` 里的 `version` 改成新版本号（应用的版本号只认这一处）。
-2. 提交，然后打一个同名的标签并推送：
+1. Set `version` in `package.json` to the new version (the app reads its version only from there).
+2. Commit, then create a tag with the same version and push it:
 
    ```bash
    git tag v0.2.0 && git push origin main --tags
    ```
 
-3. `.github/workflows/release.yml` 会在三个系统上构建，生成一个**草稿** Release，里面有安装包、带签名的更新包和 `latest.json`。
-4. 在 GitHub 上检查这个草稿，点“发布”。之后用户那边启动时就会收到更新。
+3. `.github/workflows/release.yml` builds on macOS, Windows and Linux and creates a **draft** release with the installers, the signed update bundles and `latest.json`.
+4. Check the draft on GitHub and click **Publish release**. Installed copies receive the update the next time they start.
 
-第一次发布之前，要把签名私钥放进仓库的 Secrets（Settings → Secrets and variables → Actions → New repository secret）：
+Before the first release, add the signing key to the repository secrets (**Settings → Secrets and variables → Actions → New repository secret**):
 
-- 名称：`TAURI_SIGNING_PRIVATE_KEY`
-- 值：`~/.tauri/shibapack-updater.key` 这个文件的全部内容
+- Name: `TAURI_SIGNING_PRIVATE_KEY`
+- Value: the whole content of `~/.tauri/shibapack-updater.key`
 
-把私钥复制到剪贴板：
+Copy the key to the clipboard on macOS:
 
 ```bash
 pbcopy < ~/.tauri/shibapack-updater.key
 ```
 
-这把私钥没有设密码，也不在仓库里。请另外备份一份：丢了它，就没法再给已安装的用户推送更新。
+The key has no password and is not in the repository. Keep a backup: without it, no further updates can be delivered to installed copies.
 
-## 结构
+### Project layout
 
 ```
-crates/core/   核心逻辑，不依赖界面，可单独测试
-src-tauri/     桌面外壳（Tauri 2）：命令、事件、窗口
-src/           界面（React + TypeScript + Tailwind）
-docs/PLAN.md   方案、数据格式、阶段与进度
+crates/core/   core logic, independent of the UI and testable on its own
+src-tauri/     desktop shell (Tauri 2): commands, events, windows
+src/           interface (React + TypeScript + Tailwind)
+docs/PLAN.md   design, data format, milestones and progress (Chinese)
 ```

@@ -33,6 +33,9 @@ const ROOT = "/Users/demo/Installers";
 const MB = 1024 * 1024;
 const stamp = (daysAgo: number) => new Date(Date.now() - daysAgo * 86400000).toISOString();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// 地址后加 ?en：演示数据和界面都换成英文（给英文说明文档截图用）
+const english = new URLSearchParams(location.search).has("en");
+const tr = (zh: string, en: string) => (english ? en : zh);
 
 const EXT_PLATFORM: Record<string, Platform> = {
   exe: "windows",
@@ -139,6 +142,31 @@ const lib: Library = {
   settings: { theme: "system", accent: "blue", language: "zh-CN", defaultStorage: "managed", fetchSummaries: true, offlineCatalog: true, autoUpdate: true },
 };
 
+if (english) {
+  const names: Record<string, string> = {
+    dev: "Developer tools",
+    editor: "Editors",
+    runtime: "Runtimes",
+    design: "Design",
+    office: "Productivity",
+    media: "Media",
+    system: "Utilities",
+  };
+  for (const category of categories) category.name = names[category.id] ?? category.name;
+  const wechat = lib.software.find((s) => s.name === "微信");
+  if (wechat) Object.assign(wechat, { name: "WeChat", publisher: "Tencent" });
+  lib.summaries = {
+    "Visual Studio Code": {
+      text: "Visual Studio Code is a cross-platform source-code editor from Microsoft, with syntax highlighting, code completion, debugging and built-in Git support. Extensions add more languages and tools.",
+      source: "Wikipedia (en)",
+      fetchedAt: stamp(2),
+    },
+    Git: { text: "Git is a distributed version control system, first written by Linus Torvalds and released in 2005 under the GPL.", source: "Wikipedia (en)", fetchedAt: stamp(2) },
+    Blender: { text: "Blender is a free and open-source 3D graphics suite for modeling, animation, rendering, compositing and video editing.", source: "Wikipedia (en)", fetchedAt: stamp(2) },
+  };
+  lib.settings.language = "en-US";
+}
+
 /** 假装在线源上有这些版本。 */
 function fakeRelease(kind: SourceKind, reference: string): Release {
   const short = reference.split(/[/.]/).pop() || reference;
@@ -178,12 +206,12 @@ const catalog: Candidate[] = [
 ];
 
 const GUESSES: [RegExp, string, string, string][] = [
-  [/code|git|docker|node|python|sublime|postman/i, "dev", "开发工具", "code"],
-  [/figma|blender|sketch|photoshop/i, "design", "设计创作", "palette"],
-  [/obsidian|notion|office|typora/i, "office", "办公效率", "briefcase"],
-  [/vlc|obs|player|spotify/i, "media", "影音媒体", "film"],
-  [/telegram|微信|wechat|slack|discord/i, "chat", "聊天社交", "message"],
-  [/7-zip|everything|cleaner/i, "system", "系统工具", "wrench"],
+  [/code|git|docker|node|python|sublime|postman/i, "dev", tr("开发工具", "Developer tools"), "code"],
+  [/figma|blender|sketch|photoshop/i, "design", tr("设计创作", "Design"), "palette"],
+  [/obsidian|notion|office|typora/i, "office", tr("办公效率", "Productivity"), "briefcase"],
+  [/vlc|obs|player|spotify/i, "media", tr("影音媒体", "Media"), "film"],
+  [/telegram|微信|wechat|slack|discord/i, "chat", tr("聊天社交", "Chat"), "message"],
+  [/7-zip|everything|cleaner/i, "system", tr("系统工具", "Utilities"), "wrench"],
 ];
 
 function suggest(id: string): Suggestion {
@@ -537,6 +565,9 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       return null;
     case "fill_icons":
       return { library: null, more: false };
+    case "fetch_icon":
+      // 预览里不联网，图标都用首字方块
+      return null;
     case "fetch_summary": {
       await sleep(600);
       const target = find(args.id);

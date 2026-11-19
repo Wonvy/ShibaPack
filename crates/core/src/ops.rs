@@ -8,6 +8,7 @@ use crate::{
     installed::InstalledApp,
     model::*,
     store::{sanitize, unique_path, Repo, DATA_DIR, INDEX_FILE},
+    webicon::WebIcon,
     Error, Result,
 };
 use serde::Deserialize;
@@ -16,6 +17,33 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+
+/// 联网取的图标文件名带这个后缀，好和安装包里取的区分开。
+const WEB_SUFFIX: &str = "-web";
+
+fn is_web_icon(icon: &str) -> bool {
+    Path::new(icon).file_stem().is_some_and(|stem| stem.to_string_lossy().ends_with(WEB_SUFFIX))
+}
+
+/// 还没有图标，或者只有联网取的图标。
+pub(crate) fn needs_local_icon(software: &Software) -> bool {
+    software.icon.as_deref().is_none_or(is_web_icon)
+}
+
+/// 联网找图标时用的主页和 GitHub 仓库。
+#[derive(Debug, Clone, PartialEq)]
+pub struct WebIconQuery {
+    pub homepage: String,
+    /// `owner/repo`
+    pub github: Option<String>,
+}
+
+impl WebIconQuery {
+    /// 记在“没找到”标记文件里的内容。主页或仓库改了就和它对不上，会重新去找。
+    fn key(&self) -> String {
+        format!("{}\n{}", self.homepage, self.github.as_deref().unwrap_or(""))
+    }
+}
 
 /// 软件可以在界面上改的字段。
 #[derive(Debug, Clone, Deserialize)]
@@ -322,13 +350,68 @@ impl Repo {
         Some(format!("{DATA_DIR}/icons/{}", path.file_name()?.to_string_lossy()))
     }
 
-    /// 给还没有图标的软件补图标，一次最多处理 `limit` 个。
+    /// 给软件换上从安装包里取的图标。原来的图标是联网取的，就把那个文件删掉。
+    pub(crate) fn set_local_icon(&mut self, s: usize, icon: String) {
+        if let Some(old) = self.lib.software[s].icon.replace(icon) {
+            if is_web_icon(&old) {
+                let _ = fs::remove_file(self.root_join(&old));
+            }
+        }
+    }
+
+    /// 联网找图标要用的信息。软件已经有图标、没有主页也没有 GitHub 仓库、
+    /// 或者上次用同样的信息找过没找到时，返回 None。
+    pub fn web_icon_query(&self, software_id: &str) -> Result<Option<WebIconQuery>> {
+        let software = &self.lib.software[self.software_at(software_id)?];
+        if software.icon.is_some() {
+            return Ok(None);
+        }
+        let github = software
+            .subscription
+            .as_ref()
+            .filter(|sub| sub.source == SourceKind::Github)
+            .map(|sub| sub.reference.trim().to_string());
+        let query = WebIconQuery { homepage: software.homepage.trim().to_string(), github };
+        if query.homepage.is_empty() && query.github.is_none() {
+            return Ok(None);
+        }
+        let marker = self.icons_dir().join(format!("{software_id}.none"));
+        if fs::read_to_string(marker).is_ok_and(|asked| asked == query.key()) {
+            return Ok(None);
+        }
+        Ok(Some(query))
+    }
+
+    /// 存下联网找到的图标，返回写进 `Software.icon` 的相对路径。没找到时记下这次问过什么，
+    /// 主页或仓库没变就不再重复去问。这期间软件已经有了图标（比如刚从安装包里取到），就不换。
+    pub fn set_web_icon(&mut self, software_id: &str, query: &WebIconQuery, found: Option<WebIcon>) -> Result<Option<String>> {
+        let s = self.software_at(software_id)?;
+        if let Some(icon) = &self.lib.software[s].icon {
+            return Ok(Some(icon.clone()));
+        }
+        let dir = self.icons_dir();
+        fs::create_dir_all(&dir)?;
+        let marker = dir.join(format!("{software_id}.none"));
+        let Some(found) = found else {
+            fs::write(marker, query.key())?;
+            return Ok(None);
+        };
+        let name = format!("{software_id}{WEB_SUFFIX}.{}", found.ext);
+        fs::write(dir.join(&name), &found.bytes)?;
+        let _ = fs::remove_file(marker);
+        let icon = format!("{DATA_DIR}/icons/{name}");
+        self.lib.software[s].icon = Some(icon.clone());
+        self.save()?;
+        Ok(Some(icon))
+    }
+
+    /// 给还没有图标的软件补图标，一次最多处理 `limit` 个。联网取的图标也会被换掉：安装包里的更准。
     ///
     /// 先从它自己的安装包里取；取不到再看这台电脑上是不是装着同一个软件，借用那边的图标。
     /// 试过但取不到的记在 `tried` 里，同一次运行中不再重复尝试。返回 (有没有改动, 还有没有没试过的)。
     pub fn fill_icons(&mut self, limit: usize, tried: &mut HashSet<String>, installed: &[InstalledApp]) -> Result<(bool, bool)> {
         let pending: Vec<usize> = (0..self.lib.software.len())
-            .filter(|&s| self.lib.software[s].icon.is_none() && !tried.contains(&self.lib.software[s].id))
+            .filter(|&s| needs_local_icon(&self.lib.software[s]) && !tried.contains(&self.lib.software[s].id))
             .collect();
         let mut changed = false;
         for &s in pending.iter().take(limit) {
@@ -347,7 +430,7 @@ impl Repo {
                 self.icon_from(&id, Path::new(app.icon.as_deref()?))
             };
             if let Some(icon) = own.or_else(borrowed) {
-                self.lib.software[s].icon = Some(icon);
+                self.set_local_icon(s, icon);
                 changed = true;
             }
         }
@@ -441,8 +524,10 @@ impl Repo {
             }
         };
         software.versions[v].files.push(record);
-        if self.lib.software[s].icon.is_none() {
-            self.lib.software[s].icon = self.icon_from(software_id, &dest);
+        if needs_local_icon(&self.lib.software[s]) {
+            if let Some(icon) = self.icon_from(software_id, &dest) {
+                self.set_local_icon(s, icon);
+            }
         }
         self.save()
     }
@@ -571,6 +656,60 @@ mod tests {
             starred: software.starred,
             default_version_id: software.default_version_id.clone(),
         }
+    }
+
+    #[test]
+    fn web_icons_are_saved_and_misses_remembered() {
+        let (_r, src, mut repo) = repo_with(&[("Tool-1.0.zip", b"zip")]);
+        let id = repo.lib.software[0].id.clone();
+        assert!(repo.lib.software[0].icon.is_none());
+        assert_eq!(repo.web_icon_query(&id).unwrap(), None, "没有主页也没有 GitHub，不去找");
+
+        let mut edit = edit_of(&repo.lib.software[0]);
+        edit.homepage = " https://tool.example ".into();
+        repo.update_software(&id, edit.clone()).unwrap();
+        let query = repo.web_icon_query(&id).unwrap().expect("有主页就该去找");
+        assert_eq!(query.homepage, "https://tool.example");
+
+        // 没找到：同样的主页不再找；主页改了再找
+        assert_eq!(repo.set_web_icon(&id, &query, None).unwrap(), None);
+        assert_eq!(repo.web_icon_query(&id).unwrap(), None);
+        edit.homepage = "https://tool.example/new".into();
+        repo.update_software(&id, edit).unwrap();
+        let query = repo.web_icon_query(&id).unwrap().expect("主页改了");
+
+        let png = WebIcon { bytes: b"\x89PNG\r\n\x1a\nweb".to_vec(), ext: "png" };
+        let icon = repo.set_web_icon(&id, &query, Some(png)).unwrap().unwrap();
+        assert!(icon.ends_with(&format!("{id}-web.png")), "{icon}");
+        let web_file = repo.root_join(&icon);
+        assert!(web_file.is_file());
+        assert!(!repo.icons_dir().join(format!("{id}.none")).exists(), "找到后去掉“没找到”标记");
+        assert_eq!(repo.web_icon_query(&id).unwrap(), None, "有图标了就不再找");
+        assert_eq!(Repo::open(repo.root()).unwrap().lib.software[0].icon.as_deref(), Some(icon.as_str()));
+
+        // 本机装着同一个软件、取得到它的图标时，换掉联网取的
+        let local = src.path().join("tool.png");
+        fs::write(&local, b"\x89PNG\r\n\x1a\nlocal").unwrap();
+        let app = InstalledApp {
+            id: "tool".into(),
+            name: repo.lib.software[0].name.clone(),
+            version: String::new(),
+            publisher: String::new(),
+            installed_at: String::new(),
+            size: None,
+            source: "applications".into(),
+            location: String::new(),
+            uninstallable: false,
+            icon: Some(local.to_string_lossy().to_string()),
+            icon_source: None,
+            uninstall_command: None,
+        };
+        let (changed, _) = repo.fill_icons(8, &mut HashSet::new(), &[app]).unwrap();
+        assert!(changed);
+        let now = repo.lib.software[0].icon.clone().unwrap();
+        assert!(now.ends_with(&format!("{id}.png")), "{now}");
+        assert_eq!(fs::read(repo.root_join(&now)).unwrap(), b"\x89PNG\r\n\x1a\nlocal");
+        assert!(!web_file.exists(), "联网取的旧图标文件要删掉");
     }
 
     #[test]

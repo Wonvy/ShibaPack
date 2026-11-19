@@ -245,9 +245,11 @@ impl Repo {
         };
         software.versions[v].files.push(file);
         let software_id = software.id.clone();
-        // 软件还没有图标时，从刚导入的文件里取一个（目前只有 exe 取得出来）
-        if self.lib.software[s].icon.is_none() {
-            self.lib.software[s].icon = self.icon_from(&software_id, &disk_path);
+        // 软件还没有图标（或只有联网取的）时，从刚导入的文件里取一个
+        if crate::ops::needs_local_icon(&self.lib.software[s]) {
+            if let Some(icon) = self.icon_from(&software_id, &disk_path) {
+                self.set_local_icon(s, icon);
+            }
         }
         known.insert(disk_path);
         known.insert(abs);

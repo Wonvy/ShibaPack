@@ -169,8 +169,17 @@ function fallbackLanguage(): Language {
 let toastSeq = 0;
 // 开发模式下 React 会把启动逻辑跑两遍，这里保证只初始化一次
 let started = false;
-// 后台任务的状态：补图标、取简介
+// 后台任务的状态：补图标、联网找图标、取简介
 let fillingIcons = false;
+/** 本机的图标（安装包里、已安装软件那边）至少补过一轮，之后才联网找，免得网站图标抢在真图标前面。 */
+let localIconsDone = false;
+/** 软件 id → 这次运行里已经拿去联网找图标的“主页 + GitHub 仓库”。改了主页会再找一次。 */
+const askedIcons = new Map<string, string>();
+const iconQueue: string[] = [];
+let iconWorkers = 0;
+/** 连续几次连不上就当作没有网，这次运行不再找。 */
+let iconFailures = 0;
+const ICON_WORKERS = 3;
 const askedSummaries = new Set<string>();
 const summaryQueue: string[] = [];
 let summaryWorkers = 0;
@@ -205,6 +214,48 @@ export const useApp = create<AppState>()((set, get) => {
       // 补不上就继续用首字图标
     } finally {
       fillingIcons = false;
+      localIconsDone = true;
+    }
+    queueWebIcons();
+  };
+
+  /** 还没有图标、但填了主页或关联了 GitHub 的软件，联网找网站图标或仓库主人的头像。同时最多 3 个。 */
+  const queueWebIcons = () => {
+    const library = get().library;
+    if (!library?.settings.fetchSummaries || !localIconsDone || fillingIcons || iconFailures >= 3) return;
+    for (const software of library.software) {
+      if (software.icon) continue;
+      const github = software.subscription?.source === "github" ? software.subscription.reference : "";
+      const key = `${software.homepage.trim()}\n${github}`;
+      if (key === "\n" || askedIcons.get(software.id) === key) continue;
+      askedIcons.set(software.id, key);
+      iconQueue.push(software.id);
+    }
+    pumpIcons();
+  };
+
+  const pumpIcons = () => {
+    while (iconWorkers < ICON_WORKERS && iconQueue.length > 0 && iconFailures < 3) {
+      const id = iconQueue.shift()!;
+      iconWorkers++;
+      api
+        .fetchIcon(id)
+        .then((icon) => {
+          iconFailures = 0;
+          const current = get().library;
+          // 只改这一个软件的图标，免得用旧的快照盖掉这期间的其他改动
+          if (icon && current) {
+            set({ library: { ...current, software: current.software.map((s) => (s.id === id && !s.icon ? { ...s, icon } : s)) } });
+          }
+        })
+        .catch((error) => {
+          // 一个网站打不开不代表没网；连续几个都失败才停。没找到的下次启动再试
+          if (String(error).startsWith("offline")) iconFailures++;
+        })
+        .finally(() => {
+          iconWorkers--;
+          pumpIcons();
+        });
     }
   };
 
@@ -261,6 +312,7 @@ export const useApp = create<AppState>()((set, get) => {
     set({ library, selectedId, selectedIds, ...(scopeGone ? { scope: { kind: "all" } as Scope } : {}) });
     void refreshLinks();
     void fillIcons();
+    queueWebIcons();
     queueSummaries(library);
   };
 
@@ -377,6 +429,7 @@ export const useApp = create<AppState>()((set, get) => {
       const status = await get().attempt(() => api.setRepoRoot(path));
       if (!status) return;
       askedSummaries.clear();
+      askedIcons.clear();
       set({ status, selectedId: null, selectedIds: [], scope: { kind: "all" }, links: {} });
       await get().apply(() => api.getLibrary());
       if (get().installed === null) void get().loadInstalled();

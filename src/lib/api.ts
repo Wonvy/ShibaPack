@@ -87,6 +87,8 @@ export const api = {
   uninstallInstalled: (id: string) => call<void>("uninstall_installed", { id }),
   revealInstalled: (id: string) => call<void>("reveal_installed", { id }),
   fillIcons: () => call<FillResult>("fill_icons"),
+  /** 联网找图标（主页的网站图标或 GitHub 头像）。返回图标的相对路径，没找到时是 null。 */
+  fetchIcon: (id: string) => call<string | null>("fetch_icon", { id }),
   fetchSummary: (id: string) => call<Library>("fetch_summary", { id }),
   selftestReport: (line: string, done = false) => call<void>("selftest_report", { line, done }),
   sourceLookup: (kind: SourceKind, reference: string) => call<Release>("source_lookup", { kind, reference }),

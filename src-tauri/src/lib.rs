@@ -9,7 +9,7 @@ use shibapack_core::{
     installed,
     sources::{self, Candidate, SourceError},
     summary, Assignment, BackupInfo, Category, ImportHint, ImportReport, InstalledApp, Library, Release, Repo, Settings,
-    SoftwareEdit, SourceKind, Stats, Storage, Subscription, Suggestion, VerifyReport, VersionEdit, VersionRef,
+    SoftwareEdit, SourceKind, Stats, Storage, Subscription, Suggestion, VerifyReport, VersionEdit, VersionRef, webicon,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -451,6 +451,17 @@ fn fill_icons(state: State<AppState>) -> CmdResult<FillResult> {
     })
 }
 
+/// 联网给一个软件找图标：软件主页的网站图标，或者 GitHub 仓库主人的头像。
+/// 返回图标的相对路径，没找到返回 null；没开“联网获取”时什么都不做。网络不通时返回 `offline`。
+#[tauri::command(async)]
+fn fetch_icon(state: State<AppState>, id: String) -> CmdResult<Option<String>> {
+    let query = with_repo(&state, |repo| if repo.lib.settings.fetch_summaries { repo.web_icon_query(&id) } else { Ok(None) })?;
+    let Some(query) = query else { return Ok(None) };
+    // 联网期间不占着仓库的锁
+    let found = webicon::fetch_web_icon(&query.homepage, query.github.as_deref()).map_err(|_| "offline".to_string())?;
+    with_repo(&state, |repo| repo.set_web_icon(&id, &query, found))
+}
+
 /// 联网取一个软件的简介并存进索引。网络不通时返回 `offline`，什么都不记。
 #[tauri::command(async)]
 fn fetch_summary(state: State<AppState>, id: String) -> CmdResult<Library> {
@@ -732,6 +743,7 @@ pub fn run() {
             uninstall_installed,
             reveal_installed,
             fill_icons,
+            fetch_icon,
             fetch_summary,
             selftest_report,
             source_lookup,

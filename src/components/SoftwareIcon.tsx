@@ -1,12 +1,11 @@
 import { useState } from "react";
 import { assetUrl } from "../lib/api";
-import { colorFor } from "../lib/library";
 import { useApp } from "../lib/store";
 import type { Software } from "../lib/types";
 
 /**
  * 软件图标。`icon` 是图标文件的绝对路径；没有图标或图标加载失败时，
- * 用名字的首字加一块固定的底色。
+ * 用名字的首字加一块灰色底，不抢真实图标的视线。
  * `stack` 是版本数：多于一个版本时，图标后面露出一两层，像一叠卡片。
  */
 export function SoftwareIcon({ name, icon, size = 32, stack = 1 }: { name: string; icon?: string | null; size?: number; stack?: number }) {
@@ -29,8 +28,7 @@ export function SoftwareIcon({ name, icon, size = 32, stack = 1 }: { name: strin
             right: step * depth * 1.25,
             height: size,
             borderRadius: radius,
-            background: icon ? "var(--line-strong)" : colorFor(name),
-            opacity: icon ? 1 : depth === 1 ? 0.45 : 0.22,
+            background: "var(--line-strong)",
           }}
         />
       ))}
@@ -57,8 +55,8 @@ function IconFace({ name, icon, size }: { name: string; icon?: string | null; si
   return (
     <span
       aria-hidden
-      className="flex shrink-0 items-center justify-center font-semibold text-white"
-      style={{ width: size, height: size, borderRadius: size * 0.26, fontSize: size * 0.44, background: colorFor(name) }}
+      className="flex shrink-0 items-center justify-center bg-tile font-semibold text-tile-fg"
+      style={{ width: size, height: size, borderRadius: size * 0.26, fontSize: size * 0.44 }}
     >
       {first}
     </span>

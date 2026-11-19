@@ -108,16 +108,21 @@ export function softwarePlatforms(software: Software): Platform[] {
   return PLATFORMS.filter((p) => found.has(p));
 }
 
+/**
+ * 文件大小。按 1024 进位，但数字到了 1000 就换下一个单位：“1010 MB”读起来别扭，写成“1.0 GB”。
+ * 100 以上不带小数，以下带一位。
+ */
 export function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
+  // 四舍五入后会显示成 1000 的也算到了
+  if (bytes < 999.5) return `${Math.round(bytes)} B`;
   const units = ["KB", "MB", "GB", "TB"];
   let value = bytes / 1024;
   let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
+  while (value >= 999.5 && unit < units.length - 1) {
     value /= 1024;
     unit++;
   }
-  return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
+  return `${value >= 99.95 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
 }
 
 export function formatDate(iso: string, language: Language, withTime = false): string {
@@ -195,12 +200,4 @@ export function flattenTree(categories: Category[]): { category: Category; depth
 
 export function newId(): string {
   return crypto.randomUUID().replaceAll("-", "").slice(0, 12);
-}
-
-/** 给没有图标的软件用的底色，同一个名字总是同一个颜色。 */
-export function colorFor(name: string): string {
-  const palette = ["#2f7fd6", "#7a5af5", "#1d9e75", "#d9542b", "#c9503f", "#3d6fa8", "#b0621b", "#8b5fbf", "#4a8f3c"];
-  let hash = 0;
-  for (const ch of name) hash = (hash * 31 + ch.codePointAt(0)!) >>> 0;
-  return palette[hash % palette.length];
 }

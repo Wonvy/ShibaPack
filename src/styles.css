@@ -23,6 +23,9 @@
   --danger: #e5646a;
   --warning: #d9a03f;
   --success: #4cc38a;
+  /* 取不到图标时首字方块的底色和字色 */
+  --tile: #2a2c31;
+  --tile-fg: #a4a7ae;
   --overlay: rgb(0 0 0 / 0.55);
   --pop: 0 0 0 1px rgb(255 255 255 / 0.07), 0 10px 32px rgb(0 0 0 / 0.5);
 }
@@ -45,6 +48,8 @@
   --danger: #c93f46;
   --warning: #b07a16;
   --success: #1f8a57;
+  --tile: #e8e9ec;
+  --tile-fg: #6b6e76;
   --overlay: rgb(0 0 0 / 0.3);
   --pop: 0 0 0 1px rgb(0 0 0 / 0.08), 0 10px 32px rgb(0 0 0 / 0.14);
 }
@@ -76,6 +81,8 @@
   --color-danger: var(--danger);
   --color-warning: var(--warning);
   --color-success: var(--success);
+  --color-tile: var(--tile);
+  --color-tile-fg: var(--tile-fg);
   --color-overlay: var(--overlay);
 
   --shadow-pop: var(--pop);

@@ -703,13 +703,40 @@ function ActionButton({
   );
 }
 
-/** 本机装的版本。比仓库里能装的旧时用警示色，鼠标停上去说明可以升级。 */
-function LocalLabel({ app, upgradeTo, className }: { app: InstalledApp; upgradeTo: string | null; className?: string }) {
+/** 名字旁的“已安装”对勾。鼠标停上去显示本机装的版本。 */
+function InstalledMark({ app }: { app: InstalledApp | undefined }) {
   const t = useT();
-  const text = app.version ? t("local.version", { version: app.version }) : t("link.installed");
+  if (!app) return null;
+  const text = app.version ? t("link.installedVersion", { version: app.version }) : t("link.installed");
+  return (
+    <span title={text} aria-label={text} className="flex shrink-0 text-success">
+      <CircleCheck size={12} strokeWidth={2.25} />
+    </span>
+  );
+}
+
+/**
+ * 本机装的版本，只在和仓库的默认版本不一样时显示（一样时名字旁的对勾已经说明了）。
+ * 比仓库里能装的旧时用警示色，鼠标停上去说明可以升级。
+ */
+function LocalLabel({
+  software,
+  app,
+  upgradeTo,
+  className,
+}: {
+  software: Software;
+  app: InstalledApp | undefined;
+  upgradeTo: string | null;
+  className?: string;
+}) {
+  const t = useT();
+  const main = primaryVersion(software);
+  if (!app?.version || (main && sameVersion(main.version, app.version))) return null;
+  const text = t("local.version", { version: app.version });
   const title = upgradeTo ? t("local.older", { installed: app.version, version: upgradeTo }) : text;
   return (
-    <span title={title} className={cx("tabular truncate text-[12px]", upgradeTo ? "text-warning" : "text-success", className)}>
+    <span title={title} className={cx("tabular truncate text-[12px]", upgradeTo ? "text-warning" : "text-fg-3", className)}>
       {text}
     </span>
   );
@@ -738,6 +765,7 @@ function Row({ software, selected }: { software: Software; selected: boolean }) 
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <span className="truncate text-[13px] font-medium">{software.name}</span>
+              <InstalledMark app={installedApp} />
               <StarMark software={software} />
             </div>
             <div className="truncate text-[12px] text-fg-3">{description}</div>
@@ -745,7 +773,7 @@ function Row({ software, selected }: { software: Software; selected: boolean }) 
         </div>
         <div className="flex min-w-0 flex-col">
           <VersionLabel software={software} installed={installedApp?.version} />
-          {installedApp && <LocalLabel app={installedApp} upgradeTo={upgrade?.version.version ?? null} className="block" />}
+          <LocalLabel software={software} app={installedApp} upgradeTo={upgrade?.version.version ?? null} className="block" />
         </div>
         <PlatformIcons platforms={softwarePlatforms(software)} className="hidden @lg:flex" />
         <div className="tabular hidden text-right text-[12px] text-fg-3 @2xl:block">{formatSize(softwareSize(software))}</div>
@@ -779,9 +807,12 @@ function Card({ software, selected }: { software: Software; selected: boolean })
           <StarMark software={software} />
         </div>
         <div className="min-w-0">
-          <div className="truncate text-[13px] font-medium">{software.name}</div>
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-[13px] font-medium">{software.name}</span>
+            <InstalledMark app={installedApp} />
+          </div>
           <VersionLabel software={software} installed={installedApp?.version} className="text-fg-3" />
-          {installedApp && <LocalLabel app={installedApp} upgradeTo={upgrade?.version.version ?? null} className="block" />}
+          <LocalLabel software={software} app={installedApp} upgradeTo={upgrade?.version.version ?? null} className="block" />
         </div>
         <div className="mt-auto flex min-h-6 items-center justify-between gap-2">
           <PlatformIcons platforms={softwarePlatforms(software)} />
@@ -821,8 +852,9 @@ function FolderNode({ software, selected }: { software: Software; selected: bool
           <ChevronRight size={13} strokeWidth={2} aria-hidden className={cx("shrink-0 text-fg-3 transition-transform", open && "rotate-90")} />
           <SoftwareIcon name={software.name} icon={icon} size={20} />
           <span className="truncate font-medium">{software.name}</span>
+          <InstalledMark app={installedApp} />
           <StarMark software={software} />
-          {installedApp && <LocalLabel app={installedApp} upgradeTo={upgrade?.version.version ?? null} className="ml-1 shrink-0" />}
+          <LocalLabel software={software} app={installedApp} upgradeTo={upgrade?.version.version ?? null} className="ml-1 shrink-0" />
           <span className="tabular ml-auto shrink-0 text-[12px] text-fg-3">
             {t("lib.versions", { n: software.versions.length })} · {formatSize(softwareSize(software))}
           </span>

@@ -1,10 +1,12 @@
 // 详情栏：只放常用的——简介、安装状态与新版本、各版本的安装包；
 // 分类、在线源、主页、备注这些收在“更多信息”里，默认收起。
 
+import * as DropdownPrimitive from "@radix-ui/react-dropdown-menu";
 import {
   ArrowUp,
   ChevronRight,
   CircleCheck,
+  CircleHelp,
   CircleDashed,
   CloudDownload,
   Copy,
@@ -46,7 +48,7 @@ import {
   upgradeFor,
 } from "../lib/actions";
 import { useState } from "react";
-import { api, hostPlatform, pickFiles } from "../lib/api";
+import { api, hostPlatform, isMac, pickFiles } from "../lib/api";
 import { flattenTree, formatDate, formatSize, hasUpdate, primaryVersion, prunable, sameVersion, sortedVersions } from "../lib/library";
 import { usePrefs } from "../lib/prefs";
 import { useApp, useLanguage, useT } from "../lib/store";
@@ -55,7 +57,7 @@ import { prompt } from "./dialogs";
 import { PlatformIcon } from "./PlatformIcon";
 import { SoftwareIcon, useSoftwareIcon } from "./SoftwareIcon";
 import { SourceSection } from "./SourcePanel";
-import { Button, Checkbox, Chip, Dropdown, IconButton, MiddleTruncate, Modal, Select, cx } from "./ui";
+import { Button, Checkbox, Chip, Dropdown, IconButton, MiddleTruncate, Modal, Select, cx, menuClass } from "./ui";
 
 export function PackageDetail() {
   const multi = useApp((state) => state.selectedIds.length > 1);
@@ -158,9 +160,54 @@ function Overview() {
       <div className="mt-6 flex items-center justify-center gap-1.5 text-[12px] text-fg-4">
         <MousePointerClick size={13} strokeWidth={1.75} aria-hidden />
         {t("detail.empty")}
+        <ShortcutHelp />
       </div>
-      <div className="mt-1.5 text-center text-[12px] leading-relaxed text-fg-4">{t("overview.keys")}</div>
     </div>
+  );
+}
+
+/** “?”按钮：点开是软件列表能用的快捷键。 */
+function ShortcutHelp() {
+  const t = useT();
+  const mod = isMac ? "⌘" : "Ctrl";
+  const click = t("keys.click");
+  const rows: [string, string[]][] = [
+    [t("keys.move"), ["↑", "↓"]],
+    [t("keys.toggle"), [mod, click]],
+    [t("keys.range"), ["Shift", click]],
+    [t("keys.all"), [mod, "A"]],
+    [t("keys.install"), ["Enter"]],
+    [t("keys.delete"), ["Delete"]],
+    [t("keys.clear"), ["Esc"]],
+    [t("keys.search"), [mod, "F"]],
+  ];
+  return (
+    <DropdownPrimitive.Root>
+      <DropdownPrimitive.Trigger asChild>
+        <IconButton label={t("keys.title")} className="-my-1 size-6 text-fg-3 data-[state=open]:bg-active data-[state=open]:text-fg">
+          <CircleHelp size={14} strokeWidth={1.75} />
+        </IconButton>
+      </DropdownPrimitive.Trigger>
+      <DropdownPrimitive.Portal>
+        <DropdownPrimitive.Content side="top" align="end" sideOffset={6} className={cx(menuClass, "w-[248px] p-2")}>
+          <DropdownPrimitive.Label className="pb-1.5 text-[12px] font-medium text-fg-3">{t("keys.title")}</DropdownPrimitive.Label>
+          <dl className="m-0 flex flex-col gap-1">
+            {rows.map(([what, keys]) => (
+              <div key={what} className="flex min-h-6 items-center justify-between gap-3">
+                <dt className="text-[12px] text-fg-2">{what}</dt>
+                <dd className="m-0 flex shrink-0 items-center gap-1">
+                  {keys.map((key) => (
+                    <kbd key={key} className="rounded border border-line-strong px-1.5 font-sans text-[12px] leading-5 text-fg-2">
+                      {key}
+                    </kbd>
+                  ))}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </DropdownPrimitive.Content>
+      </DropdownPrimitive.Portal>
+    </DropdownPrimitive.Root>
   );
 }
 
@@ -650,7 +697,7 @@ function Versions({ software }: { software: Software }) {
               >
                 {version.version || t("detail.unknownVersion")}
                 {isMain && <span className="opacity-70">· {t("detail.default")}</span>}
-                {local && <CircleCheck size={12} strokeWidth={2.25} aria-label={t("version.local")} className="text-success" />}
+                {local && <span className="text-success">· {t("version.local")}</span>}
               </button>
             );
           })}

@@ -39,8 +39,6 @@ pub struct Library {
     #[serde(default)]
     pub categories: Vec<Category>,
     #[serde(default)]
-    pub tags: Vec<Tag>,
-    #[serde(default)]
     pub software: Vec<Software>,
     /// 联网取回的软件摘要，按软件名缓存，离线也能显示。
     #[serde(default)]
@@ -54,7 +52,6 @@ impl Default for Library {
         Self {
             format: FORMAT,
             categories: Vec::new(),
-            tags: Vec::new(),
             software: Vec::new(),
             summaries: BTreeMap::new(),
             settings: Settings::default(),
@@ -78,15 +75,6 @@ pub struct Category {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Tag {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub color: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Software {
     pub id: String,
     pub name: String,
@@ -98,8 +86,9 @@ pub struct Software {
     pub note: String,
     #[serde(default)]
     pub category_id: Option<String>,
+    /// 收藏。旧版索引里的标签（tags、tagIds）读入时忽略，下次保存时不再写出。
     #[serde(default)]
-    pub tag_ids: Vec<String>,
+    pub starred: bool,
     /// 图标，相对仓库根目录的路径。
     #[serde(default)]
     pub icon: Option<String>,

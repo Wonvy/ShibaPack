@@ -6,7 +6,7 @@ import type { DropTarget } from "./drag";
 import { translate } from "./i18n";
 import { sortedVersions, withDescendants } from "./library";
 import { useApp } from "./store";
-import type { Category, InstalledApp, PackageFile, Software, Version } from "./types";
+import type { Asset, Category, InstalledApp, PackageFile, Software, Version } from "./types";
 
 function language() {
   return useApp.getState().library?.settings.language ?? "zh-CN";
@@ -96,6 +96,29 @@ export async function uninstallApp(target: InstalledApp) {
   await app.loadInstalled();
 }
 
+/** 在线源上最新版本里，最适合这台电脑的安装包：系统对得上，架构一致或通用的优先。 */
+export function bestAsset(software: Software): Asset | null {
+  const assets = software.subscription?.latest?.assets ?? [];
+  const arch = useApp.getState().status?.arch ?? "";
+  const mine = assets.filter((asset) => asset.platform === hostPlatform);
+  return (
+    mine.find((asset) => asset.arch === arch) ??
+    mine.find((asset) => asset.arch === "universal" || asset.arch === "") ??
+    mine[0] ??
+    assets.find((asset) => asset.platform === "cross") ??
+    null
+  );
+}
+
+export async function toggleStar(software: Software) {
+  await useApp.getState().apply(() => api.setStarred(software.id, !software.starred));
+}
+
+/** 打开智能分类的预览窗口。 */
+export function classify(softwareIds: string[]) {
+  if (softwareIds.length > 0) useApp.getState().patch({ classifyIds: softwareIds });
+}
+
 // ── 拖拽落下之后 ─────────────────────────────────────────────
 
 /** 把软件归到一个分类下（null 为未分类）。 */
@@ -110,7 +133,7 @@ export async function moveSoftwareTo(softwareId: string, categoryId: string | nu
       homepage: software.homepage,
       note: software.note,
       categoryId,
-      tagIds: software.tagIds,
+      starred: software.starred,
       defaultVersionId: software.defaultVersionId,
     }),
   );

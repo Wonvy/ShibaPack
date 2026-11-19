@@ -50,7 +50,7 @@ export function SourceSection({ software }: { software: Software }) {
     <div className="rounded-lg border border-line">
       <div className="flex h-8 items-center gap-1.5 border-b border-line pr-1 pl-2.5">
         <Chip>{t(`source.${subscription.source}`)}</Chip>
-        <span className="selectable min-w-0 flex-1 truncate font-mono text-[11px] text-fg-2" title={subscription.reference}>
+        <span className="selectable min-w-0 flex-1 truncate font-mono text-[12px] text-fg-2" title={subscription.reference}>
           {subscription.reference}
         </span>
         <IconButton label={t("source.check")} className="size-6" disabled={checking} onClick={() => void check()}>
@@ -98,7 +98,7 @@ function AssetRow({ software, release, asset }: { software: Software; release: R
         <div className="selectable truncate text-[12px]" title={asset.url}>
           {asset.name}
         </div>
-        <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-fg-3">
+        <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[12px] text-fg-3">
           <PlatformChip platform={asset.platform} />
           {asset.arch && <Chip>{asset.arch}</Chip>}
           {asset.size !== null && <span className="tabular ml-0.5">{formatSize(asset.size)}</span>}
@@ -294,7 +294,7 @@ function Dialog({ softwareId }: { softwareId: string | null }) {
                 >
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[13px]">{candidate.name}</span>
-                    <span className="block truncate text-[11px] text-fg-3">{candidate.description || candidate.reference}</span>
+                    <span className="block truncate text-[12px] text-fg-3">{candidate.description || candidate.reference}</span>
                   </span>
                   <span className="tabular shrink-0 text-[12px] text-fg-3">{candidate.version}</span>
                 </button>
@@ -330,7 +330,7 @@ function Dialog({ softwareId }: { softwareId: string | null }) {
         {preview && (
           <div className="rounded-lg border border-line">
             <div className="flex items-center gap-2 px-2.5 py-2 text-[13px]">
-              <span className="selectable min-w-0 flex-1 truncate font-mono text-[11px] text-fg-2">{reference}</span>
+              <span className="selectable min-w-0 flex-1 truncate font-mono text-[12px] text-fg-2">{reference}</span>
               <span className="tabular shrink-0 font-medium">{t("source.latest", { version: preview.version })}</span>
             </div>
             {preview.assets.length === 0 && <div className="border-t border-line px-2.5 py-2 text-[12px] text-fg-4">{t("source.noAssets")}</div>}

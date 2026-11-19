@@ -63,6 +63,16 @@ jobs:
           targets: ${{ matrix.targets }}
       - uses: Swatinem/rust-cache@v2
 
+      - name: 检查更新包的签名私钥
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error title=缺少签名私钥::仓库 Secret TAURI_SIGNING_PRIVATE_KEY 没有设置或是空的。到 Settings → Secrets and variables → Actions 添加，值是 ~/.tauri/shibapack-updater.key 的全部内容，然后重新运行。"
+            exit 1
+          fi
+
       - run: npm ci
       - run: npm run typecheck
 

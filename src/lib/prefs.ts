@@ -17,6 +17,10 @@ interface Prefs {
   sortAsc: boolean;
   groupByCategory: boolean;
   collapsed: string[];
+  /** 右边的详情栏是否展开。 */
+  detailOpen: boolean;
+  /** 详情栏里“更多信息”是否展开。 */
+  detailMoreOpen: boolean;
   set: (patch: Partial<Omit<Prefs, "set" | "toggleCollapsed" | "sortBy">>) => void;
   toggleCollapsed: (id: string) => void;
   sortBy: (key: SortKey) => void;
@@ -34,6 +38,8 @@ export const usePrefs = create<Prefs>()(
       sortAsc: true,
       groupByCategory: true,
       collapsed: [],
+      detailOpen: true,
+      detailMoreOpen: false,
       set: (patch) =>
         set((state) => ({
           ...patch,

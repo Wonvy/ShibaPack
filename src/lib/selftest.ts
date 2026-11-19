@@ -52,11 +52,11 @@ export async function runSelftest() {
         homepage: "",
         note: "",
         categoryId: null,
-        tagIds: [],
+        starred: true,
         defaultVersionId: null,
       });
       const reread = (await api.getLibrary()).software.find((s) => s.id === software.id);
-      await check("修改后能读回", edited.software.length > 0 && reread?.publisher === "Selftest Publisher");
+      await check("修改后能读回", edited.software.length > 0 && reread?.publisher === "Selftest Publisher" && reread.starred);
     }
 
     const stats = await api.getStats();
@@ -93,6 +93,21 @@ export async function runSelftest() {
       await check("检查更新", checked.checked >= 1 && !checked.rateLimited, `查到 ${checked.checked} 个，失败 ${checked.failed} 个`);
     } catch (error) {
       await check("在线源", false, String(error));
+    }
+
+    // 智能分类：先出建议，再按建议分类
+    try {
+      const all = (await api.getLibrary()).software;
+      const suggestions = await api.suggestCategories(all.map((s) => s.id));
+      const usable = suggestions.filter((s) => s.categoryId || s.newCategory);
+      const assignments = usable.map((s) =>
+        s.categoryId ? { softwareId: s.softwareId, categoryId: s.categoryId } : { softwareId: s.softwareId, newCategory: s.newCategory! },
+      );
+      const after = await api.applyClassification(assignments);
+      const placed = usable.filter((s) => after.software.find((x) => x.id === s.softwareId)?.categoryId).length;
+      await check("智能分类", usable.length > 0 && placed === usable.length, `建议 ${usable.length} 个，已归类 ${placed} 个，分类 ${after.categories.map((c) => c.name).join("、")}`);
+    } catch (error) {
+      await check("智能分类", false, String(error));
     }
 
     // 语言包：导入自检文件旁边的 lang.json

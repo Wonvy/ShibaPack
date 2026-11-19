@@ -3,7 +3,7 @@
 import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as DropdownPrimitive from "@radix-ui/react-dropdown-menu";
-import { Check, LoaderCircle, type LucideIcon, X } from "lucide-react";
+import { Check, ChevronDown, LoaderCircle, type LucideIcon, X } from "lucide-react";
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from "react";
 import { useT } from "../lib/store";
 
@@ -178,7 +178,7 @@ export function Switch({ checked, onChange, label }: { checked: boolean; onChang
 /** 灰色小标签：平台、架构、存储模式。 */
 export function Chip({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <span className={cx("inline-flex h-[18px] shrink-0 items-center rounded-[4px] bg-hover px-1.5 text-[11px] text-fg-2", className)}>
+    <span className={cx("inline-flex h-5 shrink-0 items-center rounded-[4px] bg-hover px-1.5 text-[12px] text-fg-3", className)}>
       {children}
     </span>
   );
@@ -302,3 +302,63 @@ export function ContextMenu({ items, children }: { items: MenuEntry[]; children:
     </ContextMenuPrimitive.Root>
   );
 }
+
+export interface FilterOption<T extends string> {
+  value: T;
+  label: string;
+  icon?: ReactNode;
+}
+
+/**
+ * 工具栏上的筛选菜单：按钮上显示当前选中的一项，点开是带图标的选项列表。
+ * 第一项是“不筛选”；选了别的项时按钮用强调色，一眼能看出列表被筛过。
+ */
+export function FilterMenu<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: FilterOption<T>[];
+  onChange: (value: T) => void;
+}) {
+  const current = options.find((option) => option.value === value) ?? options[0];
+  const filtering = value !== options[0].value;
+  return (
+    <DropdownPrimitive.Root>
+      <DropdownPrimitive.Trigger asChild>
+        <button
+          type="button"
+          aria-label={label}
+          title={label}
+          className={cx(
+            "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[13px] whitespace-nowrap transition-colors outline-none",
+            filtering ? "bg-accent-soft text-accent" : "text-fg-2 hover:bg-hover hover:text-fg data-[state=open]:bg-hover",
+          )}
+        >
+          {current.icon && <span className="flex size-4 items-center justify-center">{current.icon}</span>}
+          {current.label}
+          <ChevronDown size={13} strokeWidth={2} aria-hidden className="opacity-60" />
+        </button>
+      </DropdownPrimitive.Trigger>
+      <DropdownPrimitive.Portal>
+        <DropdownPrimitive.Content align="start" sideOffset={4} className={menuClass}>
+          <DropdownPrimitive.RadioGroup value={value} onValueChange={(next) => onChange(next as T)}>
+            {options.map((option) => (
+              <DropdownPrimitive.RadioItem key={option.value} value={option.value} className={cx(itemClass, "pr-2 text-fg")}>
+                <span className="flex size-4 items-center justify-center text-fg-2">{option.icon}</span>
+                <span className="flex-1">{option.label}</span>
+                <DropdownPrimitive.ItemIndicator>
+                  <Check size={14} strokeWidth={2} className="text-accent" />
+                </DropdownPrimitive.ItemIndicator>
+              </DropdownPrimitive.RadioItem>
+            ))}
+          </DropdownPrimitive.RadioGroup>
+        </DropdownPrimitive.Content>
+      </DropdownPrimitive.Portal>
+    </DropdownPrimitive.Root>
+  );
+}
+

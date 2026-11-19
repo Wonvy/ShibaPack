@@ -1,4 +1,4 @@
-//! 对索引的修改：软件、版本、文件、分类、标签、设置。每个操作成功后都会保存索引。
+//! 对索引的修改：软件、版本、文件、分类、收藏、设置。每个操作成功后都会保存索引。
 
 use crate::{
     catalog::CATALOG_FILE,
@@ -31,7 +31,7 @@ pub struct SoftwareEdit {
     #[serde(default)]
     pub category_id: Option<String>,
     #[serde(default)]
-    pub tag_ids: Vec<String>,
+    pub starred: bool,
     #[serde(default)]
     pub default_version_id: Option<String>,
 }
@@ -73,8 +73,6 @@ impl Repo {
         }
         let category_ok = |c: &String| self.lib.categories.iter().any(|x| &x.id == c);
         let category_id = edit.category_id.filter(category_ok);
-        let tag_ids: Vec<String> =
-            edit.tag_ids.into_iter().filter(|t| self.lib.tags.iter().any(|x| &x.id == t)).collect();
 
         let old_name = self.lib.software[s].name.clone();
         if old_name != name {
@@ -93,7 +91,7 @@ impl Repo {
         software.homepage = edit.homepage.trim().to_string();
         software.note = edit.note;
         software.category_id = category_id;
-        software.tag_ids = tag_ids;
+        software.starred = edit.starred;
         software.default_version_id =
             edit.default_version_id.filter(|v| software.versions.iter().any(|x| &x.id == v));
         self.save()
@@ -262,19 +260,10 @@ impl Repo {
         self.save()
     }
 
-    /// 整体替换标签列表。被删掉的标签会从所有软件上摘掉。
-    pub fn set_tags(&mut self, mut tags: Vec<Tag>) -> Result<()> {
-        let mut seen = HashSet::new();
-        for tag in &mut tags {
-            tag.name = tag.name.trim().to_string();
-            if tag.id.is_empty() || tag.name.is_empty() || !seen.insert(tag.id.clone()) {
-                return Err(Error::Code("invalid_name"));
-            }
-        }
-        for software in &mut self.lib.software {
-            software.tag_ids.retain(|t| seen.contains(t));
-        }
-        self.lib.tags = tags;
+    /// 收藏或取消收藏。
+    pub fn set_starred(&mut self, software_id: &str, starred: bool) -> Result<()> {
+        let s = self.software_at(software_id)?;
+        self.lib.software[s].starred = starred;
         self.save()
     }
 
@@ -347,7 +336,7 @@ impl Repo {
             homepage: homepage.trim().to_string(),
             note: String::new(),
             category_id: None,
-            tag_ids: Vec::new(),
+            starred: false,
             icon: None,
             default_version_id: None,
             added_at: crate::now(),
@@ -540,7 +529,7 @@ mod tests {
             homepage: software.homepage.clone(),
             note: software.note.clone(),
             category_id: software.category_id.clone(),
-            tag_ids: software.tag_ids.clone(),
+            starred: software.starred,
             default_version_id: software.default_version_id.clone(),
         }
     }
@@ -694,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn categories_and_tags_clean_up_references() {
+    fn categories_clean_up_references_and_stars_stick() {
         let (_r, _s, mut repo) = repo_with(&[("Git-2.47.1.exe", b"git")]);
         let cat = |id: &str, parent: Option<&str>| Category {
             id: id.into(),
@@ -709,17 +698,18 @@ mod tests {
         let cyclic = repo.lib.categories.iter().filter(|c| c.parent_id.is_some()).count();
         assert!(cyclic <= 1, "环必须被打断");
 
-        repo.set_tags(vec![Tag { id: "t".into(), name: "常用".into(), color: None }]).unwrap();
         let id = repo.lib.software[0].id.clone();
         let mut edit = edit_of(&repo.lib.software[0]);
         edit.category_id = Some("c".into());
-        edit.tag_ids = vec!["t".into(), "ghost".into()];
+        edit.starred = true;
         repo.update_software(&id, edit).unwrap();
-        assert_eq!(repo.lib.software[0].tag_ids, ["t"]);
+        assert_eq!(repo.lib.software[0].category_id.as_deref(), Some("c"));
 
         repo.set_categories(vec![cat("a", None)]).unwrap();
-        repo.set_tags(vec![]).unwrap();
         assert!(repo.lib.software[0].category_id.is_none());
-        assert!(repo.lib.software[0].tag_ids.is_empty());
+        assert!(repo.lib.software[0].starred, "改分类不应影响收藏");
+        repo.set_starred(&id, false).unwrap();
+        assert!(!Repo::open(repo.root()).unwrap().lib.software[0].starred);
+        assert!(repo.set_starred("nope", true).is_err());
     }
 }

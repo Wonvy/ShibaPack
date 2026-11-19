@@ -5,6 +5,7 @@
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type {
+  Assignment,
   BackupInfo,
   Candidate,
   Category,
@@ -26,7 +27,7 @@ import type {
   Status,
   Storage,
   SubscribeResult,
-  Tag,
+  Suggestion,
   VerifyReport,
   VersionEdit,
 } from "./types";
@@ -63,7 +64,9 @@ export const api = {
   revealFile: (ref: FileRef) => call<void>("reveal_file", ref),
   openRepoFolder: () => call<void>("open_repo_folder"),
   setCategories: (categories: Category[]) => call<Library>("set_categories", { categories }),
-  setTags: (tags: Tag[]) => call<Library>("set_tags", { tags }),
+  setStarred: (softwareId: string, starred: boolean) => call<Library>("set_starred", { softwareId, starred }),
+  suggestCategories: (softwareIds: string[]) => call<Suggestion[]>("suggest_categories", { softwareIds }),
+  applyClassification: (assignments: Assignment[]) => call<Library>("apply_classification", { assignments }),
   setSettings: (settings: Settings) => call<Library>("set_settings", { settings }),
   getStats: () => call<Stats>("get_stats"),
   listBackups: () => call<BackupInfo[]>("list_backups"),

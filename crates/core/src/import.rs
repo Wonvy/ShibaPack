@@ -219,7 +219,7 @@ impl Repo {
                     homepage: String::new(),
                     note: String::new(),
                     category_id: None,
-                    tag_ids: Vec::new(),
+                    starred: false,
                     icon: None,
                     default_version_id: None,
                     added_at: added_at.clone(),

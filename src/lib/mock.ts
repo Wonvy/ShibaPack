@@ -23,7 +23,7 @@ import type {
   Stats,
   Status,
   Storage,
-  Tag,
+  Suggestion,
   VerifyReport,
   VersionEdit,
 } from "./types";
@@ -64,7 +64,7 @@ function software(
   name: string,
   publisher: string,
   categoryId: string | null,
-  tagIds: string[],
+  starred: boolean,
   versions: [string, [string, number, Storage?][]][],
   daysAgo = 5,
 ): Software {
@@ -75,7 +75,7 @@ function software(
     homepage: "",
     note: "",
     categoryId,
-    tagIds,
+    starred,
     icon: null,
     defaultVersionId: null,
     addedAt: stamp(daysAgo),
@@ -99,38 +99,31 @@ const categories: Category[] = [
   { id: "system", name: "系统工具", parentId: null, color: null, icon: "wrench" },
 ];
 
-const tags: Tag[] = [
-  { id: "daily", name: "常用", color: "#4cc38a" },
-  { id: "fresh", name: "装机必备", color: "#5aa2ff" },
-  { id: "oss", name: "开源", color: "#a78bfa" },
-];
-
 const lib: Library = {
   format: 1,
   categories,
-  tags,
   software: [
-    software("Visual Studio Code", "Microsoft", "editor", ["daily", "fresh", "oss"], [
+    software("Visual Studio Code", "Microsoft", "editor", true, [
       ["1.96.2", [["VSCodeUserSetup-x64-1.96.2.exe", 104], ["VSCodeUserSetup-arm64-1.96.2.exe", 101], ["VSCode-darwin-universal.dmg", 221], ["code_1.96.2_amd64.deb", 98]]],
       ["1.95.3", [["VSCodeUserSetup-x64-1.95.3.exe", 103]]],
     ], 2),
-    software("Sublime Text", "Sublime HQ", "editor", [], [["4189", [["sublime_text_build_4189_x64_setup.exe", 18], ["sublime_text_build_4189_mac.dmg", 41]]]], 40),
-    software("Git", "Git SCM", "dev", ["fresh", "oss"], [["2.47.1", [["Git-2.47.1-64-bit.exe", 66], ["git-2.47.1-intel-universal.dmg", 44]]]], 12),
-    software("Docker Desktop", "Docker Inc.", "dev", [], [["4.37.0", [["Docker Desktop Installer.exe", 512, "indexed"], ["Docker.dmg", 498, "indexed"]]]], 9),
-    software("Node.js", "OpenJS Foundation", "runtime", ["oss"], [
+    software("Sublime Text", "Sublime HQ", "editor", false, [["4189", [["sublime_text_build_4189_x64_setup.exe", 18], ["sublime_text_build_4189_mac.dmg", 41]]]], 40),
+    software("Git", "Git SCM", "dev", false, [["2.47.1", [["Git-2.47.1-64-bit.exe", 66], ["git-2.47.1-intel-universal.dmg", 44]]]], 12),
+    software("Docker Desktop", "Docker Inc.", "dev", false, [["4.37.0", [["Docker Desktop Installer.exe", 512, "indexed"], ["Docker.dmg", 498, "indexed"]]]], 9),
+    software("Node.js", "OpenJS Foundation", "runtime", false, [
       ["22.12.0", [["node-v22.12.0-x64.msi", 29], ["node-v22.12.0.pkg", 71]]],
       ["20.18.1", [["node-v20.18.1-x64.msi", 27]]],
     ], 20),
-    software("Python", "Python Software Foundation", "runtime", ["oss"], [["3.13.1", [["python-3.13.1-amd64.exe", 27], ["python-3.13.1-macos11.pkg", 66]]]], 25),
-    software("Figma", "Figma", "design", ["daily"], [["125.4.9", [["FigmaSetup.exe", 112], ["Figma.dmg", 131]]]], 15),
-    software("Blender", "Blender Foundation", "design", ["oss"], [["4.3.2", [["blender-4.3.2-windows-x64.msi", 348], ["blender-4.3.2-macos-arm64.dmg", 302], ["blender-4.3.2-linux-x64.tar.xz", 371]]]], 31),
-    software("Obsidian", "Dynalist Inc.", "office", ["daily"], [["1.7.7", [["Obsidian-1.7.7.exe", 96], ["Obsidian-1.7.7.dmg", 187], ["Obsidian-1.7.7.AppImage", 113]]]], 6),
-    software("VLC", "VideoLAN", "media", ["fresh", "oss"], [["3.0.21", [["vlc-3.0.21-win64.exe", 43], ["vlc-3.0.21-universal.dmg", 78], ["VLC-Android-3.6.0-arm64.apk", 38]]]], 60),
-    software("OBS Studio", "OBS Project", "media", ["oss"], [["31.0.0", [["OBS-Studio-31.0.0-Windows-Installer.exe", 138], ["OBS-Studio-31.0.0-macOS-Apple.dmg", 181]]]], 18),
-    software("7-Zip", "Igor Pavlov", "system", ["fresh", "oss"], [["24.09", [["7z2409-x64.exe", 1.6], ["7z2409-arm64.exe", 1.5]]]], 90),
-    software("Everything", "voidtools", "system", ["daily"], [["1.4.1.1026", [["Everything-1.4.1.1026.x64-Setup.exe", 1.8]]]], 75),
-    software("Telegram", "Telegram FZ-LLC", null, [], [["5.9.0", [["tsetup-x64.5.9.0.exe", 46], ["Telegram-11.5.3-arm64.apk", 72]]]], 4),
-    software("微信", "腾讯", null, ["daily"], [["3.9.12", [["WeChatSetup.exe", 228, "indexed"]]]], 1),
+    software("Python", "Python Software Foundation", "runtime", false, [["3.13.1", [["python-3.13.1-amd64.exe", 27], ["python-3.13.1-macos11.pkg", 66]]]], 25),
+    software("Figma", "Figma", "design", true, [["125.4.9", [["FigmaSetup.exe", 112], ["Figma.dmg", 131]]]], 15),
+    software("Blender", "Blender Foundation", "design", false, [["4.3.2", [["blender-4.3.2-windows-x64.msi", 348], ["blender-4.3.2-macos-arm64.dmg", 302], ["blender-4.3.2-linux-x64.tar.xz", 371]]]], 31),
+    software("Obsidian", "Dynalist Inc.", "office", true, [["1.7.7", [["Obsidian-1.7.7.exe", 96], ["Obsidian-1.7.7.dmg", 187], ["Obsidian-1.7.7.AppImage", 113]]]], 6),
+    software("VLC", "VideoLAN", "media", false, [["3.0.21", [["vlc-3.0.21-win64.exe", 43], ["vlc-3.0.21-universal.dmg", 78], ["VLC-Android-3.6.0-arm64.apk", 38]]]], 60),
+    software("OBS Studio", "OBS Project", "media", false, [["31.0.0", [["OBS-Studio-31.0.0-Windows-Installer.exe", 138], ["OBS-Studio-31.0.0-macOS-Apple.dmg", 181]]]], 18),
+    software("7-Zip", "Igor Pavlov", "system", false, [["24.09", [["7z2409-x64.exe", 1.6], ["7z2409-arm64.exe", 1.5]]]], 90),
+    software("Everything", "voidtools", "system", true, [["1.4.1.1026", [["Everything-1.4.1.1026.x64-Setup.exe", 1.8]]]], 75),
+    software("Telegram", "Telegram FZ-LLC", null, false, [["5.9.0", [["tsetup-x64.5.9.0.exe", 46], ["Telegram-11.5.3-arm64.apk", 72]]]], 4),
+    software("微信", "腾讯", null, true, [["3.9.12", [["WeChatSetup.exe", 228, "indexed"]]]], 1),
   ],
   summaries: {
     "Visual Studio Code": {
@@ -181,6 +174,34 @@ const catalog: Candidate[] = [
   { reference: "sublime-text", name: "Sublime Text", description: "Text editor for code, markup and prose", homepage: "https://www.sublimetext.com/", version: "4189" },
   { reference: "vlc", name: "VLC media player", description: "Multimedia player", homepage: "https://www.videolan.org/vlc/", version: "3.0.21" },
 ];
+
+const GUESSES: [RegExp, string, string, string][] = [
+  [/code|git|docker|node|python|sublime|postman/i, "dev", "开发工具", "code"],
+  [/figma|blender|sketch|photoshop/i, "design", "设计创作", "palette"],
+  [/obsidian|notion|office|typora/i, "office", "办公效率", "briefcase"],
+  [/vlc|obs|player|spotify/i, "media", "影音媒体", "film"],
+  [/telegram|微信|wechat|slack|discord/i, "chat", "聊天社交", "message"],
+  [/7-zip|everything|cleaner/i, "system", "系统工具", "wrench"],
+];
+
+function suggest(id: string): Suggestion {
+  const item = lib.software.find((s) => s.id === id)!;
+  const hit = GUESSES.find(([pattern]) => pattern.test(item.name));
+  if (!hit) return { softwareId: id, categoryId: null, newCategory: null, unchanged: false, known: false, evidence: [] };
+  const [, key, name, icon] = hit;
+  const existing = lib.categories.find((c) => c.id === key || c.name === name);
+  // 已经在这个分类的下级里：保持原样
+  const parentOf = (cid: string | null) => lib.categories.find((c) => c.id === cid)?.parentId ?? null;
+  const inside = existing !== undefined && (item.categoryId === existing.id || parentOf(item.categoryId) === existing.id);
+  return {
+    softwareId: id,
+    categoryId: inside ? item.categoryId : (existing?.id ?? null),
+    newCategory: existing ? null : { name, icon },
+    unchanged: inside,
+    known: true,
+    evidence: [],
+  };
+}
 
 let langPacks: LangPack[] = [];
 const downloadListeners = new Set<(progress: DownloadProgress) => void>();
@@ -289,7 +310,7 @@ async function importPaths(paths: string[], mode: Storage) {
       continue;
     }
     if (!target) {
-      target = software(name, "", null, [], [], 0);
+      target = software(name, "", null, false, [], 0);
       lib.software.push(target);
     }
     let slot = target.versions.find((v) => v.version === version);
@@ -314,7 +335,7 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
     case "get_status":
     case "set_repo_root": {
       if (command === "set_repo_root") configured = true;
-      const status: Status = { configured, repoRoot: configured ? ROOT : null, recovered: null, version: "0.1.0", selftest: null };
+      const status: Status = { configured, repoRoot: configured ? ROOT : null, recovered: null, version: "0.1.0", arch: "arm64", selftest: null };
       return status;
     }
     case "get_library":
@@ -354,10 +375,24 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       for (const item of lib.software) if (item.categoryId && !ids.has(item.categoryId)) item.categoryId = null;
       return snapshot();
     }
-    case "set_tags": {
-      lib.tags = args.tags as Tag[];
-      const ids = new Set(lib.tags.map((t) => t.id));
-      for (const item of lib.software) item.tagIds = item.tagIds.filter((t) => ids.has(t));
+    case "set_starred":
+      find(args.softwareId).starred = args.starred as boolean;
+      return snapshot();
+    case "suggest_categories":
+      await sleep(300);
+      return (args.softwareIds as string[]).map(suggest);
+    case "apply_classification": {
+      for (const item of args.assignments as { softwareId: string; categoryId?: string; newCategory?: { name: string; icon: string } }[]) {
+        const target = lib.software.find((s) => s.id === item.softwareId);
+        if (!target) continue;
+        let categoryId = item.categoryId ?? null;
+        if (!categoryId && item.newCategory) {
+          const existing = lib.categories.find((c) => c.name === item.newCategory!.name);
+          categoryId = existing?.id ?? newId();
+          if (!existing) lib.categories.push({ id: categoryId, name: item.newCategory.name, parentId: null, color: null, icon: item.newCategory.icon });
+        }
+        if (categoryId) target.categoryId = categoryId;
+      }
       return snapshot();
     }
     case "set_settings":
@@ -401,7 +436,7 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       await sleep(500);
       let target = lib.software.find((s) => s.id === args.softwareId);
       if (!target) {
-        target = software((args.name as string) || (args.reference as string), "", null, [], [], 0);
+        target = software((args.name as string) || (args.reference as string), "", null, false, [], 0);
         lib.software.push(target);
       }
       const kind = args.kind as SourceKind;

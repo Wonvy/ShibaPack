@@ -2,6 +2,7 @@
 
 import { Download } from "lucide-react";
 import { useEffect } from "react";
+import { ClassifyDialog } from "./components/ClassifyDialog";
 import { ImportProgress, ResizeHandle, StatusBar, ToastView, TopBar, UpdateCard } from "./components/chrome";
 import { DialogHost } from "./components/dialogs";
 import { PackageDetail } from "./components/PackageDetail";
@@ -16,7 +17,6 @@ import { scheduleUpdateChecks } from "./lib/updater";
 import { InstalledDetail, InstalledView } from "./views/InstalledView";
 import { LibraryView } from "./views/LibraryView";
 import { StorageView } from "./views/StorageView";
-import { TagsView } from "./views/TagsView";
 
 export default function App() {
   const t = useT();
@@ -26,6 +26,7 @@ export default function App() {
   const dropping = useApp((state) => state.dropping);
   const sidebarWidth = usePrefs((state) => state.sidebarWidth);
   const detailWidth = usePrefs((state) => state.detailWidth);
+  const detailOpen = usePrefs((state) => state.detailOpen);
   const setPrefs = usePrefs((state) => state.set);
 
   useEffect(() => {
@@ -57,8 +58,8 @@ export default function App() {
     );
   }
 
-  // 标签页和存储页不需要详情栏，中间栏占满
-  const withDetail = route === "library" || route === "installed";
+  // 存储页不需要详情栏；详情栏收起时中间栏占满
+  const withDetail = (route === "library" || route === "installed") && detailOpen;
 
   return (
     <div className="flex h-full flex-col">
@@ -70,7 +71,6 @@ export default function App() {
           <ImportProgress />
           {route === "library" && <LibraryView />}
           {route === "installed" && <InstalledView />}
-          {route === "tags" && <TagsView />}
           {route === "storage" && <StorageView />}
           {dropping && (
             <div className="pointer-events-none absolute inset-2 z-20 flex animate-fade flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-accent bg-accent-soft text-accent backdrop-blur-sm">
@@ -91,6 +91,7 @@ export default function App() {
       <StatusBar />
       <SettingsDialog />
       <SourceDialog />
+      <ClassifyDialog />
       <DialogHost />
       <ToastView />
       <UpdateCard />

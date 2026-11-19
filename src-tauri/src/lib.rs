@@ -8,8 +8,8 @@ use shibapack_core::{
     identify::same_software,
     installed,
     sources::{self, Candidate, SourceError},
-    summary, BackupInfo, Category, ImportHint, ImportReport, InstalledApp, Library, Release, Repo, Settings, SoftwareEdit,
-    SourceKind, Stats, Storage, Subscription, Tag, VerifyReport, VersionEdit,
+    summary, Assignment, BackupInfo, Category, ImportHint, ImportReport, InstalledApp, Library, Release, Repo, Settings,
+    SoftwareEdit, SourceKind, Stats, Storage, Subscription, Suggestion, VerifyReport, VersionEdit,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -58,6 +58,8 @@ struct Status {
     /// 启动时索引损坏并做了恢复：恢复所用的备份文件名，空字符串表示没有可用备份。
     recovered: Option<String>,
     version: String,
+    /// 这台电脑的处理器架构：x64 或 arm64。用来挑适合本机的安装包。
+    arch: String,
     selftest: Option<String>,
 }
 
@@ -138,6 +140,13 @@ fn status_of(state: &State<AppState>) -> Status {
         repo_root: repo.map(|r| r.root().to_string_lossy().to_string()),
         recovered: repo.and_then(|r| r.recovered.clone()),
         version: state.version.clone(),
+        arch: match std::env::consts::ARCH {
+            "x86_64" => "x64",
+            "aarch64" => "arm64",
+            "x86" => "x86",
+            other => other,
+        }
+        .to_string(),
         selftest: state.selftest.clone(),
     }
 }
@@ -293,8 +302,20 @@ fn set_categories(state: State<AppState>, categories: Vec<Category>) -> CmdResul
 }
 
 #[tauri::command(async)]
-fn set_tags(state: State<AppState>, tags: Vec<Tag>) -> CmdResult<Library> {
-    mutate(&state, |repo| repo.set_tags(tags))
+fn set_starred(state: State<AppState>, software_id: String, starred: bool) -> CmdResult<Library> {
+    mutate(&state, |repo| repo.set_starred(&software_id, starred))
+}
+
+/// 智能分类第一步：给一批软件出建议，不改动任何东西。
+#[tauri::command(async)]
+fn suggest_categories(state: State<AppState>, software_ids: Vec<String>) -> CmdResult<Vec<Suggestion>> {
+    with_repo(&state, |repo| Ok(repo.suggest_categories(&software_ids)))
+}
+
+/// 智能分类第二步：按用户在预览里确认的结果分类。
+#[tauri::command(async)]
+fn apply_classification(state: State<AppState>, assignments: Vec<Assignment>) -> CmdResult<Library> {
+    mutate(&state, |repo| repo.apply_classification(assignments).map(|_| ()))
 }
 
 #[tauri::command(async)]
@@ -679,7 +700,9 @@ pub fn run() {
             reveal_file,
             open_repo_folder,
             set_categories,
-            set_tags,
+            set_starred,
+            suggest_categories,
+            apply_classification,
             set_settings,
             get_stats,
             list_backups,

@@ -1,17 +1,30 @@
-// 侧栏：固定入口、分类树、标签与存储。
+// 侧栏：上面是软件库的几个入口，中间是分类树，下面是存储与设置。
 
-import { ChevronRight, HardDrive, LayoutGrid, type LucideIcon, MonitorCheck, Pencil, Plus, Tags, Trash2 } from "lucide-react";
+import {
+  ArrowUpCircle,
+  ChevronRight,
+  HardDrive,
+  LayoutGrid,
+  type LucideIcon,
+  MonitorCheck,
+  Pencil,
+  Plus,
+  Settings,
+  Sparkles,
+  Star,
+  Trash2,
+} from "lucide-react";
 import { useMemo, useState } from "react";
-import { canMoveCategory, moveCategory } from "../lib/actions";
+import { canMoveCategory, classify, moveCategory } from "../lib/actions";
 import { api } from "../lib/api";
 import { beginDrag, useDrag } from "../lib/drag";
 import { CATEGORY_COLORS, CATEGORY_ICONS, categoryIcon } from "../lib/icons";
-import { childrenOf, flattenTree, newId, withDescendants } from "../lib/library";
+import { childrenOf, flattenTree, hasUpdate, newId, withDescendants } from "../lib/library";
 import { usePrefs } from "../lib/prefs";
-import { type Route, type Scope, useApp, useT } from "../lib/store";
+import { type Scope, useApp, useT } from "../lib/store";
 import type { Category } from "../lib/types";
 import { confirm } from "./dialogs";
-import { Button, ContextMenu, Field, IconButton, Modal, Select, TextInput, cx } from "./ui";
+import { Button, ContextMenu, Field, IconButton, type MenuEntry, Modal, Select, TextInput, cx } from "./ui";
 
 type Editing = { mode: "new"; parentId: string | null } | { mode: "edit"; category: Category };
 
@@ -20,8 +33,10 @@ export function Sidebar() {
   const library = useApp((state) => state.library)!;
   const route = useApp((state) => state.route);
   const scope = useApp((state) => state.scope);
+  const settingsOpen = useApp((state) => state.settingsOpen);
   const setScope = useApp((state) => state.setScope);
   const setRoute = useApp((state) => state.setRoute);
+  const patch = useApp((state) => state.patch);
   const apply = useApp((state) => state.apply);
   const width = usePrefs((state) => state.sidebarWidth);
   const [editing, setEditing] = useState<Editing | null>(null);
@@ -40,14 +55,24 @@ export function Sidebar() {
     }
     return total;
   }, [library]);
-  const uncategorized = library.software.filter((s) => !s.categoryId).length;
+  const uncategorized = library.software.filter((s) => !s.categoryId);
+  const starred = library.software.filter((s) => s.starred).length;
+  const updates = library.software.filter(hasUpdate).length;
   // 正在拖一个软件时，“未分类”即使是空的也要露出来，好让人把软件拖回去
   const draggingSoftware = useDrag((state) => state.payload?.kind === "software");
   const overUncategorized = useDrag((state) => state.target !== null && state.target.category === null);
 
-  const inLibrary = route === "library";
   const isScope = (target: Scope) =>
-    inLibrary && scope.kind === target.kind && (scope.kind !== "category" || scope.id === (target as { id: string }).id);
+    route === "library" && scope.kind === target.kind && (scope.kind !== "category" || scope.id === (target as { id: string }).id);
+
+  /** 右键菜单里的“智能分类…”：对这一组软件出建议。 */
+  const classifyMenu = (ids: string[]): MenuEntry[] => [
+    { label: t("classify.menu"), icon: Sparkles, disabled: ids.length === 0, onSelect: () => classify(ids) },
+  ];
+  const idsInCategory = (id: string) => {
+    const ids = withDescendants(library.categories, id);
+    return library.software.filter((s) => s.categoryId && ids.has(s.categoryId)).map((s) => s.id);
+  };
 
   const remove = async (category: Category) => {
     const { ok } = await confirm({
@@ -61,63 +86,71 @@ export function Sidebar() {
 
   return (
     <nav className="flex shrink-0 flex-col bg-side" style={{ width }}>
-      <div className="flex flex-col gap-px p-1.5 pb-0">
-        <NavRow icon={MonitorCheck} label={t("nav.installed")} active={route === "installed"} onClick={() => setRoute("installed")} />
+      <div className="flex flex-col gap-px p-2 pb-0">
         <NavRow
           icon={LayoutGrid}
           label={t("nav.all")}
           count={library.software.length}
           active={isScope({ kind: "all" })}
           onClick={() => setScope({ kind: "all" })}
+          menu={classifyMenu(library.software.map((s) => s.id))}
         />
+        <NavRow icon={Star} label={t("nav.starred")} count={starred} active={isScope({ kind: "starred" })} onClick={() => setScope({ kind: "starred" })} />
+        <NavRow
+          icon={ArrowUpCircle}
+          label={t("nav.updates")}
+          count={updates}
+          highlight={updates > 0}
+          active={isScope({ kind: "updates" })}
+          onClick={() => setScope({ kind: "updates" })}
+        />
+        <NavRow icon={MonitorCheck} label={t("nav.installed")} active={route === "installed"} onClick={() => setRoute("installed")} />
       </div>
 
-      <div className="mt-2 flex h-7 shrink-0 items-center justify-between pr-1.5 pl-3.5">
-        <span className="text-[11px] font-medium text-fg-3">{t("nav.categories")}</span>
+      <div className="mt-3 flex h-7 shrink-0 items-center justify-between pr-2 pl-4">
+        <span className="text-[12px] font-medium text-fg-3">{t("nav.categories")}</span>
         <IconButton label={t("cat.new")} className="size-6" onClick={() => setEditing({ mode: "new", parentId: null })}>
           <Plus size={14} strokeWidth={1.75} />
         </IconButton>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         <Tree
           parentId={null}
           depth={0}
           counts={counts}
           isActive={(id) => isScope({ kind: "category", id })}
           onSelect={(id) => setScope({ kind: "category", id })}
-          onEdit={(category) => setEditing({ mode: "edit", category })}
-          onAddChild={(id) => setEditing({ mode: "new", parentId: id })}
-          onDelete={(category) => void remove(category)}
+          menuFor={(category) => [
+            { label: t("cat.newChild"), icon: Plus, onSelect: () => setEditing({ mode: "new", parentId: category.id }) },
+            { label: t("cat.edit"), icon: Pencil, onSelect: () => setEditing({ mode: "edit", category }) },
+            ...classifyMenu(idsInCategory(category.id)),
+            { label: t("cat.delete"), icon: Trash2, danger: true, separated: true, onSelect: () => void remove(category) },
+          ]}
         />
         {library.categories.length === 0 && <div className="px-2 py-1.5 text-[12px] text-fg-4">{t("cat.empty")}</div>}
-        {(uncategorized > 0 || draggingSoftware) && (
+        {(uncategorized.length > 0 || draggingSoftware) && (
           <NavRow
             label={t("nav.uncategorized")}
-            count={uncategorized}
+            count={uncategorized.length}
             muted
             drop="uncategorized"
             dropping={overUncategorized}
             active={isScope({ kind: "uncategorized" })}
             onClick={() => setScope({ kind: "uncategorized" })}
+            menu={classifyMenu(uncategorized.map((s) => s.id))}
           />
         )}
       </div>
 
-      <div className="flex shrink-0 flex-col gap-px border-t border-line p-1.5">
-        <RouteRow route="tags" icon={Tags} label={t("nav.tags")} count={library.tags.length} />
-        <RouteRow route="storage" icon={HardDrive} label={t("nav.storage")} />
+      <div className="flex shrink-0 flex-col gap-px border-t border-line p-2">
+        <NavRow icon={HardDrive} label={t("nav.storage")} active={route === "storage"} onClick={() => setRoute("storage")} />
+        <NavRow icon={Settings} label={t("app.settings")} active={settingsOpen} onClick={() => patch({ settingsOpen: true })} />
       </div>
 
       {editing && <CategoryDialog editing={editing} onClose={() => setEditing(null)} />}
     </nav>
   );
-}
-
-function RouteRow({ route, icon, label, count }: { route: Route; icon: LucideIcon; label: string; count?: number }) {
-  const current = useApp((state) => state.route);
-  const setRoute = useApp((state) => state.setRoute);
-  return <NavRow icon={icon} label={label} count={count} active={current === route} onClick={() => setRoute(route)} />;
 }
 
 function NavRow({
@@ -126,8 +159,10 @@ function NavRow({
   count,
   active,
   muted,
+  highlight,
   drop,
   dropping,
+  menu,
   onClick,
 }: {
   icon?: LucideIcon;
@@ -135,12 +170,15 @@ function NavRow({
   count?: number;
   active: boolean;
   muted?: boolean;
+  /** 数字用强调色（有更新时）。 */
+  highlight?: boolean;
   /** 可以把东西拖到这一行上时的落点标识。 */
   drop?: string;
   dropping?: boolean;
+  menu?: MenuEntry[];
   onClick: () => void;
 }) {
-  return (
+  const row = (
     <button
       type="button"
       data-drop={drop}
@@ -156,9 +194,12 @@ function NavRow({
     >
       {Icon ? <Icon size={16} strokeWidth={1.75} aria-hidden className="shrink-0" /> : <span className="w-4 shrink-0" />}
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {count !== undefined && count > 0 && <span className="tabular text-[11px] text-fg-3">{count}</span>}
+      {count !== undefined && count > 0 && (
+        <span className={cx("tabular text-[12px]", highlight ? "font-medium text-accent" : "text-fg-3")}>{count}</span>
+      )}
     </button>
   );
+  return menu ? <ContextMenu items={menu}>{row}</ContextMenu> : row;
 }
 
 interface TreeProps {
@@ -167,18 +208,15 @@ interface TreeProps {
   counts: Map<string, number>;
   isActive: (id: string) => boolean;
   onSelect: (id: string) => void;
-  onEdit: (category: Category) => void;
-  onAddChild: (id: string) => void;
-  onDelete: (category: Category) => void;
+  menuFor: (category: Category) => MenuEntry[];
 }
 
 function Tree(props: TreeProps) {
-  const t = useT();
   const categories = useApp((state) => state.library!.categories);
   const collapsed = usePrefs((state) => state.collapsed);
   const toggle = usePrefs((state) => state.toggleCollapsed);
   const dropTarget = useDrag((state) => state.target);
-  const { parentId, depth, counts, isActive, onSelect, onEdit, onAddChild, onDelete } = props;
+  const { parentId, depth, counts, isActive, onSelect, menuFor } = props;
 
   return (
     <div className="flex flex-col gap-px">
@@ -191,19 +229,12 @@ function Tree(props: TreeProps) {
         const zone = dropTarget?.category === category.id ? dropTarget.zone : null;
         return (
           <div key={category.id}>
-            <ContextMenu
-              items={[
-                { label: t("cat.newChild"), icon: Plus, onSelect: () => onAddChild(category.id) },
-                { label: t("cat.edit"), icon: Pencil, onSelect: () => onEdit(category) },
-                { label: t("cat.delete"), icon: Trash2, danger: true, separated: true, onSelect: () => onDelete(category) },
-              ]}
-            >
+            <ContextMenu items={menuFor(category)}>
               <div
                 role="button"
                 tabIndex={0}
                 data-drop={`category:${category.id}`}
                 onClick={() => onSelect(category.id)}
-                onDoubleClick={() => onEdit(category)}
                 onKeyDown={(event) => event.key === "Enter" && onSelect(category.id)}
                 onPointerDown={(event) =>
                   beginDrag(
@@ -240,7 +271,7 @@ function Tree(props: TreeProps) {
                 {/* 图标默认单色；只有给分类选了颜色，图标才带那个颜色 */}
                 <Icon size={16} strokeWidth={1.75} aria-hidden className="mr-1 shrink-0" style={{ color: category.color ?? undefined }} />
                 <span className="min-w-0 flex-1 truncate">{category.name}</span>
-                {count > 0 && <span className="tabular text-[11px] text-fg-3">{count}</span>}
+                {count > 0 && <span className="tabular text-[12px] text-fg-3">{count}</span>}
               </div>
             </ContextMenu>
             {hasChildren && open && depth < 12 && <Tree {...props} parentId={category.id} depth={depth + 1} />}

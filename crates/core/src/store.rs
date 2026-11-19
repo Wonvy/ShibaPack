@@ -459,11 +459,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut repo = Repo::open(dir.path()).unwrap();
         assert!(repo.index_path().exists());
-        repo.lib.tags.push(Tag { id: "t1".into(), name: "常用".into(), color: None });
+        repo.lib.categories.push(Category { id: "t1".into(), name: "常用".into(), parent_id: None, color: None, icon: None });
         repo.save().unwrap();
 
         let again = Repo::open(dir.path()).unwrap();
-        assert_eq!(again.lib.tags.len(), 1);
+        assert_eq!(again.lib.categories.len(), 1);
         assert!(again.recovered.is_none());
         assert!(!dir.path().join("software.json.tmp").exists());
     }
@@ -472,13 +472,13 @@ mod tests {
     fn corrupt_index_is_restored_from_backup() {
         let dir = tempfile::tempdir().unwrap();
         let mut repo = Repo::open(dir.path()).unwrap();
-        repo.lib.tags.push(Tag { id: "t1".into(), name: "保留".into(), color: None });
+        repo.lib.categories.push(Category { id: "t1".into(), name: "保留".into(), parent_id: None, color: None, icon: None });
         repo.create_backup().unwrap();
         fs::write(repo.index_path(), b"{ not json").unwrap();
 
         let repo = Repo::open(dir.path()).unwrap();
         assert!(repo.recovered.as_deref().is_some_and(|name| name.starts_with("software-")));
-        assert_eq!(repo.lib.tags[0].name, "保留");
+        assert_eq!(repo.lib.categories[0].name, "保留");
         assert!(dir.path().join("software.json.corrupt").exists());
     }
 
@@ -496,7 +496,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut repo = Repo::open(dir.path()).unwrap();
         for n in 0..11 {
-            repo.lib.tags = vec![Tag { id: "t".into(), name: format!("第 {n} 版"), color: None }];
+            repo.lib.categories = vec![Category { id: "t".into(), name: format!("第 {n} 版"), parent_id: None, color: None, icon: None }];
             repo.create_backup().unwrap();
         }
         let backups = repo.backups();
@@ -505,8 +505,23 @@ mod tests {
         // 最旧的那份还留着的是第 3 版（0、1、2 被轮转掉了）
         let oldest = backups.last().unwrap().name.clone();
         repo.restore_backup(&oldest).unwrap();
-        assert_eq!(repo.lib.tags[0].name, "第 3 版");
+        assert_eq!(repo.lib.categories[0].name, "第 3 版");
         assert!(repo.restore_backup("../software.json").is_err());
+    }
+
+    #[test]
+    fn old_index_with_tags_still_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = r#"{ "format": 1, "tags": [{ "id": "t", "name": "常用" }],
+            "software": [{ "id": "s", "name": "Git", "tagIds": ["t"], "addedAt": "2026-01-01T00:00:00+08:00" }] }"#;
+        fs::write(dir.path().join(INDEX_FILE), old).unwrap();
+        let mut repo = Repo::open(dir.path()).unwrap();
+        assert!(repo.recovered.is_none(), "旧格式不应被当成损坏");
+        assert_eq!(repo.lib.software[0].name, "Git");
+        assert!(!repo.lib.software[0].starred);
+        repo.save().unwrap();
+        let saved = fs::read_to_string(repo.index_path()).unwrap();
+        assert!(!saved.contains("tagIds") && !saved.contains("\"tags\""));
     }
 
     #[test]

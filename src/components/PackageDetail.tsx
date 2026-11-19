@@ -1,9 +1,37 @@
-// 详情栏：一个软件的信息、分类与标签、各版本的安装包。
+// 详情栏：只放常用的——简介、安装状态与新版本、各版本的安装包；
+// 分类、在线源、主页、备注这些收在“更多信息”里，默认收起。
 
-import { CircleCheck, Copy, Download, Ellipsis, ExternalLink, FolderOpen, MousePointerClick, Pencil, Play, Star, Trash2 } from "lucide-react";
-import { deleteFile, deleteSoftware, deleteVersion, installSoftware, installerFor, uninstallApp } from "../lib/actions";
+import {
+  ArrowUp,
+  ChevronRight,
+  CircleCheck,
+  Copy,
+  Download,
+  Ellipsis,
+  ExternalLink,
+  FolderOpen,
+  MousePointerClick,
+  Pencil,
+  Play,
+  Sparkles,
+  Star,
+  Trash2,
+  X,
+} from "lucide-react";
+import {
+  bestAsset,
+  classify,
+  deleteFile,
+  deleteSoftware,
+  deleteVersion,
+  installSoftware,
+  installerFor,
+  toggleStar,
+  uninstallApp,
+} from "../lib/actions";
 import { api, hostPlatform } from "../lib/api";
-import { flattenTree, formatDate, formatSize, primaryVersion, sortedVersions } from "../lib/library";
+import { flattenTree, formatDate, formatSize, hasUpdate, primaryVersion, sortedVersions } from "../lib/library";
+import { usePrefs } from "../lib/prefs";
 import { useApp, useLanguage, useT } from "../lib/store";
 import type { PackageFile, Software, SoftwareEdit, Version } from "../lib/types";
 import { prompt } from "./dialogs";
@@ -26,14 +54,10 @@ function Detail({ software }: { software: Software }) {
   const library = useApp((state) => state.library)!;
   const apply = useApp((state) => state.apply);
   const attempt = useApp((state) => state.attempt);
+  const moreOpen = usePrefs((state) => state.detailMoreOpen);
+  const setPrefs = usePrefs((state) => state.set);
   const icon = useSoftwareIcon(software);
   const summary = library.summaries[software.name];
-  // 这台电脑上装着的同一个软件
-  const installedApp = useApp((state) => {
-    const id = state.links[software.id];
-    return id ? state.installed?.find((app) => app.id === id) : undefined;
-  });
-  const installer = installerFor(software);
 
   const save = (patch: Partial<SoftwareEdit>) => {
     const edit: SoftwareEdit = {
@@ -42,7 +66,7 @@ function Detail({ software }: { software: Software }) {
       homepage: software.homepage,
       note: software.note,
       categoryId: software.categoryId,
-      tagIds: software.tagIds,
+      starred: software.starred,
       defaultVersionId: software.defaultVersionId,
       ...patch,
     };
@@ -58,163 +82,208 @@ function Detail({ software }: { software: Software }) {
   };
   const blurOnEnter = (event: React.KeyboardEvent<HTMLInputElement>) => event.key === "Enter" && event.currentTarget.blur();
 
-  const toggleTag = (id: string) =>
-    void save({ tagIds: software.tagIds.includes(id) ? software.tagIds.filter((x) => x !== id) : [...software.tagIds, id] });
-
   const main = primaryVersion(software);
+  const homepage = /^https?:\/\//i.test(software.homepage) ? software.homepage : null;
   const plain = "w-full rounded-md border border-transparent bg-transparent px-1.5 outline-none transition-colors hover:border-line-strong focus:border-accent focus:bg-bg";
+  const field = "selectable w-full rounded-md border border-line-strong bg-bg px-2.5 text-[13px] outline-none placeholder:text-fg-4 focus:border-accent";
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-4">
-        <div className="flex items-start gap-3">
-          <SoftwareIcon name={software.name} icon={icon} size={44} />
-          <div className="min-w-0 flex-1">
-            <input
-              aria-label={t("lib.col.name")}
-              defaultValue={software.name}
-              key={software.name}
-              spellCheck={false}
-              onBlur={commit("name")}
-              onKeyDown={blurOnEnter}
-              className={cx(plain, "-ml-1.5 h-7 text-[15px] font-semibold")}
+    <div className="h-full overflow-y-auto px-4 pt-4 pb-8">
+      {/* 头部：图标、名字、发布者；右边是收藏和更多操作 */}
+      <div className="flex items-start gap-3">
+        <SoftwareIcon name={software.name} icon={icon} size={44} />
+        <div className="min-w-0 flex-1">
+          <input
+            aria-label={t("lib.col.name")}
+            defaultValue={software.name}
+            key={software.name}
+            spellCheck={false}
+            onBlur={commit("name")}
+            onKeyDown={blurOnEnter}
+            className={cx(plain, "-ml-1.5 h-7 text-[15px] font-semibold")}
+          />
+          <input
+            aria-label={t("detail.publisher")}
+            defaultValue={software.publisher}
+            key={`p:${software.publisher}`}
+            placeholder={t("detail.publisher")}
+            spellCheck={false}
+            onBlur={commit("publisher")}
+            onKeyDown={blurOnEnter}
+            className={cx(plain, "-ml-1.5 h-6 text-[12px] text-fg-2 placeholder:text-fg-4")}
+          />
+        </div>
+        <div className="flex shrink-0 items-center">
+          <IconButton
+            label={software.starred ? t("star.remove") : t("star.add")}
+            className={software.starred ? "text-warning hover:text-warning" : ""}
+            onClick={() => void toggleStar(software)}
+          >
+            <Star size={16} strokeWidth={1.75} fill={software.starred ? "currentColor" : "none"} />
+          </IconButton>
+          <Dropdown
+            items={[
+              { label: t("classify.menu"), icon: Sparkles, onSelect: () => classify([software.id]) },
+              { label: t("detail.openHomepage"), icon: ExternalLink, disabled: !homepage, onSelect: () => homepage && void attempt(() => api.openUrl(homepage)) },
+              { label: t("detail.deleteSoftware"), icon: Trash2, danger: true, separated: true, onSelect: () => void deleteSoftware(software) },
+            ]}
+          >
+            <IconButton label={t("common.edit")}>
+              <Ellipsis size={16} strokeWidth={1.75} />
+            </IconButton>
+          </Dropdown>
+        </div>
+      </div>
+
+      {summary?.text && (
+        <p className="selectable m-0 mt-3 line-clamp-4 text-[13px] leading-relaxed text-fg-2" title={`${summary.text}\n\n${t("summary.source", { source: summary.source })}`}>
+          {summary.text}
+        </p>
+      )}
+
+      <StatusBlock software={software} />
+
+      <Section title={`${t("detail.versions")} · ${software.versions.length}`}>
+        {software.versions.length === 0 && <div className="text-[12px] text-fg-4">{t("detail.noFiles")}</div>}
+        <div className="flex flex-col gap-3">
+          {sortedVersions(software).map((version) => (
+            <VersionBlock key={version.id} software={software} version={version} isMain={version.id === main?.id} onSave={save} />
+          ))}
+        </div>
+      </Section>
+
+      {/* 更多信息：不常改的都在这里 */}
+      <button
+        type="button"
+        aria-expanded={moreOpen}
+        onClick={() => setPrefs({ detailMoreOpen: !moreOpen })}
+        className="mt-5 flex h-7 w-full items-center gap-1 rounded-md text-[12px] font-medium text-fg-3 hover:text-fg-2"
+      >
+        <ChevronRight size={14} strokeWidth={2} aria-hidden className={cx("transition-transform", moreOpen && "rotate-90")} />
+        {t("detail.more")}
+        <span className="ml-2 h-px flex-1 bg-line" />
+      </button>
+      {moreOpen && (
+        <div className="flex flex-col gap-4 pt-2">
+          <Labeled label={t("detail.category")}>
+            <Select value={software.categoryId ?? ""} onChange={(event) => void save({ categoryId: event.target.value || null })}>
+              <option value="">{t("nav.uncategorized")}</option>
+              {flattenTree(library.categories).map(({ category, depth }) => (
+                <option key={category.id} value={category.id}>
+                  {"　".repeat(depth) + category.name}
+                </option>
+              ))}
+            </Select>
+          </Labeled>
+          <Labeled label={t("source.title")}>
+            <SourceSection software={software} />
+          </Labeled>
+          <Labeled label={t("detail.homepage")}>
+            <div className="flex gap-1">
+              <input
+                aria-label={t("detail.homepage")}
+                defaultValue={software.homepage}
+                key={`h:${software.homepage}`}
+                placeholder="https://"
+                spellCheck={false}
+                onBlur={commit("homepage")}
+                onKeyDown={blurOnEnter}
+                className={cx(field, "h-7")}
+              />
+              {homepage && (
+                <IconButton label={t("detail.openHomepage")} onClick={() => void attempt(() => api.openUrl(homepage))}>
+                  <ExternalLink size={14} strokeWidth={1.75} />
+                </IconButton>
+              )}
+            </div>
+          </Labeled>
+          <Labeled label={t("detail.note")}>
+            <textarea
+              aria-label={t("detail.note")}
+              defaultValue={software.note}
+              key={`n:${software.note}`}
+              rows={3}
+              placeholder={t("detail.notePlaceholder")}
+              onBlur={commit("note")}
+              className={cx(field, "resize-y py-1.5 leading-relaxed")}
             />
-            <input
-              aria-label={t("detail.publisher")}
-              defaultValue={software.publisher}
-              key={`p:${software.publisher}`}
-              placeholder={t("detail.publisher")}
-              spellCheck={false}
-              onBlur={commit("publisher")}
-              onKeyDown={blurOnEnter}
-              className={cx(plain, "-ml-1.5 h-6 text-[12px] text-fg-2 placeholder:text-fg-4")}
-            />
+          </Labeled>
+          <div className="flex items-center justify-between text-[12px] text-fg-3">
+            <span>{t("detail.addedAt")}</span>
+            <span className="tabular">{formatDate(software.addedAt, language)}</span>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
 
-        {summary?.text && (
-          <div className="mt-4">
-            <p className="selectable m-0 text-[13px] leading-relaxed text-fg-2">{summary.text}</p>
-            <p className="m-0 mt-1 text-[11px] text-fg-4">{t("summary.source", { source: summary.source })}</p>
-          </div>
-        )}
+/** 安装状态和在线源上的新版本，各占一行；都没有就不显示。 */
+function StatusBlock({ software }: { software: Software }) {
+  const t = useT();
+  const installedApp = useApp((state) => {
+    const id = state.links[software.id];
+    return id ? state.installed?.find((app) => app.id === id) : undefined;
+  });
+  const startDownload = useApp((state) => state.downloadAsset);
+  const latest = software.subscription?.latest;
+  const update = latest && hasUpdate(software) ? latest : null;
+  const asset = update ? bestAsset(software) : null;
+  const download = useApp((state) => (asset ? state.downloads[asset.url] : undefined));
+  const installer = installerFor(software);
+  if (!installedApp && !installer && !update) return null;
 
-        {(installedApp || installer) && (
-          <div className="mt-4 flex items-center gap-2">
-            {installedApp ? (
-              <>
-                <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[12px] text-success">
-                  <CircleCheck size={14} strokeWidth={2} aria-hidden className="shrink-0" />
-                  <span className="truncate">
-                    {installedApp.version ? t("link.installedVersion", { version: installedApp.version }) : t("link.installed")}
-                  </span>
+  const percent = download?.total ? Math.min(100, Math.round((download.received / download.total) * 100)) : null;
+  const row = "flex min-h-8 items-center gap-2";
+  return (
+    <div className="mt-4 flex flex-col gap-1.5 rounded-lg bg-hover px-3 py-2">
+      {(installedApp || installer) && (
+        <div className={row}>
+          {installedApp ? (
+            <>
+              <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px] text-success">
+                <CircleCheck size={15} strokeWidth={2} aria-hidden className="shrink-0" />
+                <span className="truncate">
+                  {installedApp.version ? t("link.installedVersion", { version: installedApp.version }) : t("link.installed")}
                 </span>
-                {installedApp.uninstallable && (
-                  <Button className="text-danger" onClick={() => void uninstallApp(installedApp)}>
-                    {t("link.uninstall")}
-                  </Button>
-                )}
-              </>
-            ) : (
+              </span>
+              {installedApp.uninstallable && (
+                <Button variant="ghost" className="text-danger hover:text-danger" onClick={() => void uninstallApp(installedApp)}>
+                  {t("link.uninstall")}
+                </Button>
+              )}
+            </>
+          ) : (
+            <>
+              <span className="min-w-0 flex-1 text-[13px] text-fg-3">{t("link.missing")}</span>
               <Button variant="primary" onClick={() => void installSoftware(software)}>
                 <Download size={14} strokeWidth={2} aria-hidden />
                 {t("link.install")}
               </Button>
-            )}
-          </div>
-        )}
-
-        <Section title={t("detail.category")}>
-          <Select value={software.categoryId ?? ""} onChange={(event) => void save({ categoryId: event.target.value || null })}>
-            <option value="">{t("nav.uncategorized")}</option>
-            {flattenTree(library.categories).map(({ category, depth }) => (
-              <option key={category.id} value={category.id}>
-                {"　".repeat(depth) + category.name}
-              </option>
-            ))}
-          </Select>
-        </Section>
-
-        <Section title={t("detail.tags")}>
-          {library.tags.length === 0 ? (
-            <div className="text-[12px] text-fg-4">{t("detail.noTags")}</div>
-          ) : (
-            <div className="flex flex-wrap gap-1.5">
-              {library.tags.map((tag) => {
-                const on = software.tagIds.includes(tag.id);
-                return (
-                  <button
-                    key={tag.id}
-                    type="button"
-                    aria-pressed={on}
-                    onClick={() => toggleTag(tag.id)}
-                    className={cx(
-                      "inline-flex h-6 items-center gap-1.5 rounded-full border px-2 text-[12px] transition-colors",
-                      on ? "border-transparent bg-active text-fg" : "border-line text-fg-3 hover:text-fg-2",
-                    )}
-                  >
-                    <span className="size-2 rounded-full" style={{ background: tag.color ?? "var(--fg-3)", opacity: on ? 1 : 0.45 }} />
-                    {tag.name}
-                  </button>
-                );
-              })}
-            </div>
+            </>
           )}
-        </Section>
-
-        <Section title={`${t("detail.versions")} · ${software.versions.length}`}>
-          {software.versions.length === 0 && <div className="text-[12px] text-fg-4">{t("detail.noFiles")}</div>}
-          <div className="flex flex-col gap-3">
-            {sortedVersions(software).map((version) => (
-              <VersionBlock key={version.id} software={software} version={version} isMain={version.id === main?.id} onSave={save} />
-            ))}
-          </div>
-        </Section>
-
-        <Section title={t("source.title")}>
-          <SourceSection software={software} />
-        </Section>
-
-        <Section title={t("detail.homepage")}>
-          <div className="flex gap-1">
-          <input
-            aria-label={t("detail.homepage")}
-            defaultValue={software.homepage}
-            key={`h:${software.homepage}`}
-            placeholder="https://"
-            spellCheck={false}
-            onBlur={commit("homepage")}
-            onKeyDown={blurOnEnter}
-            className="selectable h-7 w-full rounded-md border border-line-strong bg-bg px-2.5 text-[13px] outline-none placeholder:text-fg-4 focus:border-accent"
-          />
-          {/^https?:\/\//i.test(software.homepage) && (
-            <IconButton label={t("detail.homepage")} onClick={() => void attempt(() => api.openUrl(software.homepage))}>
-              <ExternalLink size={14} strokeWidth={1.75} />
-            </IconButton>
-          )}
-          </div>
-        </Section>
-
-        <Section title={t("detail.note")}>
-          <textarea
-            aria-label={t("detail.note")}
-            defaultValue={software.note}
-            key={`n:${software.note}`}
-            rows={3}
-            placeholder={t("detail.notePlaceholder")}
-            onBlur={commit("note")}
-            className="w-full resize-y rounded-md border border-line-strong bg-bg px-2.5 py-1.5 text-[13px] leading-relaxed outline-none placeholder:text-fg-4 focus:border-accent"
-          />
-        </Section>
-      </div>
-
-      <div className="flex h-10 shrink-0 items-center justify-between border-t border-line pr-2 pl-4">
-        <span className="text-[12px] text-fg-3">{t("detail.added", { date: formatDate(software.addedAt, language) })}</span>
-        <Button variant="ghost" className="text-danger hover:text-danger" onClick={() => void deleteSoftware(software)}>
-          <Trash2 size={14} strokeWidth={1.75} aria-hidden />
-          {t("detail.deleteSoftware")}
-        </Button>
-      </div>
+        </div>
+      )}
+      {update && (
+        <div className={row}>
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px] text-accent">
+            <ArrowUp size={15} strokeWidth={2.25} aria-hidden className="shrink-0" />
+            <span className="truncate">{t("source.updateTo", { version: update.version })}</span>
+          </span>
+          {download ? (
+            <>
+              <span className="tabular text-[12px] text-accent">{percent !== null ? `${percent}%` : t("source.queued")}</span>
+              <IconButton label={t("source.cancel")} onClick={() => void api.cancelDownload(asset!.url)}>
+                <X size={15} strokeWidth={1.75} />
+              </IconButton>
+            </>
+          ) : asset ? (
+            <Button title={asset.name} onClick={() => void startDownload(software.id, asset)}>
+              {t("source.download")}
+            </Button>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
@@ -222,9 +291,18 @@ function Detail({ software }: { software: Software }) {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="mt-5">
-      <h3 className="m-0 mb-2 text-[11px] font-medium text-fg-3">{title}</h3>
+      <h3 className="m-0 mb-2 text-[12px] font-medium text-fg-3">{title}</h3>
       {children}
     </section>
+  );
+}
+
+function Labeled({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="mb-1.5 text-[12px] text-fg-3">{label}</div>
+      {children}
+    </div>
   );
 }
 
@@ -295,10 +373,9 @@ function FileRow({ software, version, file }: { software: Software; version: Ver
         <div className="selectable truncate text-[12px]" title={file.path}>
           {file.name}
         </div>
-        <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-fg-3">
+        <div className="mt-1 flex flex-wrap items-center gap-1 text-[12px] text-fg-3">
           <PlatformChip platform={file.platform} />
           {file.arch && <Chip>{file.arch}</Chip>}
-          <Chip>{file.storage === "managed" ? t("detail.managed") : t("detail.indexed")}</Chip>
           <span className="tabular ml-0.5">{formatSize(file.size)}</span>
         </div>
       </div>

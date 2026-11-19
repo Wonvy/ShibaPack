@@ -1,29 +1,32 @@
-// 软件库：工具栏（数量、搜索、平台、安装状态、标签、视图）加软件列表、网格或文件夹树。
+// 软件库。工具栏左边是标题和筛选，右边是视图相关的按钮；下面是列表、网格或文件夹树。
 
 import {
   ArrowDown,
   ArrowUp,
+  Boxes,
   ChevronRight,
   CircleCheck,
+  CircleDashed,
   File as FileIcon,
   Folder,
   FolderOpen,
   FolderTree,
   LayoutGrid,
   LayoutList,
+  ListFilter,
   PackageOpen,
   Rows3,
-  Search,
   SearchX,
+  Sparkles,
+  Star,
   Trash2,
-  X,
 } from "lucide-react";
 import { type PointerEvent, useMemo, useState } from "react";
-import { PlatformIcons } from "../components/PlatformIcon";
+import { DetailToggle } from "../components/chrome";
+import { PlatformIcon, PlatformIcons } from "../components/PlatformIcon";
 import { SoftwareIcon, useSoftwareIcon } from "../components/SoftwareIcon";
-import { UpdateMark } from "../components/SourcePanel";
-import { Button, ContextMenu, EmptyState, IconButton, Select, cx } from "../components/ui";
-import { deleteSoftware, installSoftware, installerFor, moveSoftwareTo, uninstallApp } from "../lib/actions";
+import { Button, ContextMenu, EmptyState, FilterMenu, IconButton, type MenuEntry, cx } from "../components/ui";
+import { classify, deleteSoftware, installSoftware, installerFor, moveSoftwareTo, toggleStar, uninstallApp } from "../lib/actions";
 import { api } from "../lib/api";
 import { beginDrag } from "../lib/drag";
 import {
@@ -44,8 +47,9 @@ import { type SortKey, usePrefs } from "../lib/prefs";
 import { type InstallFilter, useApp, useLanguage, useT } from "../lib/store";
 import type { InstalledApp, Platform, Software } from "../lib/types";
 
-// 栏窄的时候先收起添加时间，再收起大小
-const COLUMNS = "grid grid-cols-[minmax(0,1fr)_auto] @lg:grid-cols-[minmax(0,1fr)_104px_72px] @2xl:grid-cols-[minmax(0,1fr)_104px_76px_92px] items-center gap-x-3";
+// 列：名称、版本、平台、大小、添加时间。栏窄时从右往左收起
+const COLUMNS =
+  "grid grid-cols-[minmax(0,1fr)_92px] @lg:grid-cols-[minmax(0,1fr)_92px_88px] @2xl:grid-cols-[minmax(0,1fr)_92px_88px_72px] @4xl:grid-cols-[minmax(0,1fr)_92px_88px_72px_92px] items-center gap-x-3";
 
 export function LibraryView() {
   const t = useT();
@@ -53,28 +57,25 @@ export function LibraryView() {
   const scope = useApp((state) => state.scope);
   const search = useApp((state) => state.search);
   const platform = useApp((state) => state.platform);
-  const tagFilter = useApp((state) => state.tagFilter);
   const installFilter = useApp((state) => state.installFilter);
-  const updatesOnly = useApp((state) => state.updatesOnly);
   const links = useApp((state) => state.links);
   const installedKnown = useApp((state) => state.installed !== null);
   const selectedId = useApp((state) => state.selectedId);
   const select = useApp((state) => state.select);
   const patch = useApp((state) => state.patch);
-  const setScope = useApp((state) => state.setScope);
   const prefs = usePrefs();
 
   const list = useMemo(() => {
     let items = library.software;
+    if (scope.kind === "starred") items = items.filter((s) => s.starred);
+    if (scope.kind === "updates") items = items.filter(hasUpdate);
     if (scope.kind === "uncategorized") items = items.filter((s) => !s.categoryId);
     if (scope.kind === "category") {
       const ids = withDescendants(library.categories, scope.id);
       items = items.filter((s) => s.categoryId !== null && ids.has(s.categoryId));
     }
     if (platform !== "all") items = items.filter((s) => softwarePlatforms(s).includes(platform));
-    if (tagFilter) items = items.filter((s) => s.tagIds.includes(tagFilter));
     if (installFilter !== "all") items = items.filter((s) => s.id in links === (installFilter === "installed"));
-    if (updatesOnly) items = items.filter(hasUpdate);
     const query = search.trim().toLowerCase();
     if (query) {
       items = items.filter(
@@ -93,8 +94,7 @@ export function LibraryView() {
       added: (a, b) => a.addedAt.localeCompare(b.addedAt),
     };
     return [...items].sort((a, b) => compare[prefs.sortKey](a, b) * direction);
-  }, [library, scope, platform, tagFilter, installFilter, updatesOnly, links, search, prefs.sortKey, prefs.sortAsc]);
-  const updateCount = useMemo(() => library.software.filter(hasUpdate).length, [library]);
+  }, [library, scope, platform, installFilter, links, search, prefs.sortKey, prefs.sortAsc]);
 
   // 看“全部软件”时按分类分组；已经在某个分类里或正在搜索时就不分了
   const groups = useMemo(() => {
@@ -112,99 +112,49 @@ export function LibraryView() {
     return out;
   }, [list, library.categories, prefs.groupByCategory, scope.kind, search, t]);
 
-  const scopeName =
-    scope.kind === "category"
-      ? categoryPath(library.categories, scope.id)
-      : scope.kind === "uncategorized"
-        ? t("nav.uncategorized")
-        : null;
-  const filtering =
-    search.trim() !== "" || platform !== "all" || tagFilter !== null || installFilter !== "all" || updatesOnly || scope.kind !== "all";
+  const title = {
+    all: t("nav.all"),
+    starred: t("nav.starred"),
+    updates: t("nav.updates"),
+    uncategorized: t("nav.uncategorized"),
+    category: scope.kind === "category" ? categoryPath(library.categories, scope.id) : "",
+  }[scope.kind];
+  const filtering = search.trim() !== "" || platform !== "all" || installFilter !== "all" || scope.kind !== "all";
   const view = prefs.packageView;
 
   return (
     <div className="@container flex min-h-0 flex-1 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-3">
-        <span className="tabular shrink-0 text-[12px] text-fg-3">{t("lib.count", { n: list.length })}</span>
-        <div className="relative min-w-[96px] flex-1 @2xl:max-w-[220px]">
-          <Search size={14} strokeWidth={1.75} aria-hidden className="pointer-events-none absolute top-1/2 left-2 -translate-y-1/2 text-fg-3" />
-          <input
-            type="text"
-            value={search}
-            spellCheck={false}
-            placeholder={t("lib.search")}
-            onChange={(event) => patch({ search: event.target.value })}
-            className="h-7 w-full rounded-md border border-transparent bg-hover pr-2 pl-7 text-[13px] outline-none placeholder:text-fg-3 focus:border-accent"
-          />
-        </div>
-        <Select
-          aria-label={t("lib.col.platform")}
+      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-line pr-2 pl-4">
+        <h2 className="m-0 min-w-0 truncate text-[14px] font-semibold">{title}</h2>
+        <span className="tabular mr-2 ml-1.5 shrink-0 text-[12px] text-fg-3">{list.length}</span>
+        {/* 筛选 */}
+        <FilterMenu<Platform | "all">
+          label={t("lib.col.platform")}
           value={platform}
-          onChange={(event) => patch({ platform: event.target.value as Platform | "all" })}
-          compact
-        >
-          <option value="all">{t("lib.allPlatforms")}</option>
-          {PLATFORMS.map((p) => (
-            <option key={p} value={p}>
-              {t(`platform.${p}`)}
-            </option>
-          ))}
-        </Select>
+          onChange={(value) => patch({ platform: value })}
+          options={[
+            { value: "all", label: t("lib.allPlatforms"), icon: <Boxes size={15} strokeWidth={1.75} /> },
+            ...PLATFORMS.map((p) => ({ value: p, label: t(`platform.${p}`), icon: <PlatformIcon platform={p} size={14} /> })),
+          ]}
+        />
         {installedKnown && (
-          <Select
-            aria-label={t("link.installed")}
+          <FilterMenu<InstallFilter>
+            label={t("link.installed")}
             value={installFilter}
-            onChange={(event) => patch({ installFilter: event.target.value as InstallFilter })}
-            compact
-            // 栏窄时收起；但正在筛选时必须看得见，否则不知道列表为什么变少了
-            className={installFilter !== "all" ? undefined : "hidden @xl:block"}
-          >
-            <option value="all">{t("link.all")}</option>
-            <option value="installed">{t("link.only")}</option>
-            <option value="missing">{t("link.missing")}</option>
-          </Select>
+            onChange={(value) => patch({ installFilter: value })}
+            options={[
+              { value: "all", label: t("link.all"), icon: <ListFilter size={15} strokeWidth={1.75} /> },
+              { value: "installed", label: t("link.only"), icon: <CircleCheck size={15} strokeWidth={1.75} /> },
+              { value: "missing", label: t("link.missing"), icon: <CircleDashed size={15} strokeWidth={1.75} /> },
+            ]}
+          />
         )}
-        {(updateCount > 0 || updatesOnly) && (
-          <button
-            type="button"
-            aria-pressed={updatesOnly}
-            onClick={() => patch({ updatesOnly: !updatesOnly })}
-            className={cx(
-              "tabular h-7 shrink-0 rounded-md px-2 text-[12px] font-medium whitespace-nowrap transition-colors",
-              updatesOnly ? "bg-accent-strong text-white" : "bg-accent-soft text-accent hover:brightness-110",
-            )}
-          >
-            {t("updates.chip", { n: updateCount })}
-          </button>
-        )}
-        {library.tags.length > 0 && (
-          <Select
-            aria-label={t("nav.tags")}
-            value={tagFilter ?? ""}
-            onChange={(event) => patch({ tagFilter: event.target.value || null })}
-            compact
-            className={tagFilter ? undefined : "hidden @3xl:block"}
-          >
-            <option value="">{t("lib.allTags")}</option>
-            {library.tags.map((tag) => (
-              <option key={tag.id} value={tag.id}>
-                {tag.name}
-              </option>
-            ))}
-          </Select>
-        )}
-        {scopeName && (
-          <span className="hidden h-6 shrink-0 items-center gap-1 rounded-md bg-accent-soft pr-1 pl-2 text-[12px] text-accent @4xl:inline-flex">
-            <span className="max-w-[160px] truncate">{scopeName}</span>
-            <button type="button" aria-label={t("common.close")} onClick={() => setScope({ kind: "all" })} className="rounded p-0.5 hover:bg-accent-soft">
-              <X size={12} strokeWidth={2} />
-            </button>
-          </span>
-        )}
+        {/* 视图 */}
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
           <IconButton label={t("lib.group")} active={prefs.groupByCategory} onClick={() => prefs.set({ groupByCategory: !prefs.groupByCategory })}>
             <Rows3 size={16} strokeWidth={1.75} />
           </IconButton>
+          <span className="mx-1 h-4 w-px bg-line-strong" />
           <IconButton label={t("lib.view.list")} active={view === "list"} onClick={() => prefs.set({ packageView: "list" })}>
             <LayoutList size={16} strokeWidth={1.75} />
           </IconButton>
@@ -214,6 +164,8 @@ export function LibraryView() {
           <IconButton label={t("lib.view.folder")} active={view === "folder"} onClick={() => prefs.set({ packageView: "folder" })}>
             <FolderTree size={16} strokeWidth={1.75} />
           </IconButton>
+          <span className="mx-1 h-4 w-px bg-line-strong" />
+          <DetailToggle />
         </div>
       </div>
 
@@ -226,39 +178,40 @@ export function LibraryView() {
       ) : (
         <>
           {view === "list" && (
-            <div className={cx(COLUMNS, "h-7 shrink-0 border-b border-line pr-5 pl-[58px] text-[11px] font-medium text-fg-3")}>
+            <div className={cx(COLUMNS, "h-8 shrink-0 border-b border-line pr-5 pl-[58px] text-[12px] text-fg-3")}>
               <SortHeader column="name" label={t("lib.col.name")} />
-              <SortHeader column="platform" label={t("lib.col.platform")} />
-              <SortHeader column="size" label={t("lib.col.size")} className="hidden justify-end @lg:flex" />
-              <SortHeader column="added" label={t("lib.col.added")} className="hidden justify-end @2xl:flex" />
+              <span>{t("lib.col.version")}</span>
+              <SortHeader column="platform" label={t("lib.col.platform")} className="hidden @lg:flex" />
+              <SortHeader column="size" label={t("lib.col.size")} className="hidden justify-end @2xl:flex" />
+              <SortHeader column="added" label={t("lib.col.added")} className="hidden justify-end @4xl:flex" />
             </div>
           )}
           <div className="min-h-0 flex-1 overflow-y-auto pb-3" onClick={(event) => event.target === event.currentTarget && select(null)}>
             {groups.map((group) => (
               <section key={group.key}>
                 {group.title !== null && (
-                  <div className="flex items-center gap-2 px-3 pt-4 pb-1.5 text-[11px] font-medium text-fg-3">
+                  <div className="flex items-center gap-2 px-4 pt-4 pb-1.5 text-[12px] text-fg-3">
                     <span>{group.title}</span>
                     <span className="tabular text-fg-4">{group.items.length}</span>
                     <span className="h-px flex-1 bg-line" />
                   </div>
                 )}
                 {view === "list" && (
-                  <div className="px-1.5">
+                  <div className="px-2">
                     {group.items.map((software) => (
                       <Row key={software.id} software={software} selected={software.id === selectedId} />
                     ))}
                   </div>
                 )}
                 {view === "grid" && (
-                  <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2 px-3 pt-1">
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-2 px-4 pt-1">
                     {group.items.map((software) => (
                       <Card key={software.id} software={software} selected={software.id === selectedId} />
                     ))}
                   </div>
                 )}
                 {view === "folder" && (
-                  <div className="px-1.5">
+                  <div className="px-2">
                     {group.items.map((software) => (
                       <FolderNode key={software.id} software={software} selected={software.id === selectedId} />
                     ))}
@@ -281,12 +234,12 @@ function SortHeader({ column, label, className }: { column: SortKey; label: stri
   return (
     <button type="button" onClick={() => sortBy(column)} className={cx("flex items-center gap-1 text-left hover:text-fg-2", className)}>
       {label}
-      {sortKey === column && <Arrow size={11} strokeWidth={2} aria-hidden />}
+      {sortKey === column && <Arrow size={12} strokeWidth={2} aria-hidden />}
     </button>
   );
 }
 
-/** 一行或一张卡片共用的行为：选中、右键菜单、拖到分类上、和已安装软件的对应。 */
+/** 一行、一张卡片或一个文件夹节点共用的行为：选中、右键菜单、拖到分类上、和已安装软件的对应。 */
 function useItem(software: Software) {
   const t = useT();
   const select = useApp((state) => state.select);
@@ -294,9 +247,18 @@ function useItem(software: Software) {
     const id = state.links[software.id];
     return id ? state.installed?.find((app) => app.id === id) : undefined;
   });
+  const menu: MenuEntry[] = [
+    {
+      label: software.starred ? t("star.remove") : t("star.add"),
+      icon: Star,
+      onSelect: () => void toggleStar(software),
+    },
+    { label: t("classify.menu"), icon: Sparkles, onSelect: () => classify([software.id]) },
+    { label: t("detail.deleteSoftware"), icon: Trash2, danger: true, separated: true, onSelect: () => void deleteSoftware(software) },
+  ];
   return {
     installedApp,
-    menu: [{ label: t("detail.deleteSoftware"), icon: Trash2, danger: true, onSelect: () => void deleteSoftware(software) }],
+    menu,
     handlers: {
       onClick: () => select(software.id),
       onContextMenu: () => select(software.id),
@@ -307,14 +269,11 @@ function useItem(software: Software) {
   };
 }
 
-/** 名称下面那行说明：联网取到的简介优先，没有就显示版本和大小。 */
+/** 名称下面那行说明：联网取到的简介优先，其次是发布者。 */
 function useDescription(software: Software): string {
   const t = useT();
   const summary = useApp((state) => state.library?.summaries[software.name]?.text);
-  if (summary) return summary;
-  const version = primaryVersion(software);
-  const parts = [version?.version ? `v${version.version}` : null, formatSize(softwareSize(software)), software.publisher || null];
-  return parts.filter(Boolean).join(" · ") || t("detail.noFiles");
+  return summary || software.publisher || t("lib.files", { n: fileCount(software) });
 }
 
 function InstalledMark({ app }: { app: InstalledApp }) {
@@ -327,13 +286,40 @@ function InstalledMark({ app }: { app: InstalledApp }) {
   );
 }
 
+function StarMark({ software }: { software: Software }) {
+  const t = useT();
+  if (!software.starred) return null;
+  return (
+    <span title={t("nav.starred")} aria-label={t("nav.starred")} className="flex shrink-0 text-warning">
+      <Star size={12} strokeWidth={2} fill="currentColor" />
+    </span>
+  );
+}
+
+/** 版本号；在线源上有更新的版本时，右边带一个小箭头。 */
+function VersionLabel({ software, className }: { software: Software; className?: string }) {
+  const t = useT();
+  const version = primaryVersion(software)?.version;
+  const latest = software.subscription?.latest;
+  const update = latest && hasUpdate(software);
+  return (
+    <span className={cx("tabular flex min-w-0 items-center gap-1 text-[12px] text-fg-2", className)}>
+      <span className="truncate">{version || "—"}</span>
+      {update && (
+        <span title={t("source.updateTo", { version: latest.version })} aria-label={t("source.updateTo", { version: latest.version })} className="flex shrink-0 text-accent">
+          <ArrowUp size={12} strokeWidth={2.5} />
+        </span>
+      )}
+    </span>
+  );
+}
+
 function Row({ software, selected }: { software: Software; selected: boolean }) {
   const t = useT();
   const language = useLanguage();
   const { installedApp, menu, handlers } = useItem(software);
   const icon = useSoftwareIcon(software);
   const description = useDescription(software);
-  const platforms = softwarePlatforms(software);
   const canInstall = !installedApp && installerFor(software) !== null;
   const canUninstall = installedApp?.uninstallable ?? false;
   return (
@@ -343,7 +329,7 @@ function Row({ software, selected }: { software: Software; selected: boolean }) 
         tabIndex={0}
         aria-pressed={selected}
         {...handlers}
-        className={cx(COLUMNS, "group relative min-h-[52px] rounded-md py-1.5 pr-3.5 pl-2.5 transition-colors", selected ? "bg-active" : "hover:bg-hover")}
+        className={cx(COLUMNS, "group relative min-h-[52px] rounded-md py-1.5 pr-3 pl-2.5 transition-colors", selected ? "bg-active" : "hover:bg-hover")}
       >
         <div className="flex min-w-0 items-center gap-2.5">
           <SoftwareIcon name={software.name} icon={icon} />
@@ -351,14 +337,15 @@ function Row({ software, selected }: { software: Software; selected: boolean }) 
             <div className="flex items-center gap-1.5">
               <span className="truncate text-[13px] font-medium">{software.name}</span>
               {installedApp && <InstalledMark app={installedApp} />}
-              <UpdateMark software={software} />
+              <StarMark software={software} />
             </div>
             <div className="truncate text-[12px] text-fg-3">{description}</div>
           </div>
         </div>
-        <PlatformIcons platforms={platforms} className="justify-end @lg:justify-start" />
-        <div className="tabular hidden text-right text-[12px] text-fg-2 @lg:block">{formatSize(softwareSize(software))}</div>
-        <div className="tabular hidden text-right text-[12px] text-fg-3 @2xl:block">{formatDate(software.addedAt, language)}</div>
+        <VersionLabel software={software} />
+        <PlatformIcons platforms={softwarePlatforms(software)} className="hidden @lg:flex" />
+        <div className="tabular hidden text-right text-[12px] text-fg-3 @2xl:block">{formatSize(softwareSize(software))}</div>
+        <div className="tabular hidden text-right text-[12px] text-fg-3 @4xl:block">{formatDate(software.addedAt, language)}</div>
         {(canInstall || canUninstall) && (
           // 悬停时盖在这一行右侧的按钮。按下时不触发拖拽，也不改变选中
           <div
@@ -383,10 +370,8 @@ function Row({ software, selected }: { software: Software; selected: boolean }) 
 }
 
 function Card({ software, selected }: { software: Software; selected: boolean }) {
-  const t = useT();
   const { installedApp, menu, handlers } = useItem(software);
   const icon = useSoftwareIcon(software);
-  const version = primaryVersion(software);
   return (
     <ContextMenu items={menu}>
       <div
@@ -402,14 +387,12 @@ function Card({ software, selected }: { software: Software; selected: boolean })
         <div className="flex items-start gap-1.5">
           <SoftwareIcon name={software.name} icon={icon} size={40} />
           <span className="flex-1" />
-          <UpdateMark software={software} />
+          <StarMark software={software} />
           {installedApp && <InstalledMark app={installedApp} />}
         </div>
         <div className="min-w-0">
           <div className="truncate text-[13px] font-medium">{software.name}</div>
-          <div className="truncate text-[12px] text-fg-3">
-            {version?.version ? `v${version.version}` : t("lib.files", { n: fileCount(software) })}
-          </div>
+          <VersionLabel software={software} className="text-fg-3" />
         </div>
         <PlatformIcons platforms={softwarePlatforms(software)} />
       </div>
@@ -446,7 +429,7 @@ function FolderNode({ software, selected }: { software: Software; selected: bool
           <SoftwareIcon name={software.name} icon={icon} size={20} />
           <span className="truncate font-medium">{software.name}</span>
           {installedApp && <InstalledMark app={installedApp} />}
-          <UpdateMark software={software} />
+          <StarMark software={software} />
           <span className="tabular ml-auto shrink-0 text-[12px] text-fg-3">
             {t("lib.versions", { n: software.versions.length })} · {formatSize(softwareSize(software))}
           </span>
@@ -472,7 +455,7 @@ function FolderNode({ software, selected }: { software: Software; selected: bool
                     </span>
                     <span className="ml-auto flex shrink-0 items-center gap-1.5">
                       <PlatformIcons platforms={[file.platform]} size={13} />
-                      <span className="tabular w-[62px] text-right text-[12px] text-fg-3">{formatSize(file.size)}</span>
+                      <span className="tabular w-[64px] text-right text-[12px] text-fg-3">{formatSize(file.size)}</span>
                       <IconButton
                         label={t("detail.reveal")}
                         className="size-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"

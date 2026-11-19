@@ -111,6 +111,11 @@ export function dismissUpdate() {
   set({ dismissed: true });
 }
 
+/** 点了底栏版本号旁的箭头：把收起的更新提示重新弹出来。 */
+export function showUpdate() {
+  set({ dismissed: false });
+}
+
 /** 启动后过几秒查一次，之后每六小时查一次。只在开着“自动更新”时查。 */
 export function scheduleUpdateChecks() {
   const run = () => autoUpdate() && void checkForUpdate(false);

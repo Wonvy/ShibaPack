@@ -172,7 +172,7 @@ export function StorageView() {
                       {problem.software}
                       {problem.version && <span className="text-fg-3"> · {problem.version}</span>}
                     </div>
-                    <div className="selectable truncate font-mono text-[11px] text-fg-3" title={problem.path}>
+                    <div className="selectable truncate font-mono text-[12px] text-fg-3" title={problem.path}>
                       {problem.path}
                     </div>
                   </div>
@@ -227,7 +227,7 @@ function Group({ title, hint, action, children }: { title: string; hint?: string
 function Stat({ label, value }: { label: string; value: number | string | null | undefined }) {
   return (
     <div>
-      <div className="text-[11px] text-fg-3">{label}</div>
+      <div className="text-[12px] text-fg-3">{label}</div>
       <div className="tabular mt-0.5 text-[17px] font-semibold">{value ?? "…"}</div>
     </div>
   );

@@ -7,10 +7,15 @@ import { hasUpdate } from "./library";
 import { applyTheme } from "./theme";
 import type { Asset, CheckProgress, InstalledApp, LangPack, Language, Library, Platform, Progress, Settings, Status, Storage } from "./types";
 
-export type Route = "library" | "installed" | "tags" | "storage";
-const ROUTES: Route[] = ["library", "installed", "tags", "storage"];
+export type Route = "library" | "installed" | "storage";
+const ROUTES: Route[] = ["library", "installed", "storage"];
 
-export type Scope = { kind: "all" } | { kind: "uncategorized" } | { kind: "category"; id: string };
+export type Scope =
+  | { kind: "all" }
+  | { kind: "starred" }
+  | { kind: "updates" }
+  | { kind: "uncategorized" }
+  | { kind: "category"; id: string };
 export type InstallFilter = "all" | "installed" | "missing";
 
 /** 更新进行到哪一步了。 */
@@ -51,7 +56,6 @@ interface AppState {
   scope: Scope;
   search: string;
   platform: Platform | "all";
-  tagFilter: string | null;
   installFilter: InstallFilter;
   selectedId: string | null;
   progress: Progress | null;
@@ -72,8 +76,8 @@ interface AppState {
   downloads: Record<string, DownloadState>;
   /** 正在检查更新时的进度。 */
   checking: CheckProgress | null;
-  /** 软件库只显示有新版本的软件。 */
-  updatesOnly: boolean;
+  /** 打开着的智能分类预览：要分类的软件。 */
+  classifyIds: string[] | null;
   /** 打开着的“关联在线源”对话框：给哪个软件关联；null 表示从在线源新添一个软件。 */
   sourceDialog: { softwareId: string | null } | null;
   /** 语言包变了就加一，让界面重新取文字。 */
@@ -91,12 +95,11 @@ interface AppState {
         AppState,
         | "search"
         | "platform"
-        | "tagFilter"
         | "installFilter"
         | "dropping"
         | "settingsOpen"
         | "selectedInstalledId"
-        | "updatesOnly"
+        | "classifyIds"
         | "sourceDialog"
       >
     >,
@@ -221,13 +224,12 @@ export const useApp = create<AppState>()((set, get) => {
     } catch {
       // 存不了也不影响使用
     }
-    // 选中的软件、筛选用的分类和标签如果已经不在了，就退回默认
+    // 选中的软件、筛选用的分类如果已经不在了，就退回默认
     const state = get();
     const selectedId = library.software.some((s) => s.id === state.selectedId) ? state.selectedId : null;
     const scopeGone =
       state.scope.kind === "category" && !library.categories.some((c) => c.id === (state.scope as { id: string }).id);
-    const tagFilter = library.tags.some((t) => t.id === state.tagFilter) ? state.tagFilter : null;
-    set({ library, selectedId, tagFilter, ...(scopeGone ? { scope: { kind: "all" } as Scope } : {}) });
+    set({ library, selectedId, ...(scopeGone ? { scope: { kind: "all" } as Scope } : {}) });
     void refreshLinks();
     void fillIcons();
     queueSummaries(library);
@@ -240,7 +242,6 @@ export const useApp = create<AppState>()((set, get) => {
     scope: { kind: "all" },
     search: "",
     platform: "all",
-    tagFilter: null,
     installFilter: "all",
     selectedId: null,
     progress: null,
@@ -254,7 +255,7 @@ export const useApp = create<AppState>()((set, get) => {
     selectedInstalledId: null,
     downloads: {},
     checking: null,
-    updatesOnly: false,
+    classifyIds: null,
     sourceDialog: null,
     langRevision: 0,
     appUpdate: NO_UPDATE,
@@ -291,6 +292,8 @@ export const useApp = create<AppState>()((set, get) => {
 
     setRoute: (route) => {
       location.hash = `/${route}`;
+      // 搜索框是两个列表共用的，换页面时清空，免得带着上一页的搜索词
+      if (route !== get().route) set({ search: "" });
       set({ route });
     },
 
@@ -332,7 +335,7 @@ export const useApp = create<AppState>()((set, get) => {
       const status = await get().attempt(() => api.setRepoRoot(path));
       if (!status) return;
       askedSummaries.clear();
-      set({ status, selectedId: null, scope: { kind: "all" }, tagFilter: null, links: {} });
+      set({ status, selectedId: null, scope: { kind: "all" }, links: {} });
       await get().apply(() => api.getLibrary());
       if (get().installed === null) void get().loadInstalled();
       void api.listLangPacks().then(get().useLangPacks, () => {});

@@ -15,12 +15,6 @@ export interface Category {
   icon: string | null;
 }
 
-export interface Tag {
-  id: string;
-  name: string;
-  color: string | null;
-}
-
 export interface PackageFile {
   id: string;
   name: string;
@@ -48,7 +42,7 @@ export interface Software {
   homepage: string;
   note: string;
   categoryId: string | null;
-  tagIds: string[];
+  starred: boolean;
   icon: string | null;
   defaultVersionId: string | null;
   addedAt: string;
@@ -163,7 +157,6 @@ export interface FillResult {
 export interface Library {
   format: number;
   categories: Category[];
-  tags: Tag[];
   software: Software[];
   summaries: Record<string, Summary>;
   settings: Settings;
@@ -175,6 +168,8 @@ export interface Status {
   /** 启动时索引损坏并做了恢复：所用的备份文件名；空字符串表示没有可用备份。 */
   recovered: string | null;
   version: string;
+  /** 这台电脑的处理器架构：x64 或 arm64。 */
+  arch: string;
   /** 开发用的自检模式：值是要导入的一个文件的路径。平时是 null。 */
   selftest?: string | null;
 }
@@ -185,8 +180,31 @@ export interface SoftwareEdit {
   homepage: string;
   note: string;
   categoryId: string | null;
-  tagIds: string[];
+  starred: boolean;
   defaultVersionId: string | null;
+}
+
+/** 智能分类推荐新建的分类。 */
+export interface NewCategory {
+  name: string;
+  icon: string;
+}
+
+/** 智能分类对一个软件的建议。`categoryId` 和 `newCategory` 至多有一个，都没有表示判断不出来。 */
+export interface Suggestion {
+  softwareId: string;
+  categoryId: string | null;
+  newCategory: NewCategory | null;
+  unchanged: boolean;
+  known: boolean;
+  evidence: string[];
+}
+
+/** 预览里确认的一条分类。 */
+export interface Assignment {
+  softwareId: string;
+  categoryId?: string;
+  newCategory?: NewCategory;
 }
 
 export interface VersionEdit {

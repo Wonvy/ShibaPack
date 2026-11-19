@@ -30,7 +30,7 @@ export function PlatformIcon({ platform, size = 14, className }: { platform: Pla
 export function PlatformIcons({ platforms, size = 14, className }: { platforms: Platform[]; size?: number; className?: string }) {
   const t = useT();
   return (
-    <span className={cx("flex items-center gap-2 text-fg-2", className)}>
+    <span className={cx("flex items-center gap-2 text-fg-3", className)}>
       {platforms.map((platform) => (
         <span key={platform} title={t(`platform.${platform}`)} aria-label={t(`platform.${platform}`)} role="img" className="flex">
           <PlatformIcon platform={platform} size={size} />
@@ -44,8 +44,8 @@ export function PlatformIcons({ platforms, size = 14, className }: { platforms: 
 export function PlatformChip({ platform }: { platform: Platform }) {
   const t = useT();
   return (
-    <span className="inline-flex h-[18px] shrink-0 items-center gap-1 rounded-[4px] bg-hover px-1.5 text-[11px] text-fg-2">
-      <PlatformIcon platform={platform} size={11} />
+    <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-[4px] bg-hover px-1.5 text-[12px] text-fg-3">
+      <PlatformIcon platform={platform} size={12} />
       {t(`platform.${platform}`)}
     </span>
   );

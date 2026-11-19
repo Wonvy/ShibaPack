@@ -1,6 +1,7 @@
 //! ShibaPack 的核心逻辑。这里不依赖 Tauri，所有功能都能用 `cargo test -p shibapack-core` 单独验证。
 
 pub mod catalog;
+pub mod classify;
 pub mod download;
 pub mod icons;
 pub mod identify;
@@ -12,6 +13,7 @@ pub mod sources;
 pub mod store;
 pub mod summary;
 
+pub use classify::{Assignment, NewCategory, Suggestion};
 pub use import::{ImportHint, ImportItem, ImportReport, Progress};
 pub use installed::InstalledApp;
 pub use model::*;

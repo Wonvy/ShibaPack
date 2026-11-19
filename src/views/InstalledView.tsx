@@ -1,7 +1,8 @@
 // 已安装软件：这台电脑上装着的程序，以及右侧的详情栏。
 
-import { ArrowDown, ArrowUp, FolderOpen, LoaderCircle, MonitorCheck, MousePointerClick, PackageCheck, PackageX, RefreshCw, Search, SearchX, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, FolderOpen, LoaderCircle, MonitorCheck, MousePointerClick, PackageCheck, PackageX, RefreshCw, SearchX, Trash2 } from "lucide-react";
 import { type ReactNode, useMemo, useState } from "react";
+import { DetailToggle } from "../components/chrome";
 import { SoftwareIcon } from "../components/SoftwareIcon";
 import { Button, Chip, EmptyState, IconButton, cx } from "../components/ui";
 import { uninstallApp } from "../lib/actions";
@@ -22,7 +23,7 @@ export function InstalledView() {
   const selectedId = useApp((state) => state.selectedInstalledId);
   const patch = useApp((state) => state.patch);
   const reload = useApp((state) => state.loadInstalled);
-  const [search, setSearch] = useState("");
+  const search = useApp((state) => state.search);
   const [sort, setSort] = useState<{ column: Column; asc: boolean }>({ column: "name", asc: true });
 
   const sizeOf = (app: InstalledApp) => app.size ?? sizes[app.id] ?? null;
@@ -51,29 +52,23 @@ export function InstalledView() {
         className={cx("flex items-center gap-1 text-left hover:text-fg-2", className)}
       >
         {label}
-        {sort.column === column && <Arrow size={11} strokeWidth={2} aria-hidden />}
+        {sort.column === column && <Arrow size={12} strokeWidth={2} aria-hidden />}
       </button>
     );
   };
 
   return (
     <div className="@container flex min-h-0 flex-1 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-3">
-        <span className="tabular shrink-0 text-[12px] text-fg-3">{t("installed.count", { n: list.length })}</span>
-        <div className="relative min-w-[96px] flex-1 @2xl:max-w-[260px]">
-          <Search size={14} strokeWidth={1.75} aria-hidden className="pointer-events-none absolute top-1/2 left-2 -translate-y-1/2 text-fg-3" />
-          <input
-            type="text"
-            value={search}
-            spellCheck={false}
-            placeholder={t("installed.search")}
-            onChange={(event) => setSearch(event.target.value)}
-            className="h-7 w-full rounded-md border border-transparent bg-hover pr-2 pl-7 text-[13px] outline-none placeholder:text-fg-3 focus:border-accent"
-          />
+      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-line pr-2 pl-4">
+        <h2 className="m-0 min-w-0 truncate text-[14px] font-semibold">{t("installed.title")}</h2>
+        <span className="tabular ml-1.5 shrink-0 text-[12px] text-fg-3">{list.length}</span>
+        <div className="ml-auto flex shrink-0 items-center gap-0.5">
+          <IconButton label={t("installed.refresh")} disabled={loading} onClick={() => void reload()}>
+            <RefreshCw size={15} strokeWidth={1.75} className={loading ? "animate-spin" : ""} />
+          </IconButton>
+          <span className="mx-1 h-4 w-px bg-line-strong" />
+          <DetailToggle />
         </div>
-        <IconButton label={t("installed.refresh")} className="ml-auto" disabled={loading} onClick={() => void reload()}>
-          <RefreshCw size={15} strokeWidth={1.75} className={loading ? "animate-spin" : ""} />
-        </IconButton>
       </div>
 
       {installed === null ? (
@@ -82,13 +77,13 @@ export function InstalledView() {
         <EmptyState icon={search.trim() ? SearchX : MonitorCheck} title={search.trim() ? t("lib.noMatch") : t("installed.empty")} />
       ) : (
         <>
-          <div className={cx(COLUMNS, "h-7 shrink-0 border-b border-line pr-5 pl-[58px] text-[11px] font-medium text-fg-3")}>
+          <div className={cx(COLUMNS, "h-8 shrink-0 border-b border-line pr-5 pl-[58px] text-[12px] text-fg-3")}>
             {header("name", t("installed.col.name"))}
             {header("version", t("installed.col.version"))}
             {header("date", t("installed.col.date"), "hidden justify-end @2xl:flex")}
             {header("size", t("installed.col.size"), "hidden justify-end @lg:flex")}
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pt-1 pb-3">
+          <div className="min-h-0 flex-1 overflow-y-auto px-2 pt-1 pb-3">
             {list.map((app) => {
               const size = sizeOf(app);
               return (
@@ -181,7 +176,7 @@ export function InstalledDetail() {
             {size !== null ? formatSize(size) : measuring ? t("installed.measuring") : t("installed.unknown")}
           </Fact>
           <Fact label={t("installed.location")}>
-            <span className="selectable font-mono text-[11px] break-all text-fg-2">{app.location || t("installed.unknown")}</span>
+            <span className="selectable font-mono text-[12px] break-all text-fg-2">{app.location || t("installed.unknown")}</span>
           </Fact>
         </dl>
       </div>

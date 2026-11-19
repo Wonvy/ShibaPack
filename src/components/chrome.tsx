@@ -1,12 +1,30 @@
-// 窗口的外框：顶栏、窗口按钮、底栏、拖拽手柄、导入进度条、提示条。
+// 窗口的外框：顶栏、搜索框、窗口按钮、底栏、拖拽手柄、详情栏开关、导入进度条、提示条。
 
-import { CloudDownload, FolderInput, FolderSearch, FolderSync, Globe, Minus, Plus, RefreshCw, ScanSearch, Settings, Square, X } from "lucide-react";
-import { type PointerEvent, useRef } from "react";
+import {
+  ArrowUp,
+  CloudDownload,
+  FilePlus,
+  FolderInput,
+  FolderSearch,
+  FolderSync,
+  Globe,
+  Minus,
+  PanelRightClose,
+  PanelRightOpen,
+  Plus,
+  RefreshCw,
+  ScanSearch,
+  Search,
+  Square,
+  X,
+} from "lucide-react";
+import { type PointerEvent, useEffect, useRef } from "react";
 import { api, isMac, isTauri, pickFiles, pickFolder, windowControls } from "../lib/api";
 import { fileCount, formatSize, softwareSize } from "../lib/library";
+import { usePrefs } from "../lib/prefs";
 import { useApp, useT } from "../lib/store";
-import { dismissUpdate, finishUpdate, startUpdate } from "../lib/updater";
-import { Button, Dropdown, ICON, cx } from "./ui";
+import { dismissUpdate, finishUpdate, showUpdate, startUpdate } from "../lib/updater";
+import { Button, Dropdown, ICON, IconButton, cx } from "./ui";
 
 export function Logo({ size = 18 }: { size?: number }) {
   return (
@@ -20,18 +38,20 @@ export function Logo({ size = 18 }: { size?: number }) {
   );
 }
 
-/** 顶栏。空白处可以拖动窗口。`bare` 用在引导页：只留标题和窗口按钮。 */
+/** 顶栏：左边是名字，中间是搜索，右边是“检查更新”和“添加”。空白处可以拖动窗口。`bare` 用在引导页。 */
 export function TopBar({ bare = false }: { bare?: boolean }) {
   const t = useT();
+  const route = useApp((state) => state.route);
   const importPaths = useApp((state) => state.importPaths);
   const patch = useApp((state) => state.patch);
   const checkUpdates = useApp((state) => state.checkUpdates);
+  const checking = useApp((state) => state.checking !== null);
   const tidyRoot = useApp((state) => state.tidyRoot);
   // macOS 的红黄绿按钮在左上角，给它们让出位置；其他系统的窗口按钮自己画在右边
   const nativeLights = isTauri && isMac;
   const ownControls = isTauri && !isMac;
 
-  const importFiles = async (mode?: "managed" | "indexed") => importPaths(await pickFiles(), mode);
+  const importFiles = async () => importPaths(await pickFiles());
   const importFolder = async (mode?: "managed" | "indexed") => {
     const folder = await pickFolder();
     if (folder) await importPaths([folder], mode);
@@ -45,43 +65,98 @@ export function TopBar({ bare = false }: { bare?: boolean }) {
     >
       <Logo />
       <span className="pointer-events-none ml-1 text-[13px] font-semibold">ShibaPack</span>
-      <div data-tauri-drag-region className="h-full flex-1" />
+      <div data-tauri-drag-region className="h-full min-w-4 flex-1" />
+      {!bare && route !== "storage" && <SearchBox />}
+      <div data-tauri-drag-region className="h-full min-w-4 flex-1" />
       {!bare && (
         <>
+          <IconButton label={t("scan.updates")} disabled={checking} onClick={() => void checkUpdates()}>
+            <RefreshCw size={15} strokeWidth={1.75} className={checking ? "animate-spin" : ""} />
+          </IconButton>
+          {/* 把软件收进仓库的方式都在这一个菜单里 */}
           <Dropdown
             items={[
-              { label: t("add.files"), icon: Plus, onSelect: () => void importFiles() },
+              { label: t("add.files"), icon: FilePlus, onSelect: () => void importFiles() },
               { label: t("add.folder"), icon: FolderInput, onSelect: () => void importFolder() },
-              { label: t("add.filesManaged"), separated: true, onSelect: () => void importFiles("managed") },
-              { label: t("add.filesIndexed"), onSelect: () => void importFiles("indexed") },
+              { label: t("scan.folder"), icon: ScanSearch, separated: true, onSelect: () => void importFolder("indexed") },
+              { label: t("scan.tidy"), icon: FolderSync, onSelect: () => void tidyRoot() },
               { label: t("add.online"), icon: Globe, separated: true, onSelect: () => patch({ sourceDialog: { softwareId: null } }) },
             ]}
           >
-            <Button variant="primary">
+            <Button variant="primary" className="ml-1">
               <Plus size={15} strokeWidth={2} aria-hidden />
               {t("app.add")}
             </Button>
           </Dropdown>
-          <Dropdown
-            items={[
-              { label: t("scan.folder"), icon: ScanSearch, onSelect: () => void importFolder("indexed") },
-              { label: t("scan.tidy"), icon: FolderSync, onSelect: () => void tidyRoot() },
-              { label: t("scan.updates"), icon: CloudDownload, separated: true, onSelect: () => void checkUpdates() },
-            ]}
-          >
-            <Button variant="ghost">
-              <RefreshCw size={15} strokeWidth={1.75} aria-hidden />
-              {t("app.scan")}
-            </Button>
-          </Dropdown>
-          <Button variant="ghost" onClick={() => patch({ settingsOpen: true })}>
-            <Settings size={15} strokeWidth={1.75} aria-hidden />
-            {t("app.settings")}
-          </Button>
         </>
       )}
       {ownControls && <WindowControls />}
     </header>
+  );
+}
+
+/** 顶栏中间的搜索框，软件库和已安装软件共用。Ctrl / ⌘ + F 跳到这里，Esc 清空。 */
+function SearchBox() {
+  const t = useT();
+  const route = useApp((state) => state.route);
+  const search = useApp((state) => state.search);
+  const patch = useApp((state) => state.patch);
+  const input = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        input.current?.focus();
+        input.current?.select();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  return (
+    <div className="relative w-full max-w-[360px] min-w-[160px]">
+      <Search size={14} strokeWidth={1.75} aria-hidden className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-fg-3" />
+      <input
+        ref={input}
+        type="text"
+        value={search}
+        spellCheck={false}
+        placeholder={route === "installed" ? t("installed.search") : t("lib.search")}
+        onChange={(event) => patch({ search: event.target.value })}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            patch({ search: "" });
+            event.currentTarget.blur();
+          }
+        }}
+        className="h-7 w-full rounded-md border border-transparent bg-hover pr-7 pl-8 text-[13px] outline-none placeholder:text-fg-3 focus:border-accent"
+      />
+      {search && (
+        <button
+          type="button"
+          aria-label={t("common.close")}
+          onClick={() => patch({ search: "" })}
+          className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded text-fg-3 hover:text-fg"
+        >
+          <X size={13} strokeWidth={2} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** 展开或收起右边的详情栏。放在列表工具栏最右边，和视图切换在一起。 */
+export function DetailToggle() {
+  const t = useT();
+  const open = usePrefs((state) => state.detailOpen);
+  const set = usePrefs((state) => state.set);
+  const label = open ? t("layout.hideDetail") : t("layout.showDetail");
+  return (
+    <IconButton label={label} active={open} onClick={() => set({ detailOpen: !open })}>
+      {open ? <PanelRightClose size={16} strokeWidth={1.75} /> : <PanelRightOpen size={16} strokeWidth={1.75} />}
+    </IconButton>
   );
 }
 
@@ -169,6 +244,7 @@ export function StatusBar() {
   const t = useT();
   const library = useApp((state) => state.library);
   const status = useApp((state) => state.status);
+  const update = useApp((state) => state.appUpdate);
   const importing = useApp((state) => state.progress !== null);
   const checking = useApp((state) => state.checking);
   // 正在下载的那个文件（排队中的不算）
@@ -186,15 +262,17 @@ export function StatusBar() {
         : t("status.ready");
   const files = library.software.reduce((sum, s) => sum + fileCount(s), 0);
   const size = library.software.reduce((sum, s) => sum + softwareSize(s), 0);
+  // ShibaPack 自己有新版本时，版本号右边带一个小箭头，点了重新弹出更新提示
+  const appUpdate = ["available", "downloading", "ready", "installed"].includes(update.phase);
   return (
     <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-line bg-side px-3 text-[12px] text-fg-3">
-      <span className="flex items-center gap-1.5">
+      <span className="flex min-w-0 items-center gap-1.5">
         <span className={cx("size-1.5 shrink-0 rounded-full", busy ? "bg-accent" : "bg-success")} />
         <span className="max-w-[360px] truncate">{activity}</span>
       </span>
-      <span className="tabular">{t("status.software", { n: library.software.length })}</span>
-      <span className="tabular">{t("status.files", { n: files })}</span>
-      <span className="tabular">{formatSize(size)}</span>
+      <span className="tabular shrink-0">{t("status.software", { n: library.software.length })}</span>
+      <span className="tabular shrink-0">{t("status.files", { n: files })}</span>
+      <span className="tabular shrink-0">{formatSize(size)}</span>
       <button
         type="button"
         title={t("storage.open")}
@@ -203,6 +281,17 @@ export function StatusBar() {
       >
         <FolderSearch size={13} strokeWidth={1.75} aria-hidden className="shrink-0" />
         <span className="truncate">{status?.repoRoot}</span>
+      </button>
+      <span className="h-3 w-px shrink-0 bg-line-strong" />
+      <button
+        type="button"
+        disabled={!appUpdate}
+        title={appUpdate ? t("update.appAvailable", { version: update.version }) : undefined}
+        onClick={showUpdate}
+        className={cx("tabular flex shrink-0 items-center gap-0.5 rounded px-1", appUpdate ? "text-accent hover:bg-hover" : "cursor-default")}
+      >
+        v{status?.version}
+        {appUpdate && <ArrowUp size={12} strokeWidth={2.25} aria-hidden />}
       </button>
     </footer>
   );

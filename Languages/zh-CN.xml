@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- 通用 -->
+  <string key="AppName">柴管家</string>
+  <string key="Settings">设置</string>
+  <string key="Cancel">取消</string>
+  <string key="Confirm">确认</string>
+  <string key="Browse">浏览</string>
+  <string key="Open">打开</string>
+  <string key="Delete">删除</string>
+  <string key="Refresh">刷新</string>
+  <string key="Search">搜索</string>
+  
+  <!-- 主窗口 -->
+  <string key="WindowTitle">柴管家 - 安装包管理工具</string>
+  <string key="SelectFolder">选择目录</string>
+  <string key="Organize">整理</string>
+  <string key="OpenFolder">打开目录</string>
+  <string key="SearchPlaceholder">搜索软件...</string>
+  <string key="SoftwareList">软件列表</string>
+  <string key="PackageDetails">安装包详情</string>
+  <string key="LatestVersion">最新: v{0}</string>
+  <string key="CleanOldVersions">清理旧版本</string>
+  <string key="Version">版本</string>
+  <string key="Size">大小</string>
+  <string key="Platform">平台</string>
+  <string key="VersionCount">{0} 个版本</string>
+  <string key="SoftwareCount">软件: {0}</string>
+  <string key="PackageCount">安装包: {0}</string>
+  <string key="Ready">就绪</string>
+  <string key="Scanning">正在扫描...</string>
+  <string key="Organizing">正在整理...</string>
+  <string key="DragDropHint">拖拽安装包到此处导入</string>
+  <string key="SupportedFormats">支持 exe, msi, dmg, pkg 等格式</string>
+  
+  <!-- 设置窗口 -->
+  <string key="SettingsTitle">设置</string>
+  <string key="CategoryAppearance">外观</string>
+  <string key="CategoryStorage">存储</string>
+  <string key="CategoryBehavior">行为</string>
+  <string key="CategoryCache">缓存</string>
+  <string key="CategoryData">数据</string>
+  <string key="Appearance">外观</string>
+  <string key="DarkMode">深色模式</string>
+  <string key="DarkModeDesc">使用深色主题</string>
+  <string key="Language">语言</string>
+  <string key="LanguageDesc">选择界面语言</string>
+  <string key="Storage">存储</string>
+  <string key="PackageStoragePath">安装包存储位置</string>
+  <string key="NotSet">未设置</string>
+  <string key="Behavior">行为</string>
+  <string key="AutoOrganize">自动整理</string>
+  <string key="AutoOrganizeDesc">拖入安装包时自动分类整理到对应文件夹</string>
+  <string key="FileWatcher">文件监控</string>
+  <string key="FileWatcherDesc">监控目录变化，自动更新列表</string>
+  <string key="Cache">缓存</string>
+  <string key="IconCache">图标缓存</string>
+  <string key="IconCacheDesc">清理已缓存的图标文件</string>
+  <string key="ClearCache">清理缓存</string>
+  <string key="AcrylicEffect">毛玻璃效果</string>
+  <string key="AcrylicEffectDesc">启用窗口的毛玻璃透明效果</string>
+  <string key="SmartCategory">智能分类</string>
+  <string key="SmartCategoryDesc">新增软件时自动推荐合适的分类</string>
+  <string key="DragFileMode">拖入文件时</string>
+  <string key="CopyFile">复制文件</string>
+  <string key="MoveFile">移动文件</string>
+  <string key="DragFileModeDesc">选择拖入文件时的处理方式</string>
+  <string key="Data">数据</string>
+  <string key="ExportData">导出数据</string>
+  <string key="ExportDataDesc">导出安装包数据、分类和设置（不包含图标缓存）</string>
+  <string key="ImportData">导入数据</string>
+  <string key="FullBackup">完整备份</string>
+  <string key="FullBackupDesc">导出所有数据和缓存文件（包含图标缓存）</string>
+  <string key="ExportBackup">导出备份</string>
+  <string key="ImportBackup">导入备份</string>
+  
+  <!-- 状态消息 -->
+  <string key="FolderSelected">已设置目录: {0}</string>
+  <string key="FolderUpdated">目录已更新</string>
+  <string key="ScanComplete">扫描完成，共 {0} 个安装包</string>
+  <string key="ScanFailed">扫描失败: {0}</string>
+  <string key="OrganizeComplete">整理完成</string>
+  <string key="OrganizeFailed">整理失败: {0}</string>
+  <string key="PackageAdded">已添加: {0}</string>
+  <string key="PackageDeleted">已删除: {0}</string>
+  <string key="PackageImported">已导入 {0} 个安装包</string>
+  <string key="NoValidPackages">未找到有效的安装包文件</string>
+  <string key="CacheCleared">图标缓存已清理</string>
+  <string key="ClearFailed">清理失败: {0}</string>
+  <string key="OldVersionsCleaned">已清理 {0} 的旧版本</string>
+  <string key="SelectFolderFirst">请先设置安装包存储目录</string>
+  
+  <!-- 对话框 -->
+  <string key="SelectPackageFolderTitle">选择安装包存储目录</string>
+</resources>
+

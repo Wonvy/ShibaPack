@@ -1,0 +1,34 @@
+{
+  "name": "shibapack-v2",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "app": "tauri dev",
+    "watch": "node scripts/dev-watch.mjs",
+    "icons": "tauri icon app-icon.svg"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.5",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
+    "lucide-vue-next": "^0.468.0",
+    "pinia": "^3.0.3",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.5",
+    "@tauri-apps/cli": "^2.12.5",
+    "@types/node": "^22.15.0",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "tailwindcss": "^4.3.5",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.8",
+    "vue-tsc": "^3.1.0"
+  }
+}

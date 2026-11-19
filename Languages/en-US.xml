@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- Common -->
+  <string key="AppName">ShibaPack</string>
+  <string key="Settings">Settings</string>
+  <string key="Cancel">Cancel</string>
+  <string key="Confirm">Confirm</string>
+  <string key="Browse">Browse</string>
+  <string key="Open">Open</string>
+  <string key="Delete">Delete</string>
+  <string key="Refresh">Refresh</string>
+  <string key="Search">Search</string>
+  
+  <!-- Main Window -->
+  <string key="WindowTitle">ShibaPack - Package Manager</string>
+  <string key="SelectFolder">Select Folder</string>
+  <string key="Organize">Organize</string>
+  <string key="OpenFolder">Open Folder</string>
+  <string key="SearchPlaceholder">Search software...</string>
+  <string key="SoftwareList">Software List</string>
+  <string key="PackageDetails">Package Details</string>
+  <string key="LatestVersion">Latest: v{0}</string>
+  <string key="CleanOldVersions">Clean Old Versions</string>
+  <string key="Version">Version</string>
+  <string key="Size">Size</string>
+  <string key="Platform">Platform</string>
+  <string key="VersionCount">{0} version(s)</string>
+  <string key="SoftwareCount">Software: {0}</string>
+  <string key="PackageCount">Packages: {0}</string>
+  <string key="Ready">Ready</string>
+  <string key="Scanning">Scanning...</string>
+  <string key="Organizing">Organizing...</string>
+  <string key="DragDropHint">Drag and drop packages here to import</string>
+  <string key="SupportedFormats">Supports exe, msi, dmg, pkg, etc.</string>
+  
+  <!-- Settings Window -->
+  <string key="SettingsTitle">Settings</string>
+  <string key="CategoryAppearance">Appearance</string>
+  <string key="CategoryStorage">Storage</string>
+  <string key="CategoryBehavior">Behavior</string>
+  <string key="CategoryCache">Cache</string>
+  <string key="CategoryData">Data</string>
+  <string key="Appearance">Appearance</string>
+  <string key="DarkMode">Dark Mode</string>
+  <string key="DarkModeDesc">Use dark theme</string>
+  <string key="Language">Language</string>
+  <string key="LanguageDesc">Select interface language</string>
+  <string key="Storage">Storage</string>
+  <string key="PackageStoragePath">Package Storage Path</string>
+  <string key="NotSet">Not set</string>
+  <string key="Behavior">Behavior</string>
+  <string key="AutoOrganize">Auto Organize</string>
+  <string key="AutoOrganizeDesc">Automatically organize packages into folders when dropped</string>
+  <string key="FileWatcher">File Watcher</string>
+  <string key="FileWatcherDesc">Monitor directory changes and update list automatically</string>
+  <string key="Cache">Cache</string>
+  <string key="IconCache">Icon Cache</string>
+  <string key="IconCacheDesc">Clear cached icon files</string>
+  <string key="ClearCache">Clear Cache</string>
+  <string key="AcrylicEffect">Acrylic Effect</string>
+  <string key="AcrylicEffectDesc">Enable acrylic blur transparency effect for windows</string>
+  <string key="SmartCategory">Smart Category</string>
+  <string key="SmartCategoryDesc">Automatically recommend suitable category when adding software</string>
+  <string key="DragFileMode">When dragging files</string>
+  <string key="CopyFile">Copy file</string>
+  <string key="MoveFile">Move file</string>
+  <string key="DragFileModeDesc">Choose how to handle dragged files</string>
+  <string key="Data">Data</string>
+  <string key="ExportData">Export Data</string>
+  <string key="ExportDataDesc">Export package data, categories and settings (excluding icon cache)</string>
+  <string key="ImportData">Import Data</string>
+  <string key="FullBackup">Full Backup</string>
+  <string key="FullBackupDesc">Export all data and cache files (including icon cache)</string>
+  <string key="ExportBackup">Export Backup</string>
+  <string key="ImportBackup">Import Backup</string>
+  
+  <!-- Status Messages -->
+  <string key="FolderSelected">Folder set: {0}</string>
+  <string key="FolderUpdated">Folder updated</string>
+  <string key="ScanComplete">Scan complete, {0} package(s) found</string>
+  <string key="ScanFailed">Scan failed: {0}</string>
+  <string key="OrganizeComplete">Organize complete</string>
+  <string key="OrganizeFailed">Organize failed: {0}</string>
+  <string key="PackageAdded">Added: {0}</string>
+  <string key="PackageDeleted">Deleted: {0}</string>
+  <string key="PackageImported">Imported {0} package(s)</string>
+  <string key="NoValidPackages">No valid package files found</string>
+  <string key="CacheCleared">Icon cache cleared</string>
+  <string key="ClearFailed">Clear failed: {0}</string>
+  <string key="OldVersionsCleaned">Old versions of {0} cleaned</string>
+  <string key="SelectFolderFirst">Please set package storage folder first</string>
+  
+  <!-- Dialogs -->
+  <string key="SelectPackageFolderTitle">Select Package Storage Folder</string>
+</resources>
+

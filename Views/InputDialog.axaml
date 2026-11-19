@@ -1,0 +1,79 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="ShibaPack.Views.InputDialog"
+        Title="输入"
+        Width="400" Height="180"
+        MinWidth="350" MinHeight="180"
+        MaxWidth="500" MaxHeight="180"
+        WindowStartupLocation="CenterOwner"
+        CanResize="false"
+        Background="{DynamicResource ApplicationPageBackgroundThemeBrush}">
+    
+    <Window.Styles>
+        <!-- 按钮样式 -->
+        <Style Selector="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="CornerRadius" Value="6"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}"/>
+            <Setter Property="Transitions">
+                <Transitions>
+                    <BrushTransition Property="Background" Duration="0:0:0.15"/>
+                </Transitions>
+            </Setter>
+        </Style>
+        
+        <Style Selector="Button:pointerover">
+            <Setter Property="Background" Value="{DynamicResource ControlFillColorSecondaryBrush}"/>
+        </Style>
+        
+        <Style Selector="Button:pressed">
+            <Setter Property="Background" Value="{DynamicResource ControlFillColorTertiaryBrush}"/>
+        </Style>
+        
+        <!-- TextBox 样式 -->
+        <Style Selector="TextBox">
+            <Setter Property="Background" Value="{DynamicResource ControlFillColorDefaultBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="CornerRadius" Value="6"/>
+        </Style>
+    </Window.Styles>
+    
+    <Grid RowDefinitions="*,Auto" Margin="20">
+        <!-- 内容区 -->
+        <StackPanel Grid.Row="0" Spacing="12">
+            <TextBlock Name="PromptText" 
+                       Text="请输入："
+                       FontSize="13"
+                       Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+            <TextBox Name="InputBox"
+                     Watermark="请输入内容"
+                     Padding="8,6"
+                     FontSize="13"
+                     SelectionBrush="{DynamicResource AccentFillColorDefaultBrush}"
+                     SelectionForegroundBrush="White"
+                     KeyDown="OnInputKeyDown"/>
+        </StackPanel>
+        
+        <!-- 按钮区 -->
+        <StackPanel Grid.Row="1" 
+                    Orientation="Horizontal" 
+                    HorizontalAlignment="Right" 
+                    Spacing="8"
+                    Margin="0,16,0,0">
+            <Button Content="取消" 
+                    Width="80" 
+                    Click="OnCancelClick"
+                    Padding="12,6"/>
+            <Button Content="确定" 
+                    Width="80" 
+                    Click="OnConfirmClick"
+                    Background="{DynamicResource AccentFillColorDefaultBrush}"
+                    Foreground="White"
+                    BorderThickness="0"
+                    Padding="12,6"/>
+        </StackPanel>
+    </Grid>
+</Window>

@@ -1,0 +1,21 @@
+# Build results
+bin/
+obj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# Rider
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# WorkBuddy workspace data
+.workbuddy/
+
+# 本地 NAS 初始化脚本（含内网地址与管理员名，不入库）
+init_nas_git.bat

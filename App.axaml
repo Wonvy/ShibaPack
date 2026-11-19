@@ -1,0 +1,74 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
+             x:Class="ShibaPack.App"
+             xmlns:local="using:ShibaPack"
+             RequestedThemeVariant="Default">
+             <!-- "Default" ThemeVariant follows system theme variant. "Dark" or "Light" are other available options. -->
+
+    <Application.DataTemplates>
+        <local:ViewLocator/>
+    </Application.DataTemplates>
+  
+    <Application.Styles>
+        <FluentTheme />
+        <materialIcons:MaterialIconStyles />
+        
+        <!-- 自定义主题资源 -->
+        <Style>
+            <Style.Resources>
+                <ResourceDictionary>
+                    <ResourceDictionary.ThemeDictionaries>
+                        <ResourceDictionary x:Key="Light">
+                            <SolidColorBrush x:Key="ApplicationPageBackgroundThemeBrush" Color="#F5F6F8"/>
+                            <SolidColorBrush x:Key="LayerFillColorDefaultBrush" Color="#FFFFFF"/>
+                            <SolidColorBrush x:Key="CardBackgroundFillColorDefaultBrush" Color="#FCFCFD"/>
+                            <SolidColorBrush x:Key="CardBackgroundFillColorSecondaryBrush" Color="#F7F8FA"/>
+                            <SolidColorBrush x:Key="CardStrokeColorDefaultBrush" Color="#D7DCE4"/>
+                            <SolidColorBrush x:Key="ControlFillColorDefaultBrush" Color="#FAFBFC"/>
+                            <!-- hover / selected 背景（更浅） -->
+                            <SolidColorBrush x:Key="ControlFillColorSecondaryBrush" Color="#F8F9FA"/>
+                            <SolidColorBrush x:Key="ControlFillColorTertiaryBrush" Color="#EEF6FF"/>
+                            <SolidColorBrush x:Key="ControlStrokeColorDefaultBrush" Color="#D2D7E0"/>
+                            <SolidColorBrush x:Key="ControlStrokeColorSecondaryBrush" Color="#C7CEDA"/>
+                            <!-- 文本 / 强调色 -->
+                            <SolidColorBrush x:Key="TextFillColorPrimaryBrush" Color="#1F2328"/>
+                            <SolidColorBrush x:Key="TextFillColorSecondaryBrush" Color="#667085"/>
+                            <SolidColorBrush x:Key="TextFillColorTertiaryBrush" Color="#98A2B3"/>
+                            <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#60A5FA"/>
+                            <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#93C5FD"/>
+                            <SolidColorBrush x:Key="AccentTextFillColorPrimaryBrush" Color="#FFFFFF"/>
+                            <!-- 文本选中背景色 - 亮色主题更浅 -->
+                            <SolidColorBrush x:Key="SelectionBrush" Color="#EAF3FF"/>
+                            <SolidColorBrush x:Key="SelectionForegroundBrush" Color="#1F2328"/>
+                        </ResourceDictionary>
+                        <ResourceDictionary x:Key="Dark">
+                            <SolidColorBrush x:Key="ApplicationPageBackgroundThemeBrush" Color="#0E0E0E"/>
+                            <SolidColorBrush x:Key="LayerFillColorDefaultBrush" Color="#141414"/>
+                            <SolidColorBrush x:Key="CardBackgroundFillColorDefaultBrush" Color="#1A1A1A"/>
+                            <SolidColorBrush x:Key="CardBackgroundFillColorSecondaryBrush" Color="#1E1E1E"/>
+                            <SolidColorBrush x:Key="CardStrokeColorDefaultBrush" Color="#2D2D2D"/>
+                            <SolidColorBrush x:Key="ControlFillColorDefaultBrush" Color="#1F1F1F"/>
+                            <!-- hover 背景：稍亮一些，提升暗色模式下的可见性 -->
+                            <SolidColorBrush x:Key="ControlFillColorSecondaryBrush" Color="#2A2A2A"/>
+                            <SolidColorBrush x:Key="ControlFillColorTertiaryBrush" Color="#2A2A2A"/>
+                            <SolidColorBrush x:Key="ControlStrokeColorDefaultBrush" Color="#333333"/>
+                            <SolidColorBrush x:Key="ControlStrokeColorSecondaryBrush" Color="#3A3A3A"/>
+                            <!-- 文本 / 强调色 -->
+                            <SolidColorBrush x:Key="TextFillColorPrimaryBrush" Color="#E6E6E6"/>
+                            <SolidColorBrush x:Key="TextFillColorSecondaryBrush" Color="#9A9A9A"/>
+                            <SolidColorBrush x:Key="TextFillColorTertiaryBrush" Color="#6B6B6B"/>
+                            <!-- 选中强调色：稍亮一些（仍保持灰系，不偏蓝） -->
+                            <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#4A4A4A"/>
+                            <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#2D2D2D"/>
+                            <SolidColorBrush x:Key="AccentTextFillColorPrimaryBrush" Color="#E6E6E6"/>
+                            <!-- 文本选中背景色 - 暗色主题改为深灰色 -->
+                            <SolidColorBrush x:Key="SelectionBrush" Color="#333333"/>
+                            <SolidColorBrush x:Key="SelectionForegroundBrush" Color="#FFFFFF"/>
+                        </ResourceDictionary>
+                    </ResourceDictionary.ThemeDictionaries>
+                </ResourceDictionary>
+            </Style.Resources>
+        </Style>
+    </Application.Styles>
+</Application>

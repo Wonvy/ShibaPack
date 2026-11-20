@@ -3881,7 +3881,7 @@ dependencies = [
 
 [[package]]
 name = "shibapack"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "keyring",
  "serde",

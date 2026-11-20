@@ -9,6 +9,18 @@ export const DETAIL = { min: 280, max: 560, initial: 380 };
 export type SortKey = "name" | "platform" | "size" | "added";
 export type PackageView = "list" | "grid" | "folder";
 
+export type InstalledView = "list" | "grid";
+
+/** 有可调列的表格：软件库的列表、已安装软件的列表。各记各的列宽和隐藏的列。 */
+export type TableId = "library" | "installed";
+export interface TableColumns {
+  /** 手动关掉的列。 */
+  hidden: string[];
+  /** 拖过的列宽，没拖过的用默认宽度。 */
+  widths: Record<string, number>;
+}
+const NO_COLUMNS: TableColumns = { hidden: [], widths: {} };
+
 interface Prefs {
   sidebarWidth: number;
   detailWidth: number;
@@ -24,9 +36,18 @@ interface Prefs {
   detailOpen: boolean;
   /** 详情栏里“更多信息”是否展开。 */
   detailMoreOpen: boolean;
-  set: (patch: Partial<Omit<Prefs, "set" | "toggleCollapsed" | "sortBy">>) => void;
+  /** 已安装软件用列表还是网格。 */
+  installedView: InstalledView;
+  /** 各个表格的列宽和隐藏的列。 */
+  tableColumns: Record<TableId, TableColumns>;
+  set: (patch: Partial<Omit<Prefs, "set" | "toggleCollapsed" | "sortBy" | "toggleColumn" | "setColumnWidth" | "resetColumns">>) => void;
   toggleCollapsed: (id: string) => void;
   sortBy: (key: SortKey) => void;
+  toggleColumn: (table: TableId, key: string) => void;
+  /** 宽度限制在 `range` 里；`null` 表示回到默认宽度。 */
+  setColumnWidth: (table: TableId, key: string, width: number | null, range: { min: number; max: number }) => void;
+  /** 所有列都显示，宽度都回到默认。 */
+  resetColumns: (table: TableId) => void;
 }
 
 const clamp = (value: number, range: { min: number; max: number }) => Math.min(range.max, Math.max(range.min, value));
@@ -44,6 +65,8 @@ export const usePrefs = create<Prefs>()(
       collapsed: [],
       detailOpen: true,
       detailMoreOpen: false,
+      installedView: "list",
+      tableColumns: { library: NO_COLUMNS, installed: NO_COLUMNS },
       set: (patch) =>
         set((state) => ({
           ...patch,
@@ -56,6 +79,21 @@ export const usePrefs = create<Prefs>()(
         })),
       // 再点一次同一列就反过来排
       sortBy: (key) => set((state) => ({ sortKey: key, sortAsc: state.sortKey === key ? !state.sortAsc : true })),
+      toggleColumn: (table, key) =>
+        set((state) => {
+          const current = state.tableColumns[table] ?? NO_COLUMNS;
+          const hidden = current.hidden.includes(key) ? current.hidden.filter((k) => k !== key) : [...current.hidden, key];
+          return { tableColumns: { ...state.tableColumns, [table]: { ...current, hidden } } };
+        }),
+      setColumnWidth: (table, key, width, range) =>
+        set((state) => {
+          const current = state.tableColumns[table] ?? NO_COLUMNS;
+          const widths = { ...current.widths };
+          if (width === null) delete widths[key];
+          else widths[key] = Math.round(clamp(width, range));
+          return { tableColumns: { ...state.tableColumns, [table]: { ...current, widths } } };
+        }),
+      resetColumns: (table) => set((state) => ({ tableColumns: { ...state.tableColumns, [table]: NO_COLUMNS } })),
     }),
     { name: "shibapack.ui" },
   ),

@@ -1,9 +1,10 @@
 // 应用状态：仓库状态、索引数据、已安装软件、当前页面、筛选条件、导入进度、提示。
 
+import { useCallback } from "react";
 import { create } from "zustand";
 import { api, onCheckProgress, onDownloadProgress, onImportProgress } from "./api";
 import { type Key, type Translate, type Vars, errorText, setLangPacks, translate } from "./i18n";
-import { filterSoftware, hasUpdate } from "./library";
+import { filterSoftware, hasUpdate, needsTranslation } from "./library";
 import { applyTheme } from "./theme";
 import type {
   Asset,
@@ -75,19 +76,27 @@ interface AppState {
   /** 多选时所有选中的软件；单选时只有 selectedId 一个。 */
   selectedIds: string[];
   progress: Progress | null;
+  /** 导入进行中时又拖进来、选进来的文件，排着队等前一批导完。 */
+  importQueue: { paths: string[]; mode?: Storage; hint?: ImportHint }[];
   dropping: boolean;
   /** 从系统拖文件进来、正停在某个软件上时，那个软件的 id。 */
   dropSoftwareId: string | null;
-  toast: Toast | null;
+  /** 屏幕下方的提示，最新的在最后，最多同时 3 条。新提示不会把还没看完的出错提示挤掉。 */
+  toasts: Toast[];
+  dismissToast: (id: number) => void;
   settingsOpen: boolean;
 
   /** 这台电脑上已安装的软件。还没列出来时是 null。 */
   installed: InstalledApp[] | null;
+  /** 已安装软件按 id 查：列表里每一行都要查“它装着没有”，不能每次都从头找一遍。 */
+  installedIndex: Record<string, InstalledApp>;
   installedLoading: boolean;
   /** 上次列完已安装软件的时间（毫秒），用来决定窗口回到前台时要不要重新扫描。 */
   installedScannedAt: number;
   /** 已安装软件占用的空间，统计完才有。 */
   sizes: Record<string, number>;
+  /** 正在统计已安装软件占用的空间。统计失败也会停下，界面不会一直显示“统计中”。 */
+  measuring: boolean;
   /** 仓库里的软件 id → 对应的已安装软件 id。 */
   links: Record<string, string>;
   selectedInstalledId: string | null;
@@ -138,8 +147,18 @@ interface AppState {
   chooseRepo: (path: string) => Promise<void>;
   /** 窗口回到前台时调用：索引被别处改过就换上新的。 */
   refreshLibrary: () => Promise<void>;
+  /**
+   * 给一个名字取简介（详情栏里正看着的软件，包括只装在本机、仓库里没有的）。
+   * 平常只在没取过、或者需要翻译时才取；`refresh` 为真时不管有没有都重新取。
+   */
+  requestSummary: (name: string, refresh?: boolean) => void;
+  /** 正在取简介的名字。 */
+  summaryBusy: Record<string, boolean>;
   /** `hint.name` 给了时，所有文件都归到这个软件下（拖到某个软件上导入）。 */
   importPaths: (paths: string[], mode?: Storage, hint?: ImportHint) => Promise<void>;
+  /** 停下正在进行的导入（在两个文件之间停），排着队的也不导了。 */
+  cancelImport: () => void;
+  importCancelled: boolean;
   saveSettings: (patch: Partial<Settings>) => Promise<void>;
   /** 重新列出已安装的软件，并更新和仓库的对应关系。 */
   loadInstalled: () => Promise<void>;
@@ -183,7 +202,9 @@ let iconWorkers = 0;
 let iconFailures = 0;
 const ICON_WORKERS = 3;
 const askedSummaries = new Set<string>();
-const summaryQueue: string[] = [];
+/** 正在导入一批文件。 */
+let importing = false;
+const summaryQueue: { name: string; refresh: boolean }[] = [];
 let summaryWorkers = 0;
 let summariesOffline = false;
 const SUMMARY_WORKERS = 3;
@@ -261,38 +282,59 @@ export const useApp = create<AppState>()((set, get) => {
     }
   };
 
-  /** 联网取简介：同时最多 3 个，每个名字只问一次。 */
+  /** 联网取简介：同时最多 3 个，每个名字只问一次。简介按软件名存，仓库里的软件和只装在本机的软件都一样。 */
   const pumpSummaries = () => {
     while (summaryWorkers < SUMMARY_WORKERS && summaryQueue.length > 0 && !summariesOffline) {
-      const id = summaryQueue.shift()!;
+      const { name, refresh } = summaryQueue.shift()!;
       summaryWorkers++;
       api
-        .fetchSummary(id)
+        .fetchSummary(name, refresh)
         .then((library) => {
           const current = get().library;
           // 只取回简介这一部分，免得用旧的快照盖掉这期间的其他改动
           if (current) set({ library: { ...current, summaries: library.summaries } });
         })
         .catch((error) => {
-          // 网络不通：这次运行不再尝试，下次启动再说
+          // 网络不通：这次运行不再自动尝试，下次启动再说（手动点“获取简介”还可以再试）
           if (String(error).startsWith("offline")) {
             summariesOffline = true;
             summaryQueue.length = 0;
+            if (refresh) get().notify(errorText(language(), error), "error");
           }
         })
         .finally(() => {
           summaryWorkers--;
+          const { [name]: _done, ...rest } = get().summaryBusy;
+          set({ summaryBusy: rest });
           pumpSummaries();
         });
     }
   };
 
+  /** 这个名字要不要去取简介（或翻译）：要的话返回去重用的键，不要返回 null。 */
+  const summaryWanted = (library: Library, name: string): string | null => {
+    const { language: lang, translateSummaries } = library.settings;
+    const summary = library.summaries[name];
+    if (!summary) return name;
+    return translateSummaries && needsTranslation(summary, lang) ? `${name}\u0000${lang}` : null;
+  };
+
+  /** 排进取简介的队列。`first` 为真时插到最前面（用户正看着的软件先取）。 */
+  const enqueueSummary = (name: string, refresh: boolean, first: boolean) => {
+    const item = { name, refresh };
+    if (first) summaryQueue.unshift(item);
+    else summaryQueue.push(item);
+    set({ summaryBusy: { ...get().summaryBusy, [name]: true } });
+  };
+
+  // 还没有简介的去取；有简介、但不是界面语言又开着自动翻译的去翻译。每个名字（每种语言）这次运行只问一次
   const queueSummaries = (library: Library) => {
     if (!library.settings.fetchSummaries || summariesOffline) return;
     for (const software of library.software) {
-      if (software.name in library.summaries || askedSummaries.has(software.name)) continue;
-      askedSummaries.add(software.name);
-      summaryQueue.push(software.id);
+      const key = summaryWanted(library, software.name);
+      if (key === null || askedSummaries.has(key)) continue;
+      askedSummaries.add(key);
+      enqueueSummary(software.name, false, false);
     }
     pumpSummaries();
   };
@@ -329,14 +371,19 @@ export const useApp = create<AppState>()((set, get) => {
     selectedId: null,
     selectedIds: [],
     progress: null,
+    importQueue: [],
+    importCancelled: false,
+    summaryBusy: {},
     dropping: false,
     dropSoftwareId: null,
-    toast: null,
+    toasts: [],
     settingsOpen: false,
     installed: null,
+    installedIndex: {},
     installedLoading: false,
     installedScannedAt: 0,
     sizes: {},
+    measuring: false,
     links: {},
     selectedInstalledId: null,
     downloads: {},
@@ -403,10 +450,19 @@ export const useApp = create<AppState>()((set, get) => {
 
     notify: (text, kind = "info") => {
       const id = ++toastSeq;
-      set({ toast: { id, text, kind } });
+      // 同样的话已经在显示：换成新的一条（重新计时），不叠两条
+      const others = get().toasts.filter((toast) => toast.text !== text);
+      // 超过 3 条时先挤掉最早的普通提示，出错的提示尽量留着
+      while (others.length >= 3) {
+        const oldest = others.findIndex((toast) => toast.kind !== "error");
+        others.splice(oldest >= 0 ? oldest : 0, 1);
+      }
+      set({ toasts: [...others, { id, text, kind }] });
       // 出错的提示多留一会儿
-      setTimeout(() => get().toast?.id === id && set({ toast: null }), kind === "error" ? 8000 : 3200);
+      setTimeout(() => get().dismissToast(id), kind === "error" ? 8000 : 3200);
     },
+
+    dismissToast: (id) => set({ toasts: get().toasts.filter((toast) => toast.id !== id) }),
 
     apply: async (task) => {
       try {
@@ -438,6 +494,22 @@ export const useApp = create<AppState>()((set, get) => {
       void api.listLangPacks().then(get().useLangPacks, () => {});
     },
 
+    requestSummary: (name, refresh = false) => {
+      const library = get().library;
+      if (!library || !name.trim() || get().summaryBusy[name]) return;
+      if (refresh) {
+        // 手动点的：网络刚才不通也再试一次
+        summariesOffline = false;
+      } else {
+        if (!library.settings.fetchSummaries || summariesOffline) return;
+        const key = summaryWanted(library, name);
+        if (key === null || askedSummaries.has(key)) return;
+        askedSummaries.add(key);
+      }
+      enqueueSummary(name, refresh, true);
+      pumpSummaries();
+    },
+
     refreshLibrary: async () => {
       if (!get().library) return;
       try {
@@ -450,13 +522,24 @@ export const useApp = create<AppState>()((set, get) => {
 
     importPaths: async (paths, mode, hint) => {
       const library = get().library;
-      if (!library || paths.length === 0 || get().progress) return;
+      if (!library || paths.length === 0) return;
+      // 正在导入：排队，等前一批导完再导，不能悄悄丢掉
+      if (importing) {
+        set({ importQueue: [...get().importQueue, { paths, mode, hint }] });
+        get().notify(translate(language(), "import.queued"));
+        return;
+      }
+      importing = true;
       set({ progress: { phase: "collect", current: 0, total: 0, file: "" } });
       try {
-        const result = await api.importPaths(paths, mode ?? library.settings.defaultStorage, hint);
+        // 没指定存储模式时按设置来；“移动进仓库”也只在按设置导入时生效（扫描建索引明确要求只记位置）
+        const { defaultStorage, moveOnImport } = library.settings;
+        const result = await api.importPaths(paths, mode ?? defaultStorage, hint, !mode && defaultStorage === "managed" && moveOnImport);
         adopt(result.library);
-        const { imported, duplicates, failed, items } = result.report;
-        if (items.length === 0) {
+        const { imported, duplicates, failed, items, cancelled } = result.report;
+        if (cancelled) {
+          get().notify(translate(language(), "import.cancelled", { imported, duplicates, failed }));
+        } else if (items.length === 0) {
           get().notify(translate(language(), "import.none"));
         } else {
           get().notify(translate(language(), "import.done", { imported, duplicates, failed }), failed ? "error" : "info");
@@ -470,18 +553,39 @@ export const useApp = create<AppState>()((set, get) => {
       } catch (error) {
         get().notify(errorText(language(), error), "error");
       } finally {
+        importing = false;
         set({ progress: null });
+        // 取消时排着的也不导了
+        const [next, ...rest] = get().importQueue;
+        if (next && !get().importCancelled) {
+          set({ importQueue: rest });
+          void get().importPaths(next.paths, next.mode, next.hint);
+        } else {
+          set({ importQueue: [], importCancelled: false });
+        }
       }
+    },
+
+    cancelImport: () => {
+      set({ importCancelled: true });
+      void api.cancelImport();
     },
 
     saveSettings: async (patch) => {
       const library = get().library;
       if (!library) return;
-      const settings = { ...library.settings, ...patch };
+      const before = library.settings;
+      const settings = { ...before, ...patch };
       // 先改界面再存盘，切主题不用等磁盘
       applyTheme(settings.theme, settings.accent);
       set({ library: { ...library, settings } });
-      await get().apply(() => api.setSettings(settings));
+      if (await get().apply(() => api.setSettings(settings))) return;
+      // 没存上（比如 NAS 断了）：界面退回原来的设置，免得看着改了、下次打开又变回去
+      const current = get().library;
+      if (current) {
+        applyTheme(before.theme, before.accent);
+        set({ library: { ...current, settings: before } });
+      }
     },
 
     loadInstalled: async () => {
@@ -492,13 +596,14 @@ export const useApp = create<AppState>()((set, get) => {
         const selectedInstalledId = installed.some((app) => app.id === get().selectedInstalledId)
           ? get().selectedInstalledId
           : null;
-        set({ installed, selectedInstalledId, installedScannedAt: Date.now() });
+        set({ installed, installedIndex: Object.fromEntries(installed.map((app) => [app.id, app])), selectedInstalledId, installedScannedAt: Date.now() });
         void refreshLinks();
         void fillIcons();
         // 占用空间统计得慢，列表先出来，大小随后补上
+        set({ measuring: true });
         void api.measureInstalled().then(
-          (sizes) => set({ sizes }),
-          () => {},
+          (sizes) => set({ sizes, measuring: false }),
+          () => set({ measuring: false }),
         );
       } catch (error) {
         get().notify(errorText(language(), error), "error");
@@ -576,6 +681,8 @@ export function useLanguage(): Language {
 export function useT(): Translate {
   const language = useLanguage();
   // 导入语言包后这个数会变，界面跟着重新取一遍文字
-  useApp((state) => state.langRevision);
-  return (key: Key, vars?: Vars) => translate(language, key, vars);
+  const revision = useApp((state) => state.langRevision);
+  // 语言不变时一直是同一个函数，依赖它的 useMemo 才不会每次都重算
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useCallback((key: Key, vars?: Vars) => translate(language, key, vars), [language, revision]);
 }

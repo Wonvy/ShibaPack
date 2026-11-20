@@ -105,7 +105,7 @@ impl Net {
             let mut html = Vec::new();
             if response.body_mut().as_reader().take(MAX_PAGE).read_to_end(&mut html).is_ok() {
                 let mut links = icon_links(&String::from_utf8_lossy(&html));
-                links.sort_by(|a, b| b.1.cmp(&a.1));
+                links.sort_by_key(|link| std::cmp::Reverse(link.1));
                 urls.extend(links.into_iter().filter_map(|(href, _)| resolve(&base, &href)));
             }
         }

@@ -117,7 +117,12 @@ export function showUpdate() {
 }
 
 /** 启动后过几秒查一次，之后每六小时查一次。只在开着“自动更新”时查。 */
+let scheduled = false;
+
+/** 开始定时检查更新。只生效一次（开发时 React 会把启动流程跑两遍）。 */
 export function scheduleUpdateChecks() {
+  if (scheduled) return;
+  scheduled = true;
   const run = () => autoUpdate() && void checkForUpdate(false);
   setTimeout(run, 4000);
   setInterval(run, 6 * 3600 * 1000);

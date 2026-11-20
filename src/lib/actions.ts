@@ -4,7 +4,7 @@ import { confirm } from "../components/dialogs";
 import { api, hostPlatform } from "./api";
 import type { DropTarget } from "./drag";
 import { translate } from "./i18n";
-import { newerThan, sortedVersions, withDescendants } from "./library";
+import { newerThan, primaryVersion, sortedVersions, withDescendants } from "./library";
 import { useApp } from "./store";
 import type { Asset, Category, InstalledApp, PackageFile, Software, SoftwareEdit, Version } from "./types";
 
@@ -79,6 +79,14 @@ export async function deleteFile(software: Software, version: Version, file: Pac
 /** 一个版本里能在本机运行的安装包：本机平台的优先，其次是跨平台的。 */
 export function installerIn(version: Version): PackageFile | null {
   return version.files.find((f) => f.platform === hostPlatform) ?? version.files.find((f) => f.platform === "cross") ?? null;
+}
+
+/** 在文件管理器里打开这个软件的文件夹：定位到它的默认版本（没设就是最新版本）里的安装包，本机能用的优先。 */
+export async function revealSoftware(software: Software) {
+  const version = primaryVersion(software);
+  const file = version && (installerIn(version) ?? version.files[0]);
+  if (!version || !file) return;
+  await useApp.getState().attempt(() => api.revealFile({ softwareId: software.id, versionId: version.id, fileId: file.id }));
 }
 
 /** 这个软件里适合在本机运行的安装包：默认版本优先，其次从新到旧。 */
@@ -175,20 +183,27 @@ export async function toggleStar(software: Software) {
 }
 
 /** 多选收藏或取消收藏。 */
+/** 多选收藏或取消收藏：一次改完、只存一次，不会改到一半停下。 */
 export async function starMany(list: Software[], starred: boolean) {
-  const app = useApp.getState();
-  for (const software of list) {
-    if (software.starred !== starred && !(await app.apply(() => api.setStarred(software.id, starred)))) return;
-  }
+  const ids = list.filter((software) => software.starred !== starred).map((software) => software.id);
+  if (ids.length > 0) await useApp.getState().apply(() => api.setStarredMany(ids, starred));
 }
 
-/** 多选移到一个分类（null 为未分类）。放进已有分类时一次改完。 */
+/** 多选移到一个分类（null 为未分类）：一次改完、只存一次，再说一声移到了哪里。 */
 export async function moveManyTo(ids: string[], categoryId: string | null) {
-  if (categoryId !== null) {
-    await useApp.getState().apply(() => api.applyClassification(ids.map((softwareId) => ({ softwareId, categoryId }))));
-    return;
-  }
-  for (const id of ids) await moveSoftwareTo(id, null);
+  const app = useApp.getState();
+  if (ids.length === 0) return;
+  if (await app.apply(() => api.moveSoftware(ids, categoryId))) notifyMoved(ids.length, categoryId);
+}
+
+/** 拖动、批量移动之后的提示：移了几个、移到了哪里。 */
+function notifyMoved(count: number, categoryId: string | null) {
+  const app = useApp.getState();
+  const name =
+    categoryId === null
+      ? translate(language(), "nav.uncategorized")
+      : (app.library?.categories.find((c) => c.id === categoryId)?.name ?? "");
+  app.notify(translate(language(), "move.done", { n: count, name }));
 }
 
 /** 键盘上的 Enter：本机比仓库旧就升级，没装就安装，已是最新就什么都不做。 */
@@ -212,17 +227,7 @@ export async function moveSoftwareTo(softwareId: string, categoryId: string | nu
   const app = useApp.getState();
   const software = app.library?.software.find((s) => s.id === softwareId);
   if (!software || software.categoryId === categoryId) return;
-  await app.apply(() =>
-    api.updateSoftware(software.id, {
-      name: software.name,
-      publisher: software.publisher,
-      homepage: software.homepage,
-      note: software.note,
-      categoryId,
-      starred: software.starred,
-      defaultVersionId: software.defaultVersionId,
-    }),
-  );
+  if (await app.apply(() => api.moveSoftware([software.id], categoryId))) notifyMoved(1, categoryId);
 }
 
 /** 分类能不能落在这个位置：不能落在自己或自己的下级上。 */

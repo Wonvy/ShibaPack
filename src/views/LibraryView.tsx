@@ -3,7 +3,6 @@
 import * as DropdownPrimitive from "@radix-ui/react-dropdown-menu";
 import {
   ArrowDown,
-  ArrowRight,
   ArrowUp,
   Boxes,
   Check,
@@ -23,6 +22,7 @@ import {
   PackageOpen,
   Pin,
   RefreshCw,
+  ArrowUpCircle,
   ScanSearch,
   SearchX,
   SlidersHorizontal,
@@ -30,8 +30,9 @@ import {
   Star,
   Trash2,
 } from "lucide-react";
-import { type PointerEvent, type ReactNode, createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { type PointerEvent, type ReactNode, createContext, memo, useContext, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { DetailToggle } from "../components/chrome";
+import { type ColumnDef, type Columns, ColumnsContext, TableHeader, useTableColumns, useWidth } from "../components/columns";
 import { PlatformIcon, PlatformIcons } from "../components/PlatformIcon";
 import { SoftwareIcon, useSoftwareIcon } from "../components/SoftwareIcon";
 import {
@@ -56,6 +57,7 @@ import {
   installerFor,
   moveManyTo,
   moveSoftwareTo,
+  revealSoftware,
   setDefaultVersion,
   starMany,
   toggleStar,
@@ -78,15 +80,25 @@ import {
   softwarePlatforms,
   softwareSize,
   sortedVersions,
+  versionPaths,
 } from "../lib/library";
 import { type PackageView, type SortKey, usePrefs } from "../lib/prefs";
 import { type InstallFilter, useApp, useLanguage, useT } from "../lib/store";
-import type { InstalledApp, Platform, Software } from "../lib/types";
+import type { InstalledApp, Platform, Software, Version } from "../lib/types";
 
-// 列：名称、版本、平台、大小、添加时间、安装/卸载。栏窄时平台、大小、添加时间从右往左收起，
-// 安装/卸载那一列一直在。版本列要放得下“1.96.2 ⌄ → 1.97.0”，下面一行是本机装的版本
-const COLUMNS =
-  "grid grid-cols-[minmax(0,1fr)_120px_64px] @lg:grid-cols-[minmax(0,1fr)_136px_88px_64px] @2xl:grid-cols-[minmax(0,1fr)_136px_88px_72px_64px] @4xl:grid-cols-[minmax(0,1fr)_136px_88px_72px_92px_64px] items-center gap-x-3";
+// 列表视图的列：名称、版本、平台、大小、添加时间、安装/卸载。名称占满剩下的宽度；右边几列的宽度可以拖，
+// 右键表头勾选显示哪几列（见 components/columns）。栏太窄时添加时间、大小、平台从右往左暂时收起。
+// 版本列默认要放得下“1.96.2 ⌄ → 1.97.0”，下面一行是本机装的版本
+type LibraryColumn = "version" | "platform" | "size" | "added" | "action";
+const LIBRARY_COLUMNS: ColumnDef<LibraryColumn>[] = [
+  { key: "version", initial: 136, min: 96, max: 320 },
+  { key: "platform", initial: 88, min: 56, max: 220, autoHide: 3 },
+  { key: "size", initial: 72, min: 56, max: 160, end: true, autoHide: 2 },
+  { key: "added", initial: 92, min: 76, max: 200, end: true, autoHide: 1 },
+  { key: "action", initial: 64, min: 64, max: 64, end: true },
+];
+/** 一行里除了各列之外占的宽度：列表的左右留白加上行自己的左右留白。 */
+const ROW_CHROME = 16 + 22;
 
 export function LibraryView() {
   const t = useT();
@@ -102,12 +114,21 @@ export function LibraryView() {
   const patch = useApp((state) => state.patch);
   const checkUpdates = useApp((state) => state.checkUpdates);
   const checking = useApp((state) => state.checking !== null);
-  const prefs = usePrefs();
-  const view = prefs.packageView;
+  // 一项一项地取：拖动分栏宽度时偏好设置在不停地变，不能让整个列表跟着重画
+  const view = usePrefs((state) => state.packageView);
+  const sortKey = usePrefs((state) => state.sortKey);
+  const sortAsc = usePrefs((state) => state.sortAsc);
+  const groupByCategory = usePrefs((state) => state.groupByCategory);
+  const gridGroupByCategory = usePrefs((state) => state.gridGroupByCategory);
+  const setPrefs = usePrefs((state) => state.set);
+  // 打字时先让输入框跟上，列表稍后再筛：软件多的时候打字不卡
+  const deferredSearch = useDeferredValue(search);
+  const [frame, frameWidth] = useWidth<HTMLDivElement>();
+  const columns = useTableColumns("library", LIBRARY_COLUMNS, frameWidth - ROW_CHROME);
 
   const list = useMemo(() => {
-    const items = filterSoftware(library.software, library.categories, { scope, platform, installFilter, links, search });
-    const direction = prefs.sortAsc ? 1 : -1;
+    const items = filterSoftware(library.software, library.categories, { scope, platform, installFilter, links, search: deferredSearch });
+    const direction = sortAsc ? 1 : -1;
     const byName = (a: Software, b: Software) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
     const compare: Record<SortKey, (a: Software, b: Software) => number> = {
       name: byName,
@@ -115,12 +136,13 @@ export function LibraryView() {
       size: (a, b) => softwareSize(a) - softwareSize(b),
       added: (a, b) => a.addedAt.localeCompare(b.addedAt),
     };
-    return [...items].sort((a, b) => compare[prefs.sortKey](a, b) * direction);
-  }, [library, scope, platform, installFilter, links, search, prefs.sortKey, prefs.sortAsc]);
+    return [...items].sort((a, b) => compare[sortKey](a, b) * direction);
+    // 只跟着软件和分类变：后台补上简介、图标时索引的别处在变，不用重新筛选排序
+  }, [library.software, library.categories, scope, platform, installFilter, links, deferredSearch, sortKey, sortAsc]);
 
   // 看“全部软件”时按分类分组；已经在某个分类里或正在搜索时就不分了
   const groups = useMemo(() => {
-    const wanted = view === "grid" ? prefs.gridGroupByCategory : prefs.groupByCategory;
+    const wanted = view === "grid" ? gridGroupByCategory : groupByCategory;
     const grouped = wanted && scope.kind === "all" && !search.trim();
     if (!grouped) return [{ key: "all", title: null as string | null, items: list }];
     const out = flattenTree(library.categories)
@@ -133,7 +155,7 @@ export function LibraryView() {
     const rest = list.filter((s) => !s.categoryId);
     if (rest.length > 0) out.push({ key: "none", title: t("nav.uncategorized"), items: rest });
     return out;
-  }, [list, library.categories, view, prefs.groupByCategory, prefs.gridGroupByCategory, scope.kind, search, t]);
+  }, [list, library.categories, view, groupByCategory, gridGroupByCategory, scope.kind, search, t]);
 
   // 屏幕上从上到下的顺序：键盘上下移动、Shift 连选都按它来
   const ordered = useMemo(() => groups.flatMap((group) => group.items), [groups]);
@@ -222,7 +244,7 @@ export function LibraryView() {
   const filtering = search.trim() !== "" || platform !== "all" || installFilter !== "all" || scope.kind !== "all";
 
   return (
-    <div className="@container flex min-h-0 flex-1 flex-col">
+    <div ref={frame} className="@container flex min-h-0 flex-1 flex-col">
       {/* 工具栏：左边是标题和筛选，右边是视图、显示选项和详情栏开关。栏窄时筛选只留图标 */}
       <div className="flex h-11 shrink-0 items-center gap-1 border-b border-line pr-2 pl-4">
         <h2 className="m-0 min-w-12 truncate text-[14px] font-semibold" title={title}>
@@ -260,7 +282,7 @@ export function LibraryView() {
           )}
           <IconSegmented<PackageView>
             value={view}
-            onChange={(value) => prefs.set({ packageView: value })}
+            onChange={(value) => setPrefs({ packageView: value })}
             options={[
               { value: "list", label: t("lib.view.list"), icon: <LayoutList size={15} strokeWidth={1.75} /> },
               { value: "grid", label: t("lib.view.grid"), icon: <LayoutGrid size={15} strokeWidth={1.75} /> },
@@ -290,16 +312,8 @@ export function LibraryView() {
         )
       ) : (
         <>
-          {view === "list" && (
-            <div className={cx(COLUMNS, "h-8 shrink-0 border-b border-line pr-5 pl-[58px] text-[12px] text-fg-3")}>
-              <SortHeader column="name" label={t("lib.col.name")} />
-              <span>{t("lib.col.version")}</span>
-              <SortHeader column="platform" label={t("lib.col.platform")} className="hidden @lg:flex" />
-              <SortHeader column="size" label={t("lib.col.size")} className="hidden justify-end @2xl:flex" />
-              <SortHeader column="added" label={t("lib.col.added")} className="hidden justify-end @4xl:flex" />
-              <span className="text-right">{t("lib.col.action")}</span>
-            </div>
-          )}
+          <ColumnsContext.Provider value={columns}>
+          {view === "list" && <ListHeader />}
           <ListContext.Provider value={ordered}>
           <div className="min-h-0 flex-1 overflow-y-auto pb-3" onClick={(event) => event.target === event.currentTarget && select(null)}>
             {groups.map((group) => (
@@ -319,7 +333,7 @@ export function LibraryView() {
                   </div>
                 )}
                 {view === "grid" && (
-                  <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-2 px-4 pt-1">
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(112px,1fr))] gap-1 px-3 pt-1">
                     {group.items.map((software) => (
                       <Card key={software.id} software={software} selected={selectedSet.has(software.id)} />
                     ))}
@@ -336,6 +350,7 @@ export function LibraryView() {
             ))}
           </div>
           </ListContext.Provider>
+          </ColumnsContext.Provider>
         </>
       )}
     </div>
@@ -421,6 +436,34 @@ function DisplayMenu() {
   );
 }
 
+/** 列表视图的表头：点列名排序，拖列之间的竖线改宽度，右键勾选显示哪几列。 */
+function ListHeader() {
+  const t = useT();
+  const columns = useContext(ColumnsContext) as Columns<LibraryColumn>;
+  return (
+    <TableHeader
+      table="library"
+      defs={LIBRARY_COLUMNS}
+      columns={columns}
+      className="pr-5 pl-[58px]"
+      first={<SortHeader column="name" label={t("lib.col.name")} />}
+      firstLabel={t("lib.col.name")}
+      labels={{
+        version: t("lib.col.version"),
+        platform: t("lib.col.platform"),
+        size: t("lib.col.size"),
+        added: t("lib.col.added"),
+        action: t("lib.col.action"),
+      }}
+      cells={{
+        platform: <SortHeader column="platform" label={t("lib.col.platform")} />,
+        size: <SortHeader column="size" label={t("lib.col.size")} />,
+        added: <SortHeader column="added" label={t("lib.col.added")} />,
+      }}
+    />
+  );
+}
+
 function SortHeader({ column, label, className }: { column: SortKey; label: string; className?: string }) {
   const sortKey = usePrefs((state) => state.sortKey);
   const sortAsc = usePrefs((state) => state.sortAsc);
@@ -441,11 +484,11 @@ function useItem(software: Software) {
   const select = useApp((state) => state.select);
   const installedApp = useApp((state): InstalledApp | undefined => {
     const id = state.links[software.id];
-    return id ? state.installed?.find((app) => app.id === id) : undefined;
+    return id ? state.installedIndex[id] : undefined;
   });
   // 这一行是多选里的一个时，右键菜单和拖拽都作用于全部选中的软件
   const group = useApp((state) =>
-    state.selectedIds.length > 1 && state.selectedIds.includes(software.id) ? state.selectedIds : null,
+    state.selectedIds.length > 1 && selectionOf(state.selectedIds).has(software.id) ? state.selectedIds : null,
   );
   const dropping = useApp((state) => state.dropSoftwareId === software.id);
   // 多选时作用于全部选中的软件，包括搜索后暂时不在列表里的（和详情栏的批量面板一致）
@@ -467,6 +510,7 @@ function useItem(software: Software) {
           onSelect: () => void toggleStar(software),
         },
         { label: t("classify.menu"), icon: Sparkles, onSelect: () => classify([software.id]) },
+        { label: t("menu.openFolder"), icon: FolderOpen, separated: true, onSelect: () => void revealSoftware(software) },
         { label: t("detail.deleteSoftware"), icon: Trash2, danger: true, separated: true, onSelect: () => void deleteSoftware(software) },
       ];
   return {
@@ -516,6 +560,7 @@ function StarMark({ software }: { software: Software }) {
  */
 function VersionLabel({ software, installed, className }: { software: Software; installed?: string; className?: string }) {
   const t = useT();
+  const root = useApp((state) => state.status?.repoRoot);
   const main = primaryVersion(software);
   const newest = sortedVersions(software)[0];
   const version = main?.version || "—";
@@ -525,10 +570,10 @@ function VersionLabel({ software, installed, className }: { software: Software; 
   return (
     <span className={cx("tabular flex min-w-0 items-center gap-1 text-[12px] text-fg-2", className)}>
       {software.versions.length > 1 ? (
-        <VersionMenu software={software} installed={installed}>
+        <VersionMenu software={software} installed={installed} online={online}>
           <button
             type="button"
-            title={t("version.switch")}
+            aria-label={t("version.switch")}
             // 按下时不开始拖拽；点击照常选中这一行
             onPointerDown={(event) => event.stopPropagation()}
             className="-ml-1 flex min-w-0 items-center gap-0.5 rounded px-1 outline-none hover:bg-active hover:text-fg data-[state=open]:bg-active"
@@ -543,21 +588,68 @@ function VersionLabel({ software, installed, className }: { software: Software; 
           </button>
         </VersionMenu>
       ) : (
-        <span className="truncate">{version}</span>
-      )}
-      {online && (
-        <span title={t("source.updateTo", { version: online })} className="flex min-w-0 shrink items-center gap-0.5 text-accent">
-          <ArrowRight size={11} strokeWidth={2.25} aria-hidden className="shrink-0" />
-          <span className="truncate">{online}</span>
+        // 只有一个版本：悬停时提示本机版本、在线的新版本和安装包的完整路径
+        <span className="truncate" title={versionTitle(t, main, installed, online, root)}>
+          {version}
         </span>
       )}
+      <UpdateArrow version={online} />
     </span>
   );
 }
 
-/** 换默认版本的菜单：“始终用最新版本”，或者固定在某一个版本上。本机装着的那个版本带“本机”标记。 */
-function VersionMenu({ software, installed, children }: { software: Software; installed?: string; children: ReactNode }) {
+/** 在线源上有新版本时版本号右边的小箭头。新版本号在悬停提示里，不占列表的位置。 */
+function UpdateArrow({ version }: { version: string | null | undefined }) {
   const t = useT();
+  if (!version) return null;
+  const text = t("source.updateTo", { version });
+  return (
+    <span title={text} aria-label={text} className="flex shrink-0 text-accent">
+      <ArrowUp size={12} strokeWidth={2.5} />
+    </span>
+  );
+}
+
+/** 版本号的悬停提示：本机装的版本（和仓库不一样时）、在线源上的新版本，再空一行列出安装包的完整路径。 */
+function versionTitle(t: ReturnType<typeof useT>, main: Version | null, installed: string | undefined, online: string | null | undefined, root: string | null | undefined) {
+  const lines = [
+    installed && (!main || !sameVersion(main.version, installed)) ? t("local.version", { version: installed }) : null,
+    online ? t("source.updateTo", { version: online }) : null,
+  ].filter(Boolean);
+  const paths = main ? versionPaths(main, root) : "";
+  return [...lines, ...(lines.length > 0 && paths ? [""] : []), paths].join("\n") || undefined;
+}
+
+/** 换默认版本的菜单：“始终用最新版本”，或者固定在某一个版本上。本机装着的那个版本带“本机”标记。 */
+/**
+ * 换默认版本的下拉菜单。鼠标停在版本号上一会儿就展开，移开（又没移进菜单）就收起；点一下也能开关。
+ * 焦点在输入框里（正在搜索）时不靠悬停展开，免得打字被打断。菜单里悬停某个版本，提示它的安装包的完整路径。
+ */
+function VersionMenu({
+  software,
+  installed,
+  online,
+  children,
+}: {
+  software: Software;
+  installed?: string;
+  online?: string | null;
+  children: ReactNode;
+}) {
+  const t = useT();
+  const root = useApp((state) => state.status?.repoRoot);
+  const [open, setOpen] = useState(false);
+  const byHover = useRef(false);
+  const timer = useRef<number | undefined>(undefined);
+  const later = (next: boolean, delay: number) => {
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => {
+      if (next) byHover.current = true;
+      setOpen(next);
+    }, delay);
+  };
+  const stay = () => window.clearTimeout(timer.current);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
   const item = cx(itemClass, "gap-3 pr-2 text-fg");
   const indicator = (
     <span className="flex w-3.5 shrink-0 justify-end">
@@ -567,10 +659,36 @@ function VersionMenu({ software, installed, children }: { software: Software; in
     </span>
   );
   return (
-    <DropdownPrimitive.Root>
-      <DropdownPrimitive.Trigger asChild>{children}</DropdownPrimitive.Trigger>
+    <DropdownPrimitive.Root
+      open={open}
+      modal={false}
+      onOpenChange={(next) => {
+        stay();
+        byHover.current = false;
+        setOpen(next);
+      }}
+    >
+      <DropdownPrimitive.Trigger
+        asChild
+        onPointerEnter={() => {
+          // 正在输入框里打字时不靠悬停展开：搜索时列表在鼠标底下滚动，不能把焦点抢走
+          const typing = document.activeElement?.closest("input, textarea, [contenteditable='true']");
+          if (!open && !typing) later(true, 180);
+        }}
+        onPointerLeave={() => later(false, 220)}
+      >
+        {children}
+      </DropdownPrimitive.Trigger>
       <DropdownPrimitive.Portal>
-        <DropdownPrimitive.Content align="start" sideOffset={4} className={cx(menuClass, "min-w-[220px]")} onClick={(event) => event.stopPropagation()}>
+        <DropdownPrimitive.Content
+          align="start"
+          sideOffset={4}
+          className={cx(menuClass, "min-w-[220px]")}
+          onClick={(event) => event.stopPropagation()}
+          onPointerEnter={stay}
+          onPointerLeave={() => later(false, 220)}
+          onCloseAutoFocus={(event) => byHover.current && event.preventDefault()}
+        >
           <DropdownPrimitive.Label className="px-2 pt-1.5 pb-1 text-[12px] text-fg-3">{t("version.pickTitle")}</DropdownPrimitive.Label>
           <DropdownPrimitive.RadioGroup
             value={software.defaultVersionId ?? "auto"}
@@ -582,7 +700,7 @@ function VersionMenu({ software, installed, children }: { software: Software; in
             </DropdownPrimitive.RadioItem>
             <DropdownPrimitive.Separator className="mx-1 my-1 h-px bg-line" />
             {sortedVersions(software).map((version) => (
-              <DropdownPrimitive.RadioItem key={version.id} value={version.id} className={item}>
+              <DropdownPrimitive.RadioItem key={version.id} value={version.id} className={item} title={versionPaths(version, root)}>
                 <span className="tabular flex-1 truncate">{version.version || t("detail.unknownVersion")}</span>
                 {installed && sameVersion(version.version, installed) && <span className="text-[12px] text-success">{t("version.local")}</span>}
                 <span className="tabular text-[12px] text-fg-3">{t("lib.files", { n: version.files.length })}</span>
@@ -590,6 +708,21 @@ function VersionMenu({ software, installed, children }: { software: Software; in
               </DropdownPrimitive.RadioItem>
             ))}
           </DropdownPrimitive.RadioGroup>
+          {/* 列表里只留一个版本号，别的版本信息在这里说 */}
+          {(online || (installed && !software.versions.some((v) => sameVersion(v.version, installed)))) && (
+            <>
+              <DropdownPrimitive.Separator className="mx-1 my-1 h-px bg-line" />
+              {installed && !software.versions.some((v) => sameVersion(v.version, installed)) && (
+                <div className="tabular px-2 py-1 text-[12px] text-fg-3">{t("local.version", { version: installed })}</div>
+              )}
+              {online && (
+                <div className="tabular flex items-center gap-1 px-2 py-1 text-[12px] text-accent">
+                  <ArrowUp size={12} strokeWidth={2.5} aria-hidden />
+                  {t("source.updateTo", { version: online })}
+                </div>
+              )}
+            </>
+          )}
         </DropdownPrimitive.Content>
       </DropdownPrimitive.Portal>
     </DropdownPrimitive.Root>
@@ -678,10 +811,22 @@ function ActionButton({
     task();
   };
   if (upgrade) {
+    // 能升级时平常只是一个小图标，鼠标停上去（或选中、键盘移过来）才换成“升级”按钮。按钮一直占着位置，列不会跳
     return (
-      <Button variant="primary" size="sm" {...guard} onClick={run(() => void installSoftware(software, true))}>
-        {t("link.upgrade")}
-      </Button>
+      <span className="relative flex items-center justify-end">
+        <Button variant="primary" size="sm" className={onHover} {...guard} onClick={run(() => void installSoftware(software, true))}>
+          {t("link.upgrade")}
+        </Button>
+        {!selected && (
+          <span
+            title={t("link.canUpgrade")}
+            aria-label={t("link.canUpgrade")}
+            className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-1.5 text-accent group-focus-within:invisible group-hover:invisible"
+          >
+            <ArrowUpCircle size={16} strokeWidth={2} />
+          </span>
+        )}
+      </span>
     );
   }
   if (!installedApp && installer) {
@@ -745,8 +890,11 @@ function LocalLabel({
   );
 }
 
-function Row({ software, selected }: { software: Software; selected: boolean }) {
+// 每一行只在自己的软件或选中状态变了时重画
+const Row = memo(function Row({ software, selected }: { software: Software; selected: boolean }) {
   const language = useLanguage();
+  const columns = useContext(ColumnsContext);
+  const show = (key: LibraryColumn) => columns.visible.includes(key);
   const { installedApp, upgrade, menu, dropping, handlers } = useItem(software);
   const icon = useSoftwareIcon(software);
   const description = useDescription(software);
@@ -757,9 +905,9 @@ function Row({ software, selected }: { software: Software; selected: boolean }) 
         tabIndex={0}
         aria-pressed={selected}
         {...handlers}
+        style={{ gridTemplateColumns: columns.template }}
         className={cx(
-          COLUMNS,
-          "group min-h-[52px] rounded-md py-1.5 pr-3 pl-2.5 transition-colors",
+          "group grid min-h-[52px] items-center gap-x-3 rounded-md py-1.5 pr-3 pl-2.5 transition-colors",
           dropping ? "bg-accent-soft ring-2 ring-accent ring-inset" : selected ? "bg-active" : "hover:bg-hover",
         )}
       >
@@ -774,24 +922,37 @@ function Row({ software, selected }: { software: Software; selected: boolean }) 
             <div className="truncate text-[12px] text-fg-3">{description}</div>
           </div>
         </div>
-        <div className="flex min-w-0 flex-col">
-          <VersionLabel software={software} installed={installedApp?.version} />
-          <LocalLabel software={software} app={installedApp} upgradeTo={upgrade?.version.version ?? null} className="block" />
-        </div>
-        <PlatformIcons platforms={softwarePlatforms(software)} className="hidden @lg:flex" />
-        <div className="tabular hidden text-right text-[12px] text-fg-3 @2xl:block">{formatSize(softwareSize(software))}</div>
-        <div className="tabular hidden text-right text-[12px] text-fg-3 @4xl:block">{formatDate(software.addedAt, language)}</div>
-        <div className="flex justify-end">
-          <ActionButton software={software} installedApp={installedApp} upgrade={upgrade !== null} selected={selected} />
-        </div>
+        {show("version") && (
+          <div className="flex min-w-0">
+            <VersionLabel software={software} installed={installedApp?.version} />
+          </div>
+        )}
+        {show("platform") && <PlatformIcons platforms={softwarePlatforms(software)} className="min-w-0 overflow-hidden" />}
+        {show("size") && <div className="tabular truncate text-right text-[12px] text-fg-3">{formatSize(softwareSize(software))}</div>}
+        {show("added") && <div className="tabular truncate text-right text-[12px] text-fg-3">{formatDate(software.addedAt, language)}</div>}
+        {show("action") && (
+          <div className="flex justify-end">
+            <ActionButton software={software} installedApp={installedApp} upgrade={upgrade !== null} selected={selected} />
+          </div>
+        )}
       </div>
     </ContextMenu>
   );
-}
+});
 
-function Card({ software, selected }: { software: Software; selected: boolean }) {
+/**
+ * 网格视图里的一个软件：居中的大图标，下面是名字和版本，别的都收起来。
+ * 收藏和已安装是图标角上的小标记；安装、卸载按钮鼠标停上去或选中时才出现，能升级时一直显示。
+ */
+const Card = memo(function Card({ software, selected }: { software: Software; selected: boolean }) {
+  const t = useT();
   const { installedApp, upgrade, menu, dropping, handlers } = useItem(software);
   const icon = useSoftwareIcon(software);
+  const root = useApp((state) => state.status?.repoRoot);
+  const main = primaryVersion(software);
+  const version = main?.version || "—";
+  const online = hasUpdate(software) ? software.subscription?.latest?.version : null;
+  const installedText = installedApp && (installedApp.version ? t("link.installedVersion", { version: installedApp.version }) : t("link.installed"));
   return (
     <ContextMenu items={menu}>
       <div
@@ -800,31 +961,37 @@ function Card({ software, selected }: { software: Software; selected: boolean })
         aria-pressed={selected}
         {...handlers}
         className={cx(
-          "group flex flex-col gap-2 rounded-lg border p-3 transition-colors",
-          dropping ? "border-accent bg-accent-soft ring-2 ring-accent" : selected ? "border-accent bg-accent-soft" : "border-line hover:bg-hover",
+          "group flex min-w-0 flex-col items-center rounded-lg px-2 pt-4 pb-2 text-center transition-colors",
+          dropping ? "bg-accent-soft ring-2 ring-accent ring-inset" : selected ? "bg-accent-soft" : "hover:bg-hover",
         )}
       >
-        <div className="flex items-start gap-1.5 pt-1.5">
-          <SoftwareIcon name={software.name} icon={icon} size={40} stack={software.versions.length} />
-          <span className="flex-1" />
-          <StarMark software={software} />
-        </div>
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5">
-            <span className="truncate text-[13px] font-medium">{software.name}</span>
-            <InstalledMark app={installedApp} />
-          </div>
-          <VersionLabel software={software} installed={installedApp?.version} className="text-fg-3" />
-          <LocalLabel software={software} app={installedApp} upgradeTo={upgrade?.version.version ?? null} className="block" />
-        </div>
-        <div className="mt-auto flex min-h-6 items-center justify-between gap-2">
-          <PlatformIcons platforms={softwarePlatforms(software)} />
+        <span className="relative">
+          <SoftwareIcon name={software.name} icon={icon} size={48} stack={software.versions.length} />
+          {software.starred && (
+            <span title={t("nav.starred")} aria-label={t("nav.starred")} className="absolute -top-1.5 -right-1.5 flex size-[18px] items-center justify-center rounded-full bg-bg text-warning">
+              <Star size={11} strokeWidth={2} fill="currentColor" />
+            </span>
+          )}
+          {installedText && (
+            <span title={installedText} aria-label={installedText} className="absolute -right-1.5 -bottom-1 flex size-[18px] items-center justify-center rounded-full bg-bg text-success">
+              <CircleCheck size={14} strokeWidth={2.25} />
+            </span>
+          )}
+        </span>
+        <span className="mt-2.5 line-clamp-2 w-full text-[13px] leading-snug font-medium break-words">{software.name}</span>
+        <span className="tabular mt-0.5 flex max-w-full min-w-0 items-center justify-center gap-1 text-[12px] text-fg-3">
+          <span className="truncate" title={versionTitle(t, main, installedApp?.version, online, root)}>
+            {version}
+          </span>
+          <UpdateArrow version={online} />
+        </span>
+        <div className="mt-1.5 flex h-6 items-center justify-center">
           <ActionButton software={software} installedApp={installedApp} upgrade={upgrade !== null} selected={selected} dash={false} />
         </div>
       </div>
     </ContextMenu>
   );
-}
+});
 
 /** 文件夹视图里的一个软件：展开看版本，再展开看文件，和磁盘上的目录一一对应。 */
 function FolderNode({ software, selected }: { software: Software; selected: boolean }) {
@@ -906,4 +1073,15 @@ function FolderNode({ software, selected }: { software: Software; selected: bool
 function selectedSoftware(ids: string[]): Software[] {
   const byId = new Map(useApp.getState().library?.software.map((s) => [s.id, s]));
   return ids.flatMap((id) => byId.get(id) ?? []);
+}
+
+/** 选中的 id 做成 Set，同一次选择只做一次：每一行都要问“我被选中没有”，不能每次都从头找。 */
+const selectionSets = new WeakMap<string[], Set<string>>();
+function selectionOf(ids: string[]): Set<string> {
+  let set = selectionSets.get(ids);
+  if (!set) {
+    set = new Set(ids);
+    selectionSets.set(ids, set);
+  }
+  return set;
 }

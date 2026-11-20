@@ -343,7 +343,7 @@ mod tests {
         ];
         // 只关联了在线源、一个安装包都没有的软件，不应出现在目录里
         lib.software.push(software("Empty Shell", None, vec![]));
-        lib.summaries.insert("VS Code".into(), Summary { text: "编辑器 & 更多".into(), source: "x".into(), fetched_at: String::new() });
+        lib.summaries.insert("VS Code".into(), Summary { text: "编辑器 & 更多".into(), source: "x".into(), ..Summary::default() });
         lib
     }
 

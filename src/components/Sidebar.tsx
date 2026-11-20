@@ -1,8 +1,14 @@
 // 侧栏：上面是软件库的几个入口，中间是分类树，下面是存储与设置。
 
 import {
+  ArrowDown,
+  ArrowUp,
   ArrowUpCircle,
+  ArrowUpToLine,
   ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  FolderPlus,
   HardDrive,
   Inbox,
   LayoutGrid,
@@ -44,6 +50,7 @@ export function Sidebar() {
   const checking = useApp((state) => state.checking !== null);
   const installedCount = useApp((state) => state.installed?.length);
   const width = usePrefs((state) => state.sidebarWidth);
+  const setPrefs = usePrefs((state) => state.set);
   const [editing, setEditing] = useState<Editing | null>(null);
 
   // 每个分类下的软件数，包含下级分类里的
@@ -79,6 +86,45 @@ export function Sidebar() {
     return library.software.filter((s) => s.categoryId && ids.has(s.categoryId)).map((s) => s.id);
   };
 
+  // 有下级的分类才能展开或折叠
+  const parents = library.categories.filter((c) => library.categories.some((child) => child.parentId === c.id)).map((c) => c.id);
+  /** “分类”标题和分类树空白处的右键菜单。 */
+  const sectionMenu: MenuEntry[] = [
+    { label: t("cat.new"), icon: Plus, onSelect: () => setEditing({ mode: "new", parentId: null }) },
+    { label: t("cat.expandAll"), icon: ChevronsUpDown, separated: true, disabled: parents.length === 0, onSelect: () => setPrefs({ collapsed: [] }) },
+    { label: t("cat.collapseAll"), icon: ChevronsDownUp, disabled: parents.length === 0, onSelect: () => setPrefs({ collapsed: parents }) },
+  ];
+  /** 一个分类的右键菜单。上移、下移在同级分类之间挪；移到顶层排在它原来的顶层上级后面。 */
+  const categoryMenu = (category: Category): MenuEntry[] => {
+    const peers = childrenOf(library.categories, category.parentId ?? null);
+    const at = peers.findIndex((c) => c.id === category.id);
+    let root = category;
+    while (root.parentId) root = library.categories.find((c) => c.id === root.parentId) ?? { ...root, parentId: null };
+    return [
+      { label: t("cat.newChild"), icon: Plus, onSelect: () => setEditing({ mode: "new", parentId: category.id }) },
+      { label: t("cat.newSibling"), icon: FolderPlus, onSelect: () => setEditing({ mode: "new", parentId: category.parentId ?? null }) },
+      { label: t("cat.edit"), icon: Pencil, onSelect: () => setEditing({ mode: "edit", category }) },
+      {
+        label: t("cat.moveUp"),
+        icon: ArrowUp,
+        separated: true,
+        disabled: at <= 0,
+        onSelect: () => void moveCategory(category.id, { category: peers[at - 1].id, zone: "before" }),
+      },
+      {
+        label: t("cat.moveDown"),
+        icon: ArrowDown,
+        disabled: at < 0 || at >= peers.length - 1,
+        onSelect: () => void moveCategory(category.id, { category: peers[at + 1].id, zone: "after" }),
+      },
+      ...(category.parentId && root.id !== category.id
+        ? [{ label: t("cat.moveTop"), icon: ArrowUpToLine, onSelect: () => void moveCategory(category.id, { category: root.id, zone: "after" }) }]
+        : []),
+      ...classifyMenu(idsInCategory(category.id)).map((entry) => ({ ...entry, separated: true })),
+      { label: t("cat.delete"), icon: Trash2, danger: true, separated: true, onSelect: () => void remove(category) },
+    ];
+  };
+
   const remove = async (category: Category) => {
     const { ok } = await confirm({
       title: t("cat.delete"),
@@ -99,6 +145,14 @@ export function Sidebar() {
           active={isScope({ kind: "all" })}
           onClick={() => setScope({ kind: "all" })}
           menu={classifyMenu(library.software.map((s) => s.id))}
+        />
+        {/* 这台电脑上装的软件，常用，放在收藏上面 */}
+        <NavRow
+          icon={MonitorCheck}
+          label={t("nav.installed")}
+          count={installedCount}
+          active={route === "installed"}
+          onClick={() => setRoute("installed")}
         />
         <NavRow icon={Star} label={t("nav.starred")} count={starred} active={isScope({ kind: "starred" })} onClick={() => setScope({ kind: "starred" })} />
         <NavRow
@@ -127,13 +181,17 @@ export function Sidebar() {
         />
       </div>
 
-      <div className="mt-3 flex h-7 shrink-0 items-center justify-between pr-2 pl-4">
-        <span className="text-[12px] font-medium text-fg-3">{t("nav.categories")}</span>
-        <IconButton label={t("cat.new")} className="size-6" onClick={() => setEditing({ mode: "new", parentId: null })}>
-          <Plus size={14} strokeWidth={1.75} />
-        </IconButton>
-      </div>
+      <ContextMenu items={sectionMenu}>
+        <div className="mt-3 flex h-7 shrink-0 items-center justify-between pr-2 pl-4">
+          <span className="text-[12px] font-medium text-fg-3">{t("nav.categories")}</span>
+          <IconButton label={t("cat.new")} className="size-6" onClick={() => setEditing({ mode: "new", parentId: null })}>
+            <Plus size={14} strokeWidth={1.75} />
+          </IconButton>
+        </div>
+      </ContextMenu>
 
+      {/* 右键分类以外的空白处：新建分类、全部展开或折叠。右键某个分类时出它自己的菜单 */}
+      <ContextMenu items={sectionMenu}>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         <Tree
           parentId={null}
@@ -141,12 +199,7 @@ export function Sidebar() {
           counts={counts}
           isActive={(id) => isScope({ kind: "category", id })}
           onSelect={(id) => setScope({ kind: "category", id })}
-          menuFor={(category) => [
-            { label: t("cat.newChild"), icon: Plus, onSelect: () => setEditing({ mode: "new", parentId: category.id }) },
-            { label: t("cat.edit"), icon: Pencil, onSelect: () => setEditing({ mode: "edit", category }) },
-            ...classifyMenu(idsInCategory(category.id)),
-            { label: t("cat.delete"), icon: Trash2, danger: true, separated: true, onSelect: () => void remove(category) },
-          ]}
+          menuFor={categoryMenu}
         />
         {library.categories.length === 0 && <div className="px-2 py-1.5 text-[12px] text-fg-4">{t("cat.empty")}</div>}
         {(uncategorized.length > 0 || draggingSoftware) && (
@@ -164,16 +217,10 @@ export function Sidebar() {
           />
         )}
       </div>
+      </ContextMenu>
 
-      {/* 下面是和这台电脑有关的：本机装的软件、仓库存储、设置 */}
+      {/* 下面是仓库存储和设置 */}
       <div className="flex shrink-0 flex-col gap-px border-t border-line p-2">
-        <NavRow
-          icon={MonitorCheck}
-          label={t("nav.installed")}
-          count={installedCount}
-          active={route === "installed"}
-          onClick={() => setRoute("installed")}
-        />
         <NavRow icon={HardDrive} label={t("nav.storage")} active={route === "storage"} onClick={() => setRoute("storage")} />
         <NavRow icon={Settings} label={t("app.settings")} active={settingsOpen} onClick={() => patch({ settingsOpen: true })} />
       </div>
@@ -379,11 +426,11 @@ function CategoryDialog({ editing, onClose }: { editing: Editing; onClose: () =>
         <div>
           <span className="mb-1.5 block text-[12px] font-medium text-fg-2">{t("cat.color")}</span>
           <div className="flex items-center gap-1.5">
-            {CATEGORY_COLORS.map((value) => (
+            {CATEGORY_COLORS.map((value, index) => (
               <button
                 key={value}
                 type="button"
-                aria-label={value}
+                aria-label={t("cat.colorN", { n: index + 1 })}
                 aria-pressed={color === value}
                 onClick={() => setColor(color === value ? null : value)}
                 style={{ background: value }}

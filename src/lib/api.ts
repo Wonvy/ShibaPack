@@ -51,10 +51,17 @@ export const api = {
   getStatus: () => call<Status>("get_status"),
   setRepoRoot: (path: string) => call<Status>("set_repo_root", { path }),
   getLibrary: () => call<Library>("get_library"),
+  /** 多选收藏或取消收藏，只存一次索引。 */
+  setStarredMany: (ids: string[], starred: boolean) => call<Library>("set_starred_many", { ids, starred }),
+  /** 把多个软件移到一个分类（null 是未分类），只存一次索引。 */
+  moveSoftware: (ids: string[], categoryId: string | null) => call<Library>("move_software", { ids, categoryId }),
   /** 索引被别处改过时返回新的索引，没改过返回 null。 */
   refreshLibrary: () => call<Library | null>("refresh_library"),
-  importPaths: (paths: string[], mode: Storage, hint?: ImportHint) =>
-    call<ImportResult>("import_paths", { paths, mode, hint: hint ?? null }),
+  /** `moveFiles` 只对托管模式有效：导入后不留原文件。 */
+  importPaths: (paths: string[], mode: Storage, hint?: ImportHint, moveFiles = false) =>
+    call<ImportResult>("import_paths", { paths, mode, moveFiles, hint: hint ?? null }),
+  /** 在两个文件之间停下正在进行的导入。 */
+  cancelImport: () => call<void>("cancel_import"),
   updateSoftware: (id: string, edit: SoftwareEdit) => call<Library>("update_software", { id, edit }),
   updateVersion: (softwareId: string, versionId: string, edit: VersionEdit) =>
     call<Library>("update_version", { softwareId, versionId, edit }),
@@ -91,7 +98,8 @@ export const api = {
   fillIcons: () => call<FillResult>("fill_icons"),
   /** 联网找图标（主页的网站图标或 GitHub 头像）。返回图标的相对路径，没找到时是 null。 */
   fetchIcon: (id: string) => call<string | null>("fetch_icon", { id }),
-  fetchSummary: (id: string) => call<Library>("fetch_summary", { id }),
+  /** 按名字取简介（需要时顺带翻译）。`refresh` 为真时不管有没有都重新取。 */
+  fetchSummary: (name: string, refresh = false) => call<Library>("fetch_summary", { name, refresh }),
   selftestReport: (line: string, done = false) => call<void>("selftest_report", { line, done }),
   sourceLookup: (kind: SourceKind, reference: string) => call<Release>("source_lookup", { kind, reference }),
   sourceSearch: (query: string) => call<Candidate[]>("source_search", { query }),

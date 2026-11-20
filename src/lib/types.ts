@@ -119,6 +119,10 @@ export interface Summary {
   text: string;
   source: string;
   fetchedAt: string;
+  /** 原文的语言：zh、en、ja……旧索引里没有。 */
+  lang?: string;
+  /** 翻译成界面语言的译文：界面语言（如 zh-CN）→ 译文。 */
+  translations?: Record<string, string>;
 }
 
 export interface Settings {
@@ -126,8 +130,12 @@ export interface Settings {
   accent: string;
   language: Language;
   defaultStorage: Storage;
+  /** 托管时导入后删掉原文件（移动进仓库）。 */
+  moveOnImport: boolean;
   /** 是否联网取软件简介（会把软件名发给维基百科和 GitHub）。 */
   fetchSummaries: boolean;
+  /** 简介不是界面语言时，联网翻译成界面语言。 */
+  translateSummaries: boolean;
   /** 是否在仓库根目录生成离线目录 index.html。 */
   offlineCatalog: boolean;
   /** ShibaPack 发现自己有新版本时，是否自动下载并安装。 */
@@ -240,6 +248,8 @@ export interface ImportReport {
   duplicates: number;
   failed: number;
   items: ImportItem[];
+  /** 用户中途取消了，后面的文件没有处理。 */
+  cancelled?: boolean;
 }
 
 export interface ImportResult {

@@ -16,7 +16,7 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { type PointerEvent, useEffect, useRef } from "react";
+import { type PointerEvent, useEffect, useRef, useState } from "react";
 import { api, isMac, isTauri, pickFiles, pickFolder, windowControls } from "../lib/api";
 import { fileCount, formatSize, softwareSize } from "../lib/library";
 import { usePrefs } from "../lib/prefs";
@@ -210,6 +210,13 @@ export function ResizeHandle({ edge, width, onResize }: { edge: "left" | "right"
 export function ImportProgress() {
   const t = useT();
   const progress = useApp((state) => state.progress);
+  const queued = useApp((state) => state.importQueue.length);
+  const cancelImport = useApp((state) => state.cancelImport);
+  const [stopping, setStopping] = useState(false);
+  // 新的一批开始时，“正在停止”的状态要清掉
+  useEffect(() => {
+    if (!progress) setStopping(false);
+  }, [progress]);
   if (!progress) return null;
   const known = progress.phase === "import" && progress.total > 0;
   const text = known
@@ -227,7 +234,24 @@ export function ImportProgress() {
           <div className="h-full w-2/5 animate-slide bg-accent" />
         )}
       </div>
-      <div className="truncate px-3 pt-1.5 text-[12px] text-fg-3">{text}</div>
+      <div className="flex items-center gap-2 px-3 pt-1 text-[12px] text-fg-3">
+        <span className="min-w-0 flex-1 truncate">
+          {stopping ? t("import.stopping") : text}
+          {queued > 0 && ` · ${t("import.queuedCount", { n: queued })}`}
+        </span>
+        {/* 停在两个文件之间：已经导入的保留 */}
+        <button
+          type="button"
+          disabled={stopping}
+          onClick={() => {
+            setStopping(true);
+            cancelImport();
+          }}
+          className="shrink-0 rounded px-1.5 py-0.5 text-fg-2 hover:bg-hover hover:text-fg disabled:opacity-50"
+        >
+          {t("import.cancel")}
+        </button>
+      </div>
     </div>
   );
 }
@@ -344,19 +368,35 @@ export function UpdateCard() {
 }
 
 export function ToastView() {
-  const toast = useApp((state) => state.toast);
-  if (!toast) return null;
+  const t = useT();
+  const toasts = useApp((state) => state.toasts);
+  const dismiss = useApp((state) => state.dismissToast);
+  if (toasts.length === 0) return null;
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-10 z-50 flex justify-center px-6">
-      <div
-        role="status"
-        className={cx(
-          "selectable pointer-events-auto max-w-[560px] animate-pop rounded-lg bg-panel px-3 py-2 text-[13px] shadow-pop",
-          toast.kind === "error" ? "text-danger" : "text-fg",
-        )}
-      >
-        {toast.text}
-      </div>
+    <div className="pointer-events-none fixed inset-x-0 bottom-10 z-50 flex flex-col items-center gap-1.5 px-6">
+      {toasts.map((toast) => (
+        <div
+          key={toast.id}
+          role={toast.kind === "error" ? "alert" : "status"}
+          className={cx(
+            "selectable pointer-events-auto flex max-w-[560px] animate-pop items-start gap-2 rounded-lg bg-panel px-3 py-2 text-[13px] shadow-pop",
+            toast.kind === "error" ? "text-danger" : "text-fg",
+          )}
+        >
+          <span className="min-w-0">{toast.text}</span>
+          {/* 出错的提示留得久，可以先关掉 */}
+          {toast.kind === "error" && (
+            <button
+              type="button"
+              aria-label={t("common.close")}
+              onClick={() => dismiss(toast.id)}
+              className="-mr-1 flex size-5 shrink-0 items-center justify-center rounded text-fg-3 hover:bg-hover hover:text-fg"
+            >
+              <X size={13} strokeWidth={2} aria-hidden />
+            </button>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

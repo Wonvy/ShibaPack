@@ -1,7 +1,7 @@
 // 在线源：详情栏里的“在线源”区块，以及关联 / 从在线源添加用的对话框。
 
 import { ArrowUpCircle, Check, Download, ExternalLink, LoaderCircle, RefreshCw, Search, Unlink, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { errorText } from "../lib/i18n";
 import { assetInLibrary, formatSize, hasUpdate } from "../lib/library";
@@ -109,7 +109,7 @@ function AssetRow({ software, release, asset }: { software: Software; release: R
           <span className="tabular shrink-0 text-[12px] text-accent">
             {download.received === 0 ? t("source.queued") : percent !== null ? `${percent}%` : formatSize(download.received)}
           </span>
-          <IconButton label={t("source.cancel")} onClick={() => void api.cancelDownload(asset.url)}>
+          <IconButton label={t("source.cancel")} onClick={() => void api.cancelDownload(asset.url).catch(() => {})}>
             <X size={15} strokeWidth={1.75} />
           </IconButton>
           <div className="absolute inset-x-0 bottom-0 h-0.5 bg-line">
@@ -168,11 +168,15 @@ function Dialog({ softwareId }: { softwareId: string | null }) {
   const [preview, setPreview] = useState<Release | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  /** 第几次查版本：慢的那次回来时，已经不是用户最后点的那个了，就不用它的结果。 */
+  const lookups = useRef(0);
 
   // Homebrew：输入停下来一会儿就搜
   useEffect(() => {
     if (kind !== "homebrew" || query.trim().length < 2) {
+      // 删到不够两个字时，前面那次搜索可能还没回来：转圈也要停
       setResults(null);
+      setSearching(false);
       return;
     }
     let stale = false;
@@ -205,21 +209,24 @@ function Dialog({ softwareId }: { softwareId: string | null }) {
     setProblem(null);
   };
 
-  /** 查这个标识对应的最新版本，查到了才能关联。 */
+  /** 查这个标识对应的最新版本，查到了才能关联。连着点了两个结果时，只认最后一次的结果。 */
   const lookup = async (ref: string, suggestedName?: string) => {
+    const turn = ++lookups.current;
     setReference(ref);
     setPreview(null);
     setProblem(null);
     if (!ref.trim()) return;
     setBusy(true);
     try {
-      setPreview(await api.sourceLookup(kind, ref.trim()));
+      const release = await api.sourceLookup(kind, ref.trim());
+      if (turn !== lookups.current) return;
+      setPreview(release);
       // 新添软件时给个默认名字：搜索结果里的名字，或者标识的最后一段
       if (!softwareId) setName(suggestedName ?? ref.trim().replace(/\/+$/, "").split(/[/.]/).pop() ?? ref);
     } catch (error) {
-      setProblem(errorText(language, error));
+      if (turn === lookups.current) setProblem(errorText(language, error));
     } finally {
-      setBusy(false);
+      if (turn === lookups.current) setBusy(false);
     }
   };
 

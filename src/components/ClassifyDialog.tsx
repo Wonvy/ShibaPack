@@ -4,7 +4,8 @@ import { ArrowRight, LoaderCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { categoryPath, flattenTree } from "../lib/library";
-import { useApp, useT } from "../lib/store";
+import { errorText } from "../lib/i18n";
+import { useApp, useLanguage, useT } from "../lib/store";
 import type { Assignment, Software, Suggestion } from "../lib/types";
 import { SoftwareIcon, useSoftwareIcon } from "./SoftwareIcon";
 import { Button, Checkbox, Modal, Select, cx } from "./ui";
@@ -26,7 +27,10 @@ function Dialog({ ids }: { ids: string[] }) {
   const notify = useApp((state) => state.notify);
   const close = () => patch({ classifyIds: null });
 
+  const language = useLanguage();
   const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
+  /** 取建议失败（比如仓库打不开）：说出原因，不要显示成“认不出这些软件”。 */
+  const [failure, setFailure] = useState<string | null>(null);
   const [choices, setChoices] = useState<Record<string, Choice>>({});
   const [checked, setChecked] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
@@ -47,7 +51,11 @@ function Dialog({ ids }: { ids: string[] }) {
         setChoices(nextChoices);
         setChecked(nextChecked);
       },
-      () => alive && setSuggestions([]),
+      (error) => {
+        if (!alive) return;
+        setFailure(errorText(language, error));
+        setSuggestions([]);
+      },
     );
     return () => {
       alive = false;
@@ -113,8 +121,8 @@ function Dialog({ ids }: { ids: string[] }) {
         </div>
       ) : (
         <>
-          <p className="m-0 mb-3 text-[13px] leading-relaxed text-fg-2">
-            {found > 0 ? t("classify.summary", { n: found }) : t("classify.none")}
+          <p className={cx("m-0 mb-3 text-[13px] leading-relaxed", failure ? "text-danger" : "text-fg-2")}>
+            {failure ?? (found > 0 ? t("classify.summary", { n: found }) : t("classify.none"))}
           </p>
           <div className="max-h-[56vh] overflow-y-auto rounded-lg border border-line">
             {suggestions.map((suggestion) => {
@@ -185,7 +193,7 @@ function Row({
     : suggestion.known
       ? t("classify.known")
       : suggestion.evidence.length > 0
-        ? t("classify.evidence", { terms: suggestion.evidence.slice(0, 4).join("、") })
+        ? t("classify.evidence", { terms: suggestion.evidence.slice(0, 4).join(t("common.listSeparator")) })
         : !suggestion.categoryId && !suggestion.newCategory
           ? t("classify.unknown")
           : "";

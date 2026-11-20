@@ -315,23 +315,38 @@ export interface MenuEntry {
   disabled?: boolean;
   /** 在这一项前面加一条分隔线。 */
   separated?: boolean;
+  /** 给了就是一个勾选项：前面显示对勾，点了菜单不关，可以接着勾别的。 */
+  checked?: boolean;
   onSelect: () => void;
 }
 
 function entries(list: MenuEntry[], Item: typeof DropdownPrimitive.Item, Separator: typeof DropdownPrimitive.Separator) {
-  return list.map((entry) => (
-    <div key={entry.label}>
-      {entry.separated && <Separator className="mx-1 my-1 h-px bg-line" />}
-      <Item
-        disabled={entry.disabled}
-        onSelect={entry.onSelect}
-        className={cx(itemClass, entry.danger ? "text-danger" : "text-fg")}
-      >
-        {entry.icon && <entry.icon size={15} strokeWidth={1.75} className={entry.danger ? "" : "text-fg-2"} aria-hidden />}
-        {entry.label}
-      </Item>
-    </div>
-  ));
+  return list.map((entry) => {
+    const checkable = entry.checked !== undefined;
+    return (
+      <div key={entry.label}>
+        {entry.separated && <Separator className="mx-1 my-1 h-px bg-line" />}
+        <Item
+          disabled={entry.disabled}
+          onSelect={(event) => {
+            if (checkable) event.preventDefault();
+            entry.onSelect();
+          }}
+          {...(checkable ? { role: "menuitemcheckbox", "aria-checked": entry.checked } : {})}
+          className={cx(itemClass, entry.danger ? "text-danger" : "text-fg")}
+        >
+          {checkable ? (
+            <span className="flex size-[15px] shrink-0 items-center justify-center text-accent" aria-hidden>
+              {entry.checked && <Check size={14} strokeWidth={2.25} />}
+            </span>
+          ) : (
+            entry.icon && <entry.icon size={15} strokeWidth={1.75} className={entry.danger ? "" : "text-fg-2"} aria-hidden />
+          )}
+          {entry.label}
+        </Item>
+      </div>
+    );
+  });
 }
 
 /** 点按钮弹出的菜单。`children` 是触发它的按钮。 */

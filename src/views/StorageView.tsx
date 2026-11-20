@@ -6,6 +6,7 @@ import { confirm } from "../components/dialogs";
 import { Button, Select } from "../components/ui";
 import { deleteVersions } from "../lib/actions";
 import { api, pickFolder, pickJsonFile, pickSavePath } from "../lib/api";
+import { errorText } from "../lib/i18n";
 import { formatDate, formatSize, prunable } from "../lib/library";
 import { useApp, useLanguage, useT } from "../lib/store";
 import type { BackupInfo, MissingFile, Stats, VerifyReport } from "../lib/types";
@@ -51,6 +52,8 @@ export function StorageView() {
   };
 
   const [stats, setStats] = useState<Stats | null>(null);
+  /** 统计和备份列表取不到时的原因。不然数字会一直是“…”。 */
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [report, setReport] = useState<VerifyReport | null>(null);
   const [verifying, setVerifying] = useState(false);
@@ -63,8 +66,9 @@ export function StorageView() {
         if (!alive) return;
         setStats(nextStats);
         setBackups(nextBackups);
+        setLoadError(null);
       },
-      () => {},
+      (error) => alive && setLoadError(errorText(language, error)),
     );
     return () => {
       alive = false;
@@ -151,6 +155,12 @@ export function StorageView() {
         </Group>
 
         <Group title={t("storage.stats")}>
+          {loadError && (
+            <div className="mb-3 flex items-center gap-2 text-[13px] text-danger">
+              <TriangleAlert size={15} strokeWidth={1.75} aria-hidden className="shrink-0" />
+              {loadError}
+            </div>
+          )}
           <div className="grid grid-cols-3 gap-x-6 gap-y-4 sm:grid-cols-6">
             <Stat label={t("storage.software")} value={stats?.software} />
             <Stat label={t("storage.versions")} value={stats?.versions} />

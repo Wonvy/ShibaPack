@@ -95,6 +95,16 @@ export async function runSelftest() {
       await check("在线源", false, String(error));
     }
 
+    // 按名字取简介（已安装软件的详情栏也用它），需要时顺带翻译成界面语言
+    try {
+      const library = await api.fetchSummary("Git", true);
+      const summary = library.summaries["Git"];
+      const shown = summary?.translations?.[library.settings.language] ?? summary?.text ?? "";
+      await check("按名字取简介", shown.length > 0, `${summary?.source ?? ""} · ${shown.slice(0, 40)}`);
+    } catch (error) {
+      await check("按名字取简介", false, String(error));
+    }
+
     // 智能分类：先出建议，再按建议分类
     try {
       const all = (await api.getLibrary()).software;

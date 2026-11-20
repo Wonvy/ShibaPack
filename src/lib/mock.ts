@@ -139,8 +139,15 @@ const lib: Library = {
     },
     Git: { text: "git 是一个分布式版本控制软件，最初由林纳斯·托瓦兹创作，于 2005 年以 GPL 许可协议发布。", source: "Wikipedia (zh)", fetchedAt: stamp(2) },
     Blender: { text: "Blender 是一款自由开源的三维计算机图形软件，用于建模、动画、渲染、合成和视频剪辑。", source: "Wikipedia (zh)", fetchedAt: stamp(2) },
+    // 只找到英文的简介：开着自动翻译时会去翻译
+    Obsidian: {
+      text: "Obsidian is a personal knowledge base and note-taking app that works on a folder of local Markdown files.",
+      source: "Wikipedia (en)",
+      lang: "en",
+      fetchedAt: stamp(2),
+    },
   },
-  settings: { theme: "system", accent: "blue", language: "zh-CN", defaultStorage: "managed", fetchSummaries: true, offlineCatalog: true, autoUpdate: true },
+  settings: { theme: "system", accent: "blue", language: "zh-CN", defaultStorage: "managed", moveOnImport: false, fetchSummaries: true, translateSummaries: true, offlineCatalog: true, autoUpdate: true },
 };
 
 if (english) {
@@ -442,6 +449,12 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
     case "set_starred":
       find(args.softwareId).starred = args.starred as boolean;
       return snapshot();
+    case "set_starred_many":
+      for (const id of args.ids as string[]) find(id).starred = args.starred as boolean;
+      return snapshot();
+    case "move_software":
+      for (const id of args.ids as string[]) find(id).categoryId = (args.categoryId as string | null) ?? null;
+      return snapshot();
     case "suggest_categories":
       await sleep(300);
       return (args.softwareIds as string[]).map(suggest);
@@ -584,8 +597,15 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       return null;
     case "fetch_summary": {
       await sleep(600);
-      const target = find(args.id);
-      lib.summaries[target.name] = { text: "", source: "none", fetchedAt: new Date().toISOString() };
+      const name = args.name as string;
+      const existing = args.refresh ? undefined : lib.summaries[name];
+      if (!existing) {
+        // 预览里不联网：有写好的简介就用，没有就记成“没找到”
+        lib.summaries[name] = MOCK_SUMMARIES[name] ?? { text: "", source: "none", fetchedAt: new Date().toISOString() };
+      } else if (lib.settings.translateSummaries && existing.text) {
+        const text = MOCK_TRANSLATIONS[name] ?? existing.text;
+        existing.translations = { ...existing.translations, [lib.settings.language]: text };
+      }
       return snapshot();
     }
     default:
@@ -593,3 +613,14 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       return null;
   }
 }
+
+/** 预览里的“机器翻译”结果。 */
+const MOCK_TRANSLATIONS: Record<string, string> = {
+  Obsidian: "Obsidian 是一款个人知识库和笔记应用，直接使用本地文件夹里的 Markdown 文件。",
+};
+
+/** 预览里“联网”取回的简介：只装在本机、仓库里没有的软件用。 */
+const MOCK_SUMMARIES: Record<string, { text: string; source: string; fetchedAt: string; lang?: string }> = {
+  Calculator: { text: "计算器是 macOS 自带的计算器程序，支持基本运算、科学计算和程序员模式。", source: "Wikipedia (zh)", fetchedAt: "2026-11-19T12:00:00+08:00", lang: "zh" },
+  Safari: { text: "Safari 是苹果公司开发的网页浏览器，是 macOS 和 iOS 的默认浏览器。", source: "Wikipedia (zh)", fetchedAt: "2026-11-19T12:00:00+08:00", lang: "zh" },
+};

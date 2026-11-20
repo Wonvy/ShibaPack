@@ -2,11 +2,14 @@
 
 import { FolderOpen, TriangleAlert } from "lucide-react";
 import { api, pickFolder, pickJsonFile, pickSavePath } from "../lib/api";
-import { effectivePack, errorText, languages } from "../lib/i18n";
+import { type Key, effectivePack, errorText, languages } from "../lib/i18n";
 import { useApp, useLanguage, useT } from "../lib/store";
 import { ACCENTS, ACCENT_NAMES } from "../lib/theme";
 import { checkForUpdate, startUpdate } from "../lib/updater";
-import type { Storage, Theme } from "../lib/types";
+import type { Theme } from "../lib/types";
+
+/** 设置里“导入文件时”的三种做法：复制进仓库、移动进仓库、只记录位置。 */
+type ImportMode = "copy" | "move" | "indexed";
 import { Logo } from "./chrome";
 import { Button, Modal, Segmented, Select, Switch, cx } from "./ui";
 
@@ -119,7 +122,7 @@ export function SettingsDialog() {
             <button
               key={name}
               type="button"
-              aria-label={name}
+              aria-label={t(`accent.${name}` as Key)}
               aria-pressed={settings.accent === name}
               onClick={() => void save({ accent: name })}
               style={{ background: ACCENTS[name][dark ? "dark" : "light"].accent }}
@@ -147,11 +150,12 @@ export function SettingsDialog() {
         </div>
       </Row>
       <Row label={t("settings.defaultStorage")} hint={t("settings.storageHint")}>
-        <Segmented<Storage>
-          value={settings.defaultStorage}
-          onChange={(defaultStorage) => void save({ defaultStorage })}
+        <Segmented<ImportMode>
+          value={settings.defaultStorage === "indexed" ? "indexed" : settings.moveOnImport ? "move" : "copy"}
+          onChange={(mode) => void save({ defaultStorage: mode === "indexed" ? "indexed" : "managed", moveOnImport: mode === "move" })}
           options={[
-            { value: "managed", label: t("settings.managed") },
+            { value: "copy", label: t("settings.managed") },
+            { value: "move", label: t("settings.moved") },
             { value: "indexed", label: t("settings.indexed") },
           ]}
         />
@@ -161,6 +165,13 @@ export function SettingsDialog() {
           checked={settings.fetchSummaries}
           onChange={(fetchSummaries) => void save({ fetchSummaries })}
           label={t("settings.summaries")}
+        />
+      </Row>
+      <Row label={t("settings.translate")} hint={t("settings.translateHint")}>
+        <Switch
+          checked={settings.translateSummaries}
+          onChange={(translateSummaries) => void save({ translateSummaries })}
+          label={t("settings.translate")}
         />
       </Row>
       <Row label={t("settings.catalog")} hint={t("settings.catalogHint")}>

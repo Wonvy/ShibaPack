@@ -184,12 +184,18 @@ pub struct PackageFile {
     pub added_at: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Summary {
     pub text: String,
     pub source: String,
     pub fetched_at: String,
+    /// 原文的语言：zh、en、ja……旧索引里没有，按文字猜（见 `summary::summary_language`）。
+    #[serde(default)]
+    pub lang: String,
+    /// 翻译成界面语言的译文：界面语言（如 zh-CN）→ 译文。
+    #[serde(default)]
+    pub translations: BTreeMap<String, String>,
 }
 
 /// 跟着仓库走的设置。
@@ -206,9 +212,15 @@ pub struct Settings {
     /// 导入文件时默认用哪种存储模式。
     #[serde(default)]
     pub default_storage: Storage,
+    /// 存储模式是“托管”时，导入后删掉原文件（移动进仓库），而不是复制一份。
+    #[serde(default)]
+    pub move_on_import: bool,
     /// 是否联网取软件简介（会把软件名发给维基百科和 GitHub）。
     #[serde(default = "default_true")]
     pub fetch_summaries: bool,
+    /// 简介不是界面语言时，是否联网翻译成界面语言（会把简介原文发给翻译服务）。
+    #[serde(default = "default_true")]
+    pub translate_summaries: bool,
     /// 是否在仓库根目录生成离线目录 index.html。
     #[serde(default = "default_true")]
     pub offline_catalog: bool,
@@ -238,7 +250,9 @@ impl Default for Settings {
             accent: default_accent(),
             language: default_language(),
             default_storage: Storage::Managed,
+            move_on_import: false,
             fetch_summaries: true,
+            translate_summaries: true,
             offline_catalog: true,
             auto_update: true,
         }

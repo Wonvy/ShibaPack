@@ -434,7 +434,7 @@ mod tests {
             subscription: None,
         });
         if !summary.is_empty() {
-            repo.lib.summaries.insert(name.into(), Summary { text: summary.into(), source: "x".into(), fetched_at: String::new() });
+            repo.lib.summaries.insert(name.into(), Summary { text: summary.into(), source: "x".into(), ..Summary::default() });
         }
         id
     }

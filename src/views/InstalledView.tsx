@@ -4,6 +4,8 @@ import {
   ArrowDown,
   ArrowUp,
   FolderOpen,
+  LayoutGrid,
+  LayoutList,
   ListFilter,
   LoaderCircle,
   MonitorCheck,
@@ -14,26 +16,37 @@ import {
   SearchX,
   Trash2,
 } from "lucide-react";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useContext, useEffect, useMemo, useState } from "react";
 import { DetailToggle } from "../components/chrome";
+import { type ColumnDef, type Columns, ColumnsContext, TableHeader, useTableColumns, useWidth } from "../components/columns";
 import { SoftwareIcon } from "../components/SoftwareIcon";
-import { Button, Chip, EmptyState, FilterMenu, IconButton, cx } from "../components/ui";
+import { SummaryText } from "../components/SummaryText";
+import { Button, Chip, ContextMenu, EmptyState, FilterMenu, IconButton, IconSegmented, type MenuEntry, cx } from "../components/ui";
 import { uninstallApp } from "../lib/actions";
 import { api } from "../lib/api";
-import { compareVersions, formatDate, formatSize, primaryVersion } from "../lib/library";
+import { compareVersions, formatDate, formatSize, primaryVersion, summaryName } from "../lib/library";
+import { type InstalledView as InstalledViewKind, usePrefs } from "../lib/prefs";
 import { useApp, useLanguage, useT } from "../lib/store";
 import type { InstalledApp, Software } from "../lib/types";
 
 type Column = "name" | "version" | "date" | "size";
-// 列：名称、版本、仓库里有没有、安装日期、大小、卸载。栏窄时仓库、大小、安装日期收起，卸载一直在
-const COLUMNS =
-  "grid grid-cols-[minmax(0,1fr)_88px_64px] @lg:grid-cols-[minmax(0,1fr)_110px_96px_80px_64px] @2xl:grid-cols-[minmax(0,1fr)_120px_96px_92px_80px_64px] items-center gap-x-3";
+// 列表的列：名称、版本、仓库里有没有、安装日期、大小、卸载。宽度可以拖，右键表头勾选显示哪几列；
+// 栏窄时安装日期、大小、仓库从右往左暂时收起（见 components/columns）
+type InstalledColumn = "version" | "repo" | "date" | "size" | "action";
+const INSTALLED_COLUMNS: ColumnDef<InstalledColumn>[] = [
+  { key: "version", initial: 110, min: 64, max: 260 },
+  { key: "repo", initial: 96, min: 72, max: 220, autoHide: 3 },
+  { key: "date", initial: 92, min: 76, max: 200, end: true, autoHide: 1 },
+  { key: "size", initial: 80, min: 60, max: 160, end: true, autoHide: 2 },
+  { key: "action", initial: 64, min: 64, max: 96, end: true },
+];
+/** 一行里除了各列之外占的宽度：列表的左右留白加上行自己的左右留白。 */
+const ROW_CHROME = 16 + 22;
 
 type RepoFilter = "all" | "in" | "out";
 
 export function InstalledView() {
   const t = useT();
-  const language = useLanguage();
   const installed = useApp((state) => state.installed);
   const loading = useApp((state) => state.installedLoading);
   const sizes = useApp((state) => state.sizes);
@@ -45,6 +58,10 @@ export function InstalledView() {
   const software = useApp((state) => state.library?.software);
   const reveal = useApp((state) => state.reveal);
   const [repoFilter, setRepoFilter] = useState<RepoFilter>("all");
+  const view = usePrefs((state) => state.installedView);
+  const setPrefs = usePrefs((state) => state.set);
+  const [frame, frameWidth] = useWidth<HTMLDivElement>();
+  const columns = useTableColumns("installed", INSTALLED_COLUMNS, frameWidth - ROW_CHROME);
   const [sort, setSort] = useState<{ column: Column; asc: boolean }>({ column: "name", asc: true });
 
   const sizeOf = (app: InstalledApp) => app.size ?? sizes[app.id] ?? null;
@@ -91,7 +108,7 @@ export function InstalledView() {
   };
 
   return (
-    <div className="@container flex min-h-0 flex-1 flex-col">
+    <div ref={frame} className="@container flex min-h-0 flex-1 flex-col">
       <div className="flex h-11 shrink-0 items-center gap-1 border-b border-line pr-2 pl-4">
         <h2 className="m-0 min-w-0 truncate text-[14px] font-semibold">{t("installed.title")}</h2>
         <span className="tabular mr-2 ml-1.5 shrink-0 text-[12px] text-fg-3">{list.length}</span>
@@ -110,6 +127,14 @@ export function InstalledView() {
           <IconButton label={t("installed.refresh")} disabled={loading} onClick={() => void reload()}>
             <RefreshCw size={15} strokeWidth={1.75} className={loading ? "animate-spin" : ""} />
           </IconButton>
+          <IconSegmented<InstalledViewKind>
+            value={view}
+            onChange={(value) => setPrefs({ installedView: value })}
+            options={[
+              { value: "list", label: t("lib.view.list"), icon: <LayoutList size={15} strokeWidth={1.75} /> },
+              { value: "grid", label: t("lib.view.grid"), icon: <LayoutGrid size={15} strokeWidth={1.75} /> },
+            ]}
+          />
           <span className="mx-1 h-4 w-px bg-line-strong" />
           <DetailToggle />
         </div>
@@ -123,62 +148,185 @@ export function InstalledView() {
           title={search.trim() || repoFilter !== "all" ? t("lib.noMatch") : t("installed.empty")}
         />
       ) : (
-        <>
-          <div className={cx(COLUMNS, "h-8 shrink-0 border-b border-line pr-5 pl-[58px] text-[12px] text-fg-3")}>
-            {header("name", t("installed.col.name"))}
-            {header("version", t("installed.col.version"))}
-            <span className="hidden @lg:block">{t("installed.col.repo")}</span>
-            {header("date", t("installed.col.date"), "hidden justify-end @2xl:flex")}
-            {header("size", t("installed.col.size"), "hidden justify-end @lg:flex")}
-            <span className="text-right">{t("lib.col.action")}</span>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-2 pt-1 pb-3">
-            {list.map((app) => {
-              const size = sizeOf(app);
-              return (
-                <div
+        <ColumnsContext.Provider value={columns}>
+          {view === "list" && (
+            <TableHeader
+              table="installed"
+              defs={INSTALLED_COLUMNS}
+              columns={columns}
+              className="pr-5 pl-[58px]"
+              first={header("name", t("installed.col.name"))}
+              firstLabel={t("installed.col.name")}
+              labels={{
+                version: t("installed.col.version"),
+                repo: t("installed.col.repo"),
+                date: t("installed.col.date"),
+                size: t("installed.col.size"),
+                action: t("lib.col.action"),
+              }}
+              cells={{
+                version: header("version", t("installed.col.version")),
+                date: header("date", t("installed.col.date")),
+                size: header("size", t("installed.col.size")),
+              }}
+            />
+          )}
+          <div
+            className={cx(
+              "min-h-0 flex-1 overflow-y-auto pt-1 pb-3",
+              view === "grid" ? "grid auto-rows-min grid-cols-[repeat(auto-fill,minmax(112px,1fr))] content-start gap-1 px-3" : "px-2",
+            )}
+          >
+            {list.map((app) =>
+              view === "list" ? (
+                <InstalledRow
                   key={app.id}
-                  role="button"
-                  tabIndex={0}
-                  aria-pressed={app.id === selectedId}
-                  onClick={() => patch({ selectedInstalledId: app.id })}
-                  onKeyDown={(event) => event.key === "Enter" && patch({ selectedInstalledId: app.id })}
-                  className={cx(COLUMNS, "min-h-[52px] rounded-md py-1.5 pr-3.5 pl-2.5 transition-colors", app.id === selectedId ? "bg-active" : "hover:bg-hover")}
-                >
-                  <div className="flex min-w-0 items-center gap-2.5">
-                    <SoftwareIcon name={app.name} icon={app.icon} />
-                    <div className="min-w-0">
-                      <div className="truncate text-[13px] font-medium">{app.name}</div>
-                      <div className="truncate text-[12px] text-fg-3">{app.publisher || t(`source.${app.source}`)}</div>
-                    </div>
-                  </div>
-                  <div className="tabular truncate text-[12px] text-fg-2">{app.version}</div>
-                  <div className="hidden min-w-0 @lg:flex">
-                    <RepoCell software={stored.get(app.id)} onOpen={(id) => reveal(id)} />
-                  </div>
-                  <div className="tabular hidden text-right text-[12px] text-fg-3 @2xl:block">{app.installedAt && formatDate(app.installedAt, language)}</div>
-                  <div className="tabular hidden text-right text-[12px] text-fg-2 @lg:block">{size === null ? "" : formatSize(size)}</div>
-                  <div className="flex justify-end">
-                    {app.uninstallable && (
-                      <Button
-                        variant="quiet"
-                        size="sm"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void uninstallApp(app);
-                        }}
-                      >
-                        {t("installed.uninstall")}
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+                  app={app}
+                  selected={app.id === selectedId}
+                  size={sizeOf(app)}
+                  software={stored.get(app.id)}
+                  onSelect={() => patch({ selectedInstalledId: app.id })}
+                  onOpen={(id) => reveal(id)}
+                />
+              ) : (
+                <InstalledTile
+                  key={app.id}
+                  app={app}
+                  selected={app.id === selectedId}
+                  software={stored.get(app.id)}
+                  onSelect={() => patch({ selectedInstalledId: app.id })}
+                />
+              ),
+            )}
           </div>
-        </>
+        </ColumnsContext.Provider>
       )}
     </div>
+  );
+}
+
+/** 已安装软件的右键菜单：打开所在文件夹，能卸载的可以卸载。 */
+function useInstalledMenu(app: InstalledApp): MenuEntry[] {
+  const t = useT();
+  const attempt = useApp((state) => state.attempt);
+  return [
+    { label: t("menu.openFolder"), icon: FolderOpen, disabled: !app.location, onSelect: () => void attempt(() => api.revealInstalled(app.id)) },
+    ...(app.uninstallable ? [{ label: t("installed.uninstall"), icon: Trash2, danger: true, separated: true, onSelect: () => void uninstallApp(app) }] : []),
+  ];
+}
+
+/** 卸载按钮：鼠标停上去或选中时才出现，一直占着位置，列不会跳。 */
+function UninstallButton({ app, selected }: { app: InstalledApp; selected: boolean }) {
+  const t = useT();
+  if (!app.uninstallable) return null;
+  return (
+    <Button
+      variant="quiet"
+      size="sm"
+      className={selected ? "" : "invisible group-hover:visible group-focus-within:visible"}
+      onClick={(event) => {
+        event.stopPropagation();
+        void uninstallApp(app);
+      }}
+    >
+      {t("installed.uninstall")}
+    </Button>
+  );
+}
+
+/** 列表视图的一行。 */
+function InstalledRow({
+  app,
+  selected,
+  size,
+  software,
+  onSelect,
+  onOpen,
+}: {
+  app: InstalledApp;
+  selected: boolean;
+  size: number | null;
+  software?: Software;
+  onSelect: () => void;
+  onOpen: (id: string) => void;
+}) {
+  const t = useT();
+  const language = useLanguage();
+  const menu = useInstalledMenu(app);
+  const columns = useContext(ColumnsContext) as Columns<InstalledColumn>;
+  const show = (key: InstalledColumn) => columns.visible.includes(key);
+  return (
+    <ContextMenu items={menu}>
+      <div
+        role="button"
+        tabIndex={0}
+        aria-pressed={selected}
+        onClick={onSelect}
+        onKeyDown={(event) => event.key === "Enter" && onSelect()}
+        style={{ gridTemplateColumns: columns.template }}
+        className={cx("group grid min-h-[52px] items-center gap-x-3 rounded-md py-1.5 pr-3 pl-2.5 transition-colors", selected ? "bg-active" : "hover:bg-hover")}
+      >
+        <div className="flex min-w-0 items-center gap-2.5">
+          <SoftwareIcon name={app.name} icon={app.icon} />
+          <div className="min-w-0">
+            <div className="truncate text-[13px] font-medium">{app.name}</div>
+            <div className="truncate text-[12px] text-fg-3">{app.publisher || t(`source.${app.source}`)}</div>
+          </div>
+        </div>
+        {show("version") && <div className="tabular truncate text-[12px] text-fg-2">{app.version}</div>}
+        {show("repo") && (
+          <div className="flex min-w-0">
+            <RepoCell software={software} onOpen={onOpen} />
+          </div>
+        )}
+        {show("date") && <div className="tabular truncate text-right text-[12px] text-fg-3">{app.installedAt && formatDate(app.installedAt, language)}</div>}
+        {show("size") && <div className="tabular truncate text-right text-[12px] text-fg-2">{size === null ? "" : formatSize(size)}</div>}
+        {show("action") && (
+          <div className="flex justify-end">
+            <UninstallButton app={app} selected={selected} />
+          </div>
+        )}
+      </div>
+    </ContextMenu>
+  );
+}
+
+/** 网格视图里的一个：居中的大图标，下面是名字和版本。仓库里有它的安装包时，图标角上有个小标记。 */
+function InstalledTile({ app, selected, software, onSelect }: { app: InstalledApp; selected: boolean; software?: Software; onSelect: () => void }) {
+  const t = useT();
+  const menu = useInstalledMenu(app);
+  return (
+    <ContextMenu items={menu}>
+      <div
+        role="button"
+        tabIndex={0}
+        aria-pressed={selected}
+        onClick={onSelect}
+        onKeyDown={(event) => event.key === "Enter" && onSelect()}
+        className={cx(
+          "group flex min-w-0 flex-col items-center rounded-lg px-2 pt-4 pb-2 text-center transition-colors",
+          selected ? "bg-accent-soft" : "hover:bg-hover",
+        )}
+      >
+        <span className="relative">
+          <SoftwareIcon name={app.name} icon={app.icon} size={48} />
+          {software && (
+            <span
+              title={t("installed.inLibrary")}
+              aria-label={t("installed.inLibrary")}
+              className="absolute -right-1.5 -bottom-1 flex size-[18px] items-center justify-center rounded-full bg-bg text-accent"
+            >
+              <PackageCheck size={13} strokeWidth={2} />
+            </span>
+          )}
+        </span>
+        <span className="mt-2.5 line-clamp-2 w-full text-[13px] leading-snug font-medium break-words">{app.name}</span>
+        <span className="tabular mt-0.5 max-w-full truncate text-[12px] text-fg-3">{app.version || "—"}</span>
+        <div className="mt-1.5 flex h-6 items-center justify-center">
+          <UninstallButton app={app} selected={selected} />
+        </div>
+      </div>
+    </ContextMenu>
   );
 }
 
@@ -205,9 +353,9 @@ function RepoCell({ software, onOpen }: { software?: Software; onOpen: (id: stri
 export function InstalledDetail() {
   const t = useT();
   const language = useLanguage();
-  const app = useApp((state) => state.installed?.find((item) => item.id === state.selectedInstalledId));
+  const app = useApp((state) => (state.selectedInstalledId ? state.installedIndex[state.selectedInstalledId] : undefined));
   const measured = useApp((state) => (app ? state.sizes[app.id] : undefined));
-  const measuring = useApp((state) => Object.keys(state.sizes).length === 0);
+  const measuring = useApp((state) => state.measuring);
   // 仓库里和它对应的软件
   const linked = useApp((state) => {
     const softwareId = app && Object.keys(state.links).find((id) => state.links[id] === app.id);
@@ -215,6 +363,15 @@ export function InstalledDetail() {
   });
   const attempt = useApp((state) => state.attempt);
   const reveal = useApp((state) => state.reveal);
+  // 简介按名字存：仓库里有它就用仓库里那个软件的名字，否则用去掉版本号、架构之后的名字
+  const summaryKey = linked?.name ?? (app ? summaryName(app.name) : "");
+  const summary = useApp((state) => state.library?.summaries[summaryKey]);
+  const summaryBusy = useApp((state) => Boolean(state.summaryBusy[summaryKey]));
+  const requestSummary = useApp((state) => state.requestSummary);
+  // 选中哪个就去取哪个的简介（开着“联网获取简介”时；取过的不再取）
+  useEffect(() => {
+    if (summaryKey) requestSummary(summaryKey);
+  }, [summaryKey, requestSummary]);
 
   if (!app) return <EmptyState icon={MousePointerClick} title={t("installed.select")} />;
 
@@ -231,6 +388,8 @@ export function InstalledDetail() {
             <div className="truncate text-[12px] text-fg-2">{app.publisher}</div>
           </div>
         </div>
+
+        <SummaryText key={summaryKey} summary={summary} busy={summaryBusy} onFetch={() => requestSummary(summaryKey, true)} />
 
         <div
           className={cx(

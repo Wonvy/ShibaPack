@@ -1,6 +1,64 @@
 // 从索引数据里推导界面要用的信息：最新版本、大小、平台、分类树等。
 
-import type { Asset, Category, Language, Platform, Release, Software, Version } from "./types";
+import type { Asset, Category, Language, PackageFile, Platform, Release, Software, Summary, Version } from "./types";
+
+/** 猜一段文字是什么语言：有假名是日文，汉字占了两成以上是中文，否则当英文。和后端的 `detect_language` 一致。 */
+export function detectLanguage(text: string): string {
+  let han = 0;
+  let kana = 0;
+  let letters = 0;
+  for (const char of text) {
+    if (/[\u3040-\u30ff]/.test(char)) kana++;
+    else if (/[\u3400-\u4dbf\u4e00-\u9fff]/.test(char)) han++;
+    else if (/\p{L}/u.test(char)) letters++;
+  }
+  if (kana > 0) return "ja";
+  return han * 5 >= Math.max(1, han + letters) ? "zh" : "en";
+}
+
+const baseLanguage = (code: string) => code.split(/[-_]/)[0].toLowerCase();
+
+/** 简介要不要翻译成界面语言：有内容、和界面不是同一种语言、还没有译文。 */
+export function needsTranslation(summary: Summary, language: string): boolean {
+  const lang = summary.lang || detectLanguage(summary.text);
+  return summary.text.trim() !== "" && baseLanguage(lang) !== baseLanguage(language) && !summary.translations?.[language];
+}
+
+/** 界面上显示的简介：开着自动翻译、又有译文时用译文。 */
+export function shownSummary(summary: Summary | undefined, language: string, translate: boolean): { text: string; translated: boolean } | null {
+  if (!summary?.text) return null;
+  const translation = translate ? summary.translations?.[language] : undefined;
+  return translation ? { text: translation, translated: true } : { text: summary.text, translated: false };
+}
+
+/** 一个安装包在磁盘上的完整路径。托管文件记的是仓库里的相对路径，接上仓库根目录；分隔符跟着根目录走。 */
+export function fullPath(file: PackageFile, root: string | null | undefined): string {
+  if (file.storage === "indexed" || !root) return file.path;
+  const windows = root.includes("\\");
+  const separator = windows ? "\\" : "/";
+  const rel = windows ? file.path.replaceAll("/", "\\") : file.path;
+  return root.endsWith(separator) ? root + rel : root + separator + rel;
+}
+
+/** 悬停在版本号上时的提示：这个版本里每个安装包的完整路径，一行一个。 */
+export function versionPaths(version: Version, root: string | null | undefined): string {
+  return version.files.map((file) => fullPath(file, root)).join("\n");
+}
+
+/**
+ * 拿已安装软件的名字查简介时用的名字：去掉括号里的说明、版本号、架构这些安装程序加上的东西。
+ * “7-Zip 24.09 (x64)” → “7-Zip”，“Python 3.13.1 (64-bit)” → “Python”。
+ */
+export function summaryName(name: string): string {
+  const cleaned = name
+    .replace(/\s*[（(][^（）()]*[）)]/g, " ")
+    .replace(/\b(x64|x86|amd64|arm64|aarch64|64-bit|32-bit|win64|win32)\b/gi, " ")
+    .replace(/\bv?\d+(?:\.\d+)+[\w.-]*/gi, " ")
+    .replace(/\s+-\s*$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || name.trim();
+}
 
 /** 软件库列表的筛选条件。 */
 export interface ListFilter {

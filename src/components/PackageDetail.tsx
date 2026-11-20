@@ -49,10 +49,22 @@ import {
 } from "../lib/actions";
 import { useState } from "react";
 import { api, hostPlatform, isMac, pickFiles } from "../lib/api";
-import { flattenTree, formatDate, formatSize, hasUpdate, primaryVersion, prunable, sameVersion, sortedVersions } from "../lib/library";
+import {
+  flattenTree,
+  formatDate,
+  formatSize,
+  fullPath,
+  hasUpdate,
+  primaryVersion,
+  prunable,
+  sameVersion,
+  sortedVersions,
+  versionPaths,
+} from "../lib/library";
 import { usePrefs } from "../lib/prefs";
 import { useApp, useLanguage, useT } from "../lib/store";
 import type { PackageFile, Software, SoftwareEdit, Version } from "../lib/types";
+import { SummaryText } from "./SummaryText";
 import { prompt } from "./dialogs";
 import { PlatformIcon } from "./PlatformIcon";
 import { SoftwareIcon, useSoftwareIcon } from "./SoftwareIcon";
@@ -349,11 +361,13 @@ function Detail({ software }: { software: Software }) {
   const setPrefs = usePrefs((state) => state.set);
   const icon = useSoftwareIcon(software);
   const summary = library.summaries[software.name];
+  const summaryBusy = useApp((state) => Boolean(state.summaryBusy[software.name]));
+  const requestSummary = useApp((state) => state.requestSummary);
   // 从系统拖文件进来、停在详情栏上时：作为这个软件的新版本导入
   const dropping = useApp((state) => state.dropSoftwareId === software.id);
   const installedApp = useApp((state) => {
     const id = state.links[software.id];
-    return id ? state.installed?.find((app) => app.id === id) : undefined;
+    return id ? state.installedIndex[id] : undefined;
   });
 
   const save = (patch: Partial<SoftwareEdit>) => {
@@ -429,11 +443,7 @@ function Detail({ software }: { software: Software }) {
         </div>
       </div>
 
-      {summary?.text && (
-        <p className="selectable m-0 mt-3 line-clamp-4 text-[13px] leading-relaxed text-fg-2" title={`${summary.text}\n\n${t("summary.source", { source: summary.source })}`}>
-          {summary.text}
-        </p>
-      )}
+      <SummaryText key={software.id} summary={summary} busy={summaryBusy} onFetch={() => requestSummary(software.name, true)} />
 
       <StatusBlock software={software} />
 
@@ -514,7 +524,7 @@ function StatusBlock({ software }: { software: Software }) {
   const t = useT();
   const installedApp = useApp((state) => {
     const id = state.links[software.id];
-    return id ? state.installed?.find((app) => app.id === id) : undefined;
+    return id ? state.installedIndex[id] : undefined;
   });
   const startDownload = useApp((state) => state.downloadAsset);
   const latest = software.subscription?.latest;
@@ -572,7 +582,7 @@ function StatusBlock({ software }: { software: Software }) {
           {download ? (
             <>
               <span className="tabular shrink-0 text-[12px] text-accent">{percent !== null ? `${percent}%` : t("source.queued")}</span>
-              <IconButton label={t("source.cancel")} onClick={() => void api.cancelDownload(asset!.url)}>
+              <IconButton label={t("source.cancel")} onClick={() => void api.cancelDownload(asset!.url).catch(() => {})}>
                 <X size={15} strokeWidth={1.75} />
               </IconButton>
             </>
@@ -645,7 +655,7 @@ function Versions({ software }: { software: Software }) {
   const t = useT();
   const installed = useApp((state) => {
     const id = state.links[software.id];
-    return id ? state.installed?.find((app) => app.id === id)?.version : undefined;
+    return id ? state.installedIndex[id]?.version : undefined;
   });
   const importPaths = useApp((state) => state.importPaths);
   const [picked, setPicked] = useState<string | null>(null);
@@ -802,6 +812,7 @@ function PruneDialog({ software, installed, onClose }: { software: Software; ins
 
 function VersionBlock({ software, version, isMain, installed }: { software: Software; version: Version; isMain: boolean; installed?: string }) {
   const t = useT();
+  const root = useApp((state) => state.status?.repoRoot);
   const language = useLanguage();
   const apply = useApp((state) => state.apply);
   const pinned = software.defaultVersionId === version.id;
@@ -827,7 +838,9 @@ function VersionBlock({ software, version, isMain, installed }: { software: Soft
     <div className="rounded-lg border border-line">
       <div className="border-b border-line pt-1 pr-1 pb-1.5 pl-2.5">
         <div className="flex h-7 items-center gap-1.5">
-          <span className="tabular truncate text-[13px] font-medium">{version.version || t("detail.unknownVersion")}</span>
+          <span className="tabular truncate text-[13px] font-medium" title={versionPaths(version, root)}>
+            {version.version || t("detail.unknownVersion")}
+          </span>
           {isMain && <Chip className={pinned ? "bg-accent-soft text-accent" : ""}>{t("detail.default")}</Chip>}
           {local && <Chip className="text-success">{t("version.local")}</Chip>}
           <div className="ml-auto">
@@ -903,6 +916,7 @@ function VersionBlock({ software, version, isMain, installed }: { software: Soft
 
 function FileRow({ software, version, file }: { software: Software; version: Version; file: PackageFile }) {
   const t = useT();
+  const root = useApp((state) => state.status?.repoRoot);
   const attempt = useApp((state) => state.attempt);
   const notify = useApp((state) => state.notify);
   const ref = { softwareId: software.id, versionId: version.id, fileId: file.id };
@@ -910,13 +924,17 @@ function FileRow({ software, version, file }: { software: Software; version: Ver
   const platform = t(`platform.${file.platform}`);
 
   const copyHash = async () => {
-    await navigator.clipboard.writeText(file.sha256);
-    notify(t("detail.copied"));
+    try {
+      await navigator.clipboard.writeText(file.sha256);
+      notify(t("detail.copied"));
+    } catch {
+      notify(t("detail.copyFailed"), "error");
+    }
   };
 
   return (
     <div className="group relative border-b border-line py-1.5 pr-2 pl-2.5 last:border-b-0">
-      <MiddleTruncate text={file.name} title={file.path} className="selectable text-[12px]" />
+      <MiddleTruncate text={file.name} title={fullPath(file, root)} className="selectable text-[12px]" />
       <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] text-fg-3">
         <PlatformIcon platform={file.platform} size={12} />
         <span className="tabular truncate">{[platform, file.arch, formatSize(file.size)].filter(Boolean).join(" · ")}</span>

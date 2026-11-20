@@ -369,6 +369,29 @@ impl Repo {
         self.save()
     }
 
+    /// 一次收藏或取消收藏多个软件，只存一次索引。找不到的 id 跳过。
+    pub fn set_starred_many(&mut self, ids: &[String], starred: bool) -> Result<()> {
+        let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        for software in self.lib.software.iter_mut().filter(|s| wanted.contains(s.id.as_str())) {
+            software.starred = starred;
+        }
+        self.save()
+    }
+
+    /// 把多个软件移到一个分类（`None` 是未分类），只存一次索引。找不到的 id 跳过；分类不存在时报错。
+    pub fn move_to_category(&mut self, ids: &[String], category_id: Option<&str>) -> Result<()> {
+        if let Some(id) = category_id {
+            if !self.lib.categories.iter().any(|c| c.id == id) {
+                return Err(Error::Code("not_found"));
+            }
+        }
+        let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        for software in self.lib.software.iter_mut().filter(|s| wanted.contains(s.id.as_str())) {
+            software.category_id = category_id.map(String::from);
+        }
+        self.save()
+    }
+
     pub fn set_settings(&mut self, settings: Settings) -> Result<()> {
         self.lib.settings = settings;
         self.save()
@@ -684,9 +707,16 @@ impl Repo {
         Ok(())
     }
 
+    /// 存一条简介的译文（`language` 是界面语言）。简介已经不在了就什么都不做。
+    pub fn set_summary_translation(&mut self, name: &str, language: &str, text: String) -> Result<()> {
+        let Some(summary) = self.lib.summaries.get_mut(name) else { return Ok(()) };
+        summary.translations.insert(language.to_string(), text);
+        self.save()
+    }
+
     /// 存一条联网取回的简介。`None` 表示查过了但没有，也记下来，免得每次启动都再查。
     pub fn set_summary(&mut self, name: &str, summary: Option<Summary>) -> Result<()> {
-        let summary = summary.unwrap_or_else(|| Summary { text: String::new(), source: "none".into(), fetched_at: crate::now() });
+        let summary = summary.unwrap_or_else(|| Summary { text: String::new(), source: "none".into(), fetched_at: crate::now(), ..Summary::default() });
         self.lib.summaries.insert(name.to_string(), summary);
         self.save()
     }
@@ -997,6 +1027,24 @@ mod tests {
         repo.set_starred(&id, false).unwrap();
         assert!(!Repo::open(repo.root()).unwrap().lib.software[0].starred);
         assert!(repo.set_starred("nope", true).is_err());
+    }
+
+    #[test]
+    fn batch_star_and_move_save_once() {
+        let (_r, _s, mut repo) = repo_with(&[("Aaa-1.0.exe", b"a"), ("Bbb-1.0.exe", b"b"), ("Ccc-1.0.exe", b"c")]);
+        let ids: Vec<String> = repo.lib.software.iter().take(2).map(|s| s.id.clone()).collect();
+        repo.set_starred_many(&ids, true).unwrap();
+        let category = Category { id: "dev".into(), name: "开发".into(), parent_id: None, color: None, icon: None };
+        repo.set_categories(vec![category]).unwrap();
+        repo.move_to_category(&ids, Some("dev")).unwrap();
+        assert!(repo.move_to_category(&ids, Some("nope")).is_err(), "分类不存在");
+
+        let again = Repo::open(repo.root()).unwrap();
+        let flags: Vec<(bool, Option<&str>)> = again.lib.software.iter().map(|s| (s.starred, s.category_id.as_deref())).collect();
+        assert_eq!(flags, [(true, Some("dev")), (true, Some("dev")), (false, None)]);
+
+        repo.move_to_category(&ids, None).unwrap();
+        assert!(repo.lib.software.iter().all(|s| s.category_id.is_none()));
     }
 
     /// 根目录里那份挪过去之后才认出是重复的（文件名不同、内容相同）：收进回收站，不留一个没登记的文件。

@@ -41,7 +41,7 @@ pub fn list_installed(icon_cache: &Path) -> Vec<InstalledApp> {
     for app in &mut apps {
         app.icon = app.icon_source.as_deref().and_then(|source| icon_for(source, icon_cache));
     }
-    apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    apps.sort_by_key(|app| app.name.to_lowercase());
     apps.dedup_by(|a, b| a.id == b.id);
     apps
 }

@@ -17,6 +17,7 @@ pub mod installed;
 pub mod leftovers;
 pub mod model;
 pub mod ops;
+pub mod paths;
 pub mod sources;
 pub mod startup;
 pub mod store;

@@ -48,6 +48,25 @@ pub struct Library {
     pub installed_icons: BTreeMap<String, Arc<str>>,
     #[serde(default)]
     pub settings: Settings,
+    /// 收藏的路径（软件的配置文件夹这类），可以备份到仓库里。见 `paths`。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<SavedPath>,
+}
+
+/// 收藏的一个文件或文件夹。`path` 是可移植的写法：家目录写成 `~`，Windows 上常见的位置写成
+/// `%APPDATA%` 这样的环境变量，换一台电脑、换个用户名也能对上。用的时候再展开。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedPath {
+    pub id: String,
+    pub path: String,
+    /// 备注，比如“VS Code 的设置和快捷键”。
+    #[serde(default)]
+    pub note: String,
+    /// 收藏时是不是文件夹。路径暂时不在时靠它显示图标。
+    #[serde(default)]
+    pub is_dir: bool,
+    pub added_at: String,
 }
 
 impl Default for Library {
@@ -59,6 +78,7 @@ impl Default for Library {
             summaries: BTreeMap::new(),
             installed_icons: BTreeMap::new(),
             settings: Settings::default(),
+            paths: Vec::new(),
         }
     }
 }

@@ -42,6 +42,8 @@ import type {
   LargeFile,
   SystemSample,
   Library,
+  PathBackup,
+  PathState,
   Progress,
   Release,
   RemoveReport,
@@ -196,6 +198,18 @@ export const api = {
    */
   openStartupSettings: (page: "loginItems" | "automation" | "appManagement" | "fullDiskAccess" | "storage") =>
     call<void>("open_startup_settings", { page }),
+  /** 收藏路径（可以带 `~`、`%APPDATA%`、`$HOME` 这类变量；绝对路径会自动换成变量的写法）。已收藏过的跳过。 */
+  pathsAdd: (paths: string[]) => call<{ library: Library; added: string[] }>("paths_add", { paths }),
+  pathEdit: (id: string, edit: { path?: string; note?: string }) => call<Library>("path_edit", { id, ...edit }),
+  pathsRemove: (ids: string[], deleteBackups: boolean) => call<Library>("paths_remove", { ids, deleteBackups }),
+  pathStates: () => call<Record<string, PathState>>("path_states"),
+  pathBackup: (id: string) => call<PathBackup>("path_backup", { id }),
+  pathBackups: (id: string) => call<PathBackup[]>("path_backups", { id }),
+  /** 用一份备份替换现在的；现在的先自动备份一份再送进回收站。返回那份自动备份。 */
+  pathRestore: (id: string, name: string) => call<PathBackup | null>("path_restore", { id, name }),
+  pathDeleteBackup: (id: string, name: string) => call<PathBackup[]>("path_delete_backup", { id, name }),
+  pathReveal: (id: string, open: boolean) => call<void>("path_reveal", { id, open }),
+  pathRevealBackup: (id: string, name: string) => call<void>("path_reveal_backup", { id, name }),
   /** 只读地找一遍能清理的东西。每量完一项通过 `onCleanupItem` 先送来。 */
   cleanupScan: () => call<CleanItem[]>("cleanup_scan"),
   /** 清理勾选的项（id 和不要的条目序号）。进度见 `onCleanupProgress`。 */
@@ -300,6 +314,14 @@ export async function pickFiles(): Promise<string[]> {
   if (!isTauri) return (await import("./mock")).mockPickFiles();
   const { open } = await import("@tauri-apps/plugin-dialog");
   const picked = await open({ multiple: true, directory: false });
+  return picked ? (Array.isArray(picked) ? picked : [picked]) : [];
+}
+
+/** 选要收藏的文件或文件夹。`directory` 为真时选文件夹（可以多选）。 */
+export async function pickPaths(directory: boolean): Promise<string[]> {
+  if (!isTauri) return [directory ? "/Users/demo/Library/Application Support/Code/User" : "/Users/demo/.zshrc"];
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({ multiple: true, directory });
   return picked ? (Array.isArray(picked) ? picked : [picked]) : [];
 }
 

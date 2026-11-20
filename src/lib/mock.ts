@@ -718,6 +718,7 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
     case "refresh_library":
       return null;
     case "get_library":
+      (await import("./mockPaths")).seedPaths(lib);
       return snapshot();
     case "import_paths":
       return importPaths(args.paths as string[], args.mode as Storage, (args.hint as ImportHint | null) ?? undefined);
@@ -1032,6 +1033,17 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
     }
     case "open_uninstall_backup":
       return null;
+    case "paths_add":
+    case "path_edit":
+    case "paths_remove":
+    case "path_states":
+    case "path_backup":
+    case "path_backups":
+    case "path_restore":
+    case "path_delete_backup":
+    case "path_reveal":
+    case "path_reveal_backup":
+      return (await import("./mockPaths")).mockPathsCall(command, args, lib, snapshot);
     case "list_startup":
       await sleep(500);
       return { items: startupItems, notes: [] };

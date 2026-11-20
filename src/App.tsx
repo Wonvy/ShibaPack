@@ -27,6 +27,8 @@ import { LibraryView } from "./views/LibraryView";
 import { StartupDetail, StartupView } from "./views/StartupView";
 import { DiskView } from "./views/DiskView";
 import { HomeView } from "./views/HomeView";
+import { PathsDetail, PathsView } from "./views/PathsView";
+import { addPaths, usePaths } from "./lib/paths";
 import { CleanupDetail, CleanupView } from "./views/CleanupView";
 import { CleanupDialogs } from "./components/CleanupDialogs";
 import { useCleanup } from "./lib/cleanup";
@@ -46,12 +48,13 @@ export default function App() {
   const setPrefs = usePrefs((state) => state.set);
   const startupSelected = useStartup((state) => state.selectedId !== null);
   const cleanupSelected = useCleanup((state) => state.selectedId !== null);
+  const pathSelected = usePaths((state) => state.selectedId !== null);
   const softwareSelected = useApp((state) => (state.route === "installed" ? state.selectedInstalledId : state.selectedId) !== null);
-  const hasSelection = route === "startup" ? startupSelected : route === "cleanup" ? cleanupSelected : softwareSelected;
+  const hasSelection = route === "startup" ? startupSelected : route === "cleanup" ? cleanupSelected : route === "paths" ? pathSelected : softwareSelected;
 
   // 存储页不需要详情栏；详情栏收起时中间栏占满。
   // 窗口太窄、中间栏放不下时，详情栏不再占一栏，选中软件时浮在列表右侧
-  const withDetail = (route === "library" || route === "installed" || route === "startup" || route === "cleanup") && detailOpen;
+  const withDetail = (route === "library" || route === "installed" || route === "startup" || route === "cleanup" || route === "paths") && detailOpen;
   const dockMinWidth = sidebarWidth + detailWidth + MAIN_MIN;
   const { width: windowWidth, toggle, resizing } = useWindowLayout(detailWidth, dockMinWidth);
   const cramped = windowWidth < dockMinWidth;
@@ -99,6 +102,11 @@ export default function App() {
         const target = app.fileDropTarget ?? fileDropTargetAt(point);
         app.patch({ fileDropTarget: null });
         if (!app.library) return;
+        // 在“路径”页：拖进来的文件、文件夹直接收藏（落在侧栏的分类上时还是导入）
+        if (!target && app.route === "paths") {
+          void addPaths(paths);
+          return;
+        }
         if (target) void dropOnCategory(paths, target === "uncategorized" ? null : target.slice("category:".length));
         else app.patch({ importDialog: { paths } });
       },
@@ -145,6 +153,7 @@ export default function App() {
       if (app.route === "installed") app.selectInstalled(null);
       else if (app.route === "startup") useStartup.getState().select(null);
       else if (app.route === "cleanup") useCleanup.getState().select(null);
+      else if (app.route === "paths") usePaths.getState().select(null);
       else app.select(null);
     };
     window.addEventListener("keydown", onKey);
@@ -187,14 +196,15 @@ export default function App() {
           {route === "installed" && <InstalledView detailToggle={detailToggle} />}
           {route === "startup" && <StartupView detailToggle={detailToggle} />}
           {route === "cleanup" && <CleanupView detailToggle={detailToggle} />}
+          {route === "paths" && <PathsView detailToggle={detailToggle} />}
           {dropping && (
             <div className="pointer-events-none absolute inset-2 z-20 flex animate-fade flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-accent bg-accent-soft text-accent backdrop-blur-sm">
               <Download size={28} strokeWidth={1.5} aria-hidden />
-              <span className="text-[13px] font-medium">{t("import.drop")}</span>
+              <span className="text-[13px] font-medium">{t(route === "paths" ? "paths.drop" : "import.drop")}</span>
             </div>
           )}
           {/* 清理页底部有自己的清理按钮，主页是看板，都不放添加按钮 */}
-          {route !== "cleanup" && route !== "home" && route !== "disk" && <AddMenuButton coveredWidth={floating ? floatingDetailWidth : 0} />}
+          {route !== "cleanup" && route !== "home" && route !== "disk" && route !== "paths" && <AddMenuButton coveredWidth={floating ? floatingDetailWidth : 0} />}
           {/* 状态栏只占中间一栏，左边的侧栏和右边的详情栏一直到窗口底部 */}
           <StatusBar />
         </main>
@@ -319,5 +329,6 @@ function DetailFor({ route }: { route: Route }) {
   if (route === "library") return <PackageDetail />;
   if (route === "installed") return <InstalledDetail />;
   if (route === "cleanup") return <CleanupDetail />;
+  if (route === "paths") return <PathsDetail />;
   return <StartupDetail />;
 }

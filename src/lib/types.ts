@@ -323,6 +323,42 @@ export interface Library {
   summaries: Record<string, Summary>;
   installedIcons?: Record<string, string>;
   settings: Settings;
+  /** 收藏的路径（软件的配置文件夹这类）。旧索引里没有。 */
+  paths?: SavedPath[];
+}
+
+/** 收藏的一个文件或文件夹。`path` 是可移植的写法（`~`、`%APPDATA%`），用的时候才展开。 */
+export interface SavedPath {
+  id: string;
+  path: string;
+  note: string;
+  isDir: boolean;
+  addedAt: string;
+}
+
+/** 一条收藏在这台电脑上的情况。 */
+export interface PathState {
+  /** 展开后的完整路径；有不认识的环境变量时是空的。 */
+  full: string;
+  exists: boolean;
+  isDir: boolean;
+  /** 展开不了的原因，比如 `path_unknown_var: XDG_CONFIG_HOME`。 */
+  error: string | null;
+  backups: number;
+  lastBackup: string | null;
+  backupSize: number;
+}
+
+/** 一次备份。 */
+export interface PathBackup {
+  name: string;
+  createdAt: string;
+  source: string;
+  size: number;
+  files: number;
+  skipped: string[];
+  skippedCount: number;
+  beforeRestore: boolean;
 }
 
 export interface Status {

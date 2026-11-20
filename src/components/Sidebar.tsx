@@ -12,6 +12,7 @@ import {
   FolderPlus,
   Inbox,
   ChartPie,
+  FolderHeart,
   House,
   LayoutGrid,
   type LucideIcon,
@@ -59,6 +60,7 @@ export function Sidebar({ onAutoWidthChange }: { onAutoWidthChange: (width: numb
   const checking = useApp((state) => state.checking !== null);
   const installedCount = useApp((state) => state.installed?.length);
   // 第三方的、开着的启动项：开机慢时最想知道的那个数
+  const pathCount = useApp((state) => state.library?.paths?.length ?? 0);
   const startupCount = useStartup((state) => state.items?.filter((i) => i.kind === "startup" && i.enabled && !i.system).length);
   // 扫过以后显示能清理多少
   const cleanupBytes = useCleanup((state) => (state.items && !state.scanning ? state.items.reduce((sum, item) => sum + (item.size ?? 0), 0) : null));
@@ -213,6 +215,8 @@ export function Sidebar({ onAutoWidthChange }: { onAutoWidthChange: (width: numb
         <NavRow icon={Rocket} label={t("nav.startup")} count={startupCount} active={route === "startup"} onClick={() => setRoute("startup")} />
         <NavRow icon={BrushCleaning} label={t("nav.cleanup")} badge={cleanupTotal} active={route === "cleanup"} onClick={() => setRoute("cleanup")} />
         <NavRow icon={ChartPie} label={t("nav.disk")} active={route === "disk"} onClick={() => setRoute("disk")} />
+        {/* 收藏的路径：软件的配置文件夹这类，可以备份 */}
+        <NavRow icon={FolderHeart} label={t("nav.paths")} count={pathCount || undefined} active={route === "paths"} onClick={() => setRoute("paths")} />
         {/* 这台电脑上装的软件，和启动、清理一样是管本机的，放在清理下面 */}
         <NavRow
           icon={MonitorCheck}

@@ -1825,6 +1825,132 @@ fn open_startup_settings(app: AppHandle, page: String) -> CmdResult<()> {
     app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
+// ── 收藏的路径 ───────────────────────────────────────────────
+
+use shibapack_core::{paths::{self, PathBackup, PathState}, SavedPath};
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PathsAdded {
+    library: Library,
+    added: Vec<String>,
+}
+
+/// 一条收藏、它的备份文件夹、仓库根目录。拿到就放开仓库：备份、恢复可能要复制一会儿。
+fn saved_path(state: &State<AppState>, id: &str) -> CmdResult<(SavedPath, PathBuf, PathBuf)> {
+    with_repo(state, |repo| {
+        let item = repo.lib.paths.iter().find(|p| p.id == id).cloned().ok_or(shibapack_core::Error::Code("not_found"))?;
+        let dir = paths::backups_root(repo).join(&item.id);
+        Ok((item, dir, repo.root().to_path_buf()))
+    })
+}
+
+/// 收藏一批路径（拖进来的、选的、手动输入的，可以带 `~`、`%APPDATA%`、`$HOME` 这类变量）。
+#[tauri::command]
+async fn paths_add(app: AppHandle, paths: Vec<String>) -> CmdResult<PathsAdded> {
+    blocking(app, move |_, state| {
+        with_repo(&state, |repo| {
+            let added = paths::add(repo, &paths)?;
+            Ok(PathsAdded { library: repo.lib.clone(), added })
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn path_edit(app: AppHandle, id: String, path: Option<String>, note: Option<String>) -> CmdResult<Library> {
+    blocking(app, move |_, state| mutate(&state, |repo| paths::edit(repo, &id, path.as_deref(), note.as_deref()))).await
+}
+
+#[tauri::command]
+async fn paths_remove(app: AppHandle, ids: Vec<String>, delete_backups: bool) -> CmdResult<Library> {
+    blocking(app, move |_, state| mutate(&state, |repo| paths::remove(repo, &ids, delete_backups))).await
+}
+
+/// 每条收藏在这台电脑上的情况：展开后的路径、在不在、有几份备份。
+#[tauri::command]
+async fn path_states(app: AppHandle) -> CmdResult<HashMap<String, PathState>> {
+    blocking(app, move |_, state| {
+        let (items, root) = with_repo(&state, |repo| Ok((repo.lib.paths.clone(), paths::backups_root(repo))))?;
+        Ok(paths::states(&items, &root).into_iter().collect())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn path_backup(app: AppHandle, id: String) -> CmdResult<PathBackup> {
+    blocking(app, move |_, state| {
+        let (item, dir, root) = saved_path(&state, &id)?;
+        let result = paths::backup(&item, &dir, &root, false).map_err(|e| e.to_string());
+        if let Err(err) = &result {
+            log_failure_to(&state, "paths", err, &item.path);
+        }
+        result
+    })
+    .await
+}
+
+#[tauri::command]
+async fn path_backups(app: AppHandle, id: String) -> CmdResult<Vec<PathBackup>> {
+    blocking(app, move |_, state| {
+        let (_, dir, _) = saved_path(&state, &id)?;
+        Ok(paths::list_backups(&dir))
+    })
+    .await
+}
+
+/// 用一份备份替换现在的。现在的先自动备份一份，再送进回收站。
+#[tauri::command]
+async fn path_restore(app: AppHandle, id: String, name: String) -> CmdResult<Option<PathBackup>> {
+    blocking(app, move |_, state| {
+        let (item, dir, root) = saved_path(&state, &id)?;
+        let result = paths::restore(&item, &dir, &name, &root).map_err(|e| e.to_string());
+        if let Err(err) = &result {
+            log_failure_to(&state, "paths", err, &format!("{} · {name}", item.path));
+        }
+        result
+    })
+    .await
+}
+
+#[tauri::command]
+async fn path_delete_backup(app: AppHandle, id: String, name: String) -> CmdResult<Vec<PathBackup>> {
+    blocking(app, move |_, state| {
+        let (_, dir, _) = saved_path(&state, &id)?;
+        paths::delete_backup(&dir, &name).map_err(|e| e.to_string())?;
+        Ok(paths::list_backups(&dir))
+    })
+    .await
+}
+
+/// 在文件管理器里显示（`open` 时直接打开文件夹）。
+#[tauri::command]
+async fn path_reveal(app: AppHandle, id: String, open: bool) -> CmdResult<()> {
+    blocking(app, move |app, state| {
+        let (item, _, _) = saved_path(&state, &id)?;
+        let full = paths::expand(&item.path).map_err(|e| e.to_string())?;
+        if !full.exists() {
+            return Err("file_missing".into());
+        }
+        if open {
+            app.opener().open_path(full.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+        } else {
+            app.opener().reveal_item_in_dir(full).map_err(|e| e.to_string())
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+async fn path_reveal_backup(app: AppHandle, id: String, name: String) -> CmdResult<()> {
+    blocking(app, move |app, state| {
+        let (_, dir, _) = saved_path(&state, &id)?;
+        let target = paths::backup_content(&dir, &name).map_err(|e| e.to_string())?;
+        app.opener().reveal_item_in_dir(target).map_err(|e| e.to_string())
+    })
+    .await
+}
+
 // ── 清理 ─────────────────────────────────────────────────────
 
 /// 仓库里的每个文件（大小、SHA-256、软件名、版本号），拿来和下载文件夹里的安装包比对。
@@ -2941,6 +3067,16 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            paths_add,
+            path_edit,
+            paths_remove,
+            path_states,
+            path_backup,
+            path_backups,
+            path_restore,
+            path_delete_backup,
+            path_reveal,
+            path_reveal_backup,
             get_status,
             resize_detail_window,
             set_repo_root,

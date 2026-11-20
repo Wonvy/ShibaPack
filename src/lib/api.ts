@@ -150,6 +150,10 @@ export const api = {
   /** 扫一个文件夹或一块盘（只读）。进度见 `onDiskProgress`；停下了返回 `cancelled`。 */
   diskScan: (root: string) => call<DiskSummary>("disk_scan", { root }),
   diskCancel: () => call<void>("disk_cancel"),
+  /** 扫描中的样子（没在扫时是 null）。`path` 只能是根或第一层的文件夹；没扫完的项带 `pending`。 */
+  diskLiveView: (path: string[], minRatio: number) => call<DiskNode | null>("disk_live_view", { path, minRatio }),
+  /** 扫描中到现在为止最大的文件。 */
+  diskLiveLargest: () => call<LargeFile[]>("disk_live_largest"),
   /** `path` 那个文件夹（连同下面所有层）里最大的 `limit` 个文件，从大到小。小于 1 MB 的不列。 */
   diskLargest: (path: string[], limit: number) => call<LargeFile[]>("disk_largest", { path, limit }),
   /** 安装监控：先拍基线（进度见 `onTraceProgress`），拍完运行安装包。取消了返回 `cancelled`。 */

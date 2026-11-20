@@ -8,6 +8,8 @@ import type { DiskLocation, DiskNode, DiskProgress, DiskSummary } from "./types"
 export const VIEW_DEPTH = 4;
 /** 占当前这一层不到这么多的合成“其他”（扇形图上已经看不清了）。 */
 const MIN_RATIO = 0.004;
+/** 扫描中多久取一次扫到现在的样子（毫秒）。 */
+const LIVE_INTERVAL = 700;
 
 interface DiskState {
   locations: DiskLocation[] | null;
@@ -104,20 +106,51 @@ export const useDisk = create<DiskState>()((set, get) => ({
     if (!target || get().scanning) return;
     set({ root: target, scanning: true, progress: null, error: null, summary: null, view: null, path: [], unanswered: {} });
     const unlisten = await onDiskProgress((progress) => set({ progress }));
+    // 边扫边看：隔一会儿取一次扫到现在的样子，先把图画出来
+    let polling = false;
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const live = await api.diskLiveView(get().path, MIN_RATIO);
+        if (live && get().scanning) set({ view: live });
+      } catch {
+        // 下一次再取
+      } finally {
+        polling = false;
+      }
+    };
+    const timer = setInterval(() => void poll(), LIVE_INTERVAL);
     try {
       const summary = await api.diskScan(target);
-      set({ summary });
-      await get().open([]);
+      clearInterval(timer);
+      // 先放下“正在扫”，下面 open 才会去取扫完的树
+      set({ summary, scanning: false });
+      // 扫的时候点进了第一层的某个文件夹就留在那里（它扫完后可能太小没留子项，那就回到根）
+      const path = get().path;
+      const view = path.length > 0 ? await api.diskView(path, VIEW_DEPTH, MIN_RATIO).catch(() => null) : null;
+      if (view?.hasChildren) set({ path, view, hover: null });
+      else await get().open([]);
     } catch (error) {
+      clearInterval(timer);
+      set({ view: null, path: [] });
       // 停下了不算错
       if (String(error) !== "cancelled") set({ error });
     } finally {
+      clearInterval(timer);
       unlisten();
       set({ scanning: false });
     }
   },
   cancel: () => void api.diskCancel(),
   open: async (path) => {
+    // 扫描中只能看根和第一层（再往下还没累计）
+    if (get().scanning) {
+      if (path.length > 1) return;
+      const live = await api.diskLiveView(path, MIN_RATIO).catch(() => null);
+      if (live) set({ path, view: live, hover: null });
+      return;
+    }
     try {
       const view = await api.diskView(path, VIEW_DEPTH, MIN_RATIO);
       set({ path, view, hover: null });

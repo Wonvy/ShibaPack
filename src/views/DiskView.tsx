@@ -82,7 +82,7 @@ export function DiskView() {
           </button>
         </Dropdown>
         <span className="flex-1" />
-        {summary && (
+        {view && (summary || scanning) && (
           <IconSegmented
             value={chart}
             onChange={(diskChart) => setPrefs({ diskChart })}
@@ -110,7 +110,8 @@ export function DiskView() {
         <p className="m-0 mx-3 mt-2 rounded-lg bg-[color-mix(in_srgb,var(--danger)_12%,transparent)] px-3 py-2 text-[12px] text-danger">{errorText(language, error)}</p>
       )}
 
-      {scanning ? <Scanning /> : summary && view ? <Result chart={chart} /> : <Start onChooseFolder={() => void chooseFolder()} />}
+      {/* 扫描中一有结果就先画出来（边扫边看），还没有时显示进度 */}
+      {view && (summary || scanning) ? <Result chart={chart} /> : scanning ? <Scanning /> : <Start onChooseFolder={() => void chooseFolder()} />}
     </div>
   );
 }
@@ -183,16 +184,19 @@ function Scanning() {
   );
 }
 
-/** 扫完：上面是路径和合计，左边是图，右边是这一层的列表。 */
+/** 扫完（或者正在扫、先看着）：上面是路径，左边是图，右边是这一层的列表。 */
 function Result({ chart }: { chart: "sunburst" | "treemap" | "list" }) {
-  const { summary, view, path, open } = useDisk();
+  const t = useT();
+  const { summary, view, path, open, root, scanning, progress } = useDisk();
   const [tip, setTip] = useState<{ node: DiskNode; x: number; y: number } | null>(null);
   const [target, setTarget] = useState<DiskNode | null>(null);
   const colors = useColors(view);
-  const menu = useNodeMenu(target ?? view);
+  // 扫描中树还没拼好，不能删也不能定位到更深的地方，先不给右键菜单
+  const nodeMenu = useNodeMenu(target ?? view);
+  const menu = scanning ? [] : nodeMenu;
   const listWidth = usePrefs((state) => state.diskListWidth);
   const setPrefs = usePrefs((state) => state.set);
-  const aiReady = useAiReady();
+  const aiReady = useAiReady() && !scanning;
   const lookUp = useDisk((state) => state.lookUp);
   const ask = useDisk((state) => state.ask);
   // 打开一层时先把缓存里有的解释拿出来，鼠标停上去马上就有
@@ -206,9 +210,10 @@ function Result({ chart }: { chart: "sunburst" | "treemap" | "list" }) {
     const timer = setTimeout(() => void ask(hovering), 600);
     return () => clearTimeout(timer);
   }, [aiReady, hovering, ask]);
-  if (!summary || !view) return null;
+  if (!view || !(summary || scanning)) return null;
 
-  const rootName = summary.root.split(/[\\/]/).filter(Boolean).pop() ?? summary.root;
+  const rootPath = summary?.root ?? root ?? "";
+  const rootName = rootPath.split(/[\\/]/).filter(Boolean).pop() ?? rootPath;
   const handlers: ChartHandlers = {
     colors,
     onHover: (node, event) => setTip(node && event ? { node, x: event.clientX, y: event.clientY } : null),
@@ -235,7 +240,19 @@ function Result({ chart }: { chart: "sunburst" | "treemap" | "list" }) {
             </span>
           ))}
         </nav>
+        {scanning && (
+          <span className="tabular flex shrink-0 items-center gap-1.5 text-fg-3" title={t("disk.liveHint")}>
+            <LoaderCircle size={12} strokeWidth={2} aria-hidden className="animate-spin text-accent" />
+            {t("disk.live", { files: (progress?.files ?? 0).toLocaleString(), size: formatSize(progress?.bytes ?? 0) })}
+          </span>
+        )}
       </div>
+      {/* 扫描中：一条细的进度条在走 */}
+      {scanning && (
+        <div className="relative h-0.5 shrink-0 overflow-hidden bg-hover">
+          <div className="absolute inset-y-0 w-1/3 animate-slide rounded-full bg-accent" />
+        </div>
+      )}
       <ContextMenu items={menu}>
         {/* 右键空白处就是现在这一层；点到色块或列表里的一项时，那一项先把自己记成目标 */}
         <div className="@container flex min-h-0 flex-1" onContextMenuCapture={() => setTarget(null)}>
@@ -378,7 +395,12 @@ function Sunburst({ view, colors, onHover, onOpen, onTarget }: { view: DiskNode 
               fill={tint(colors.get(arc.key), [86, 70, 56, 44][arc.depth - 1] ?? 40)}
               stroke="var(--bg)"
               strokeWidth={1}
-              className={cx("transition-opacity", hover !== null && !lit(arc.key, hover) && "opacity-60", arc.node.hasChildren && "cursor-pointer")}
+              className={cx(
+                "transition-opacity",
+                hover !== null && !lit(arc.key, hover) && "opacity-60",
+                hover === null && arc.node.pending && "opacity-75",
+                arc.node.hasChildren && "cursor-pointer",
+              )}
               onMouseMove={(event) => {
                 setHoverKey(arc.key);
                 onHover(arc.node, event);
@@ -486,7 +508,15 @@ function Treemap({ view, colors, onHover, onOpen, onTarget }: { view: DiskNode }
               lit(box.key, hover) && "brightness-110 saturate-[1.15]",
               box.node.hasChildren ? "cursor-pointer" : "cursor-default",
             )}
-            style={{ left: box.x, top: box.y, width: w, height: h, background: fill }}
+            style={{
+              left: box.x,
+              top: box.y,
+              width: w,
+              height: h,
+              background: fill,
+              // 还没扫完的：斜纹，大小还会变
+              backgroundImage: box.node.pending ? "repeating-linear-gradient(135deg, rgb(255 255 255 / 0.14) 0 6px, transparent 6px 12px)" : undefined,
+            }}
             onMouseMove={(event) => {
               event.stopPropagation();
               setHoverKey(box.key);
@@ -508,7 +538,12 @@ function Treemap({ view, colors, onHover, onOpen, onTarget }: { view: DiskNode }
                   {icon && <Folder size={13} strokeWidth={2} aria-hidden className="shrink-0 drop-shadow-[0_1px_2px_rgb(0_0_0/0.25)]" />}
                   <span className="min-w-0 truncate font-medium">{label(box.node)}</span>
                 </div>
-                {size && <div className="tabular max-w-full truncate text-white/85">{formatSize(box.node.size)}</div>}
+                {size && (
+                  <div className="tabular max-w-full truncate text-white/85">
+                    {formatSize(box.node.size)}
+                    {box.node.pending && "…"}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -563,6 +598,7 @@ function worstRatio(row: { area: number }[], short: number): number {
 
 /** 右边：这一层的每一项，颜色和图上对得上。 */
 function ChildList({ view, width, colors, onOpen, onTarget }: { view: DiskNode; width: number } & ChartHandlers) {
+  const t = useT();
   const label = useLabel();
   const hover = useDisk((state) => state.hover);
   return (
@@ -584,10 +620,13 @@ function ChildList({ view, width, colors, onOpen, onTarget }: { view: DiskNode; 
               <span className="min-w-0 flex-1">
                 <span className="flex items-center gap-2">
                   <span className="min-w-0 flex-1 truncate text-[13px]">{label(child)}</span>
-                  <span className="tabular shrink-0 text-[12px] text-fg-3">{formatSize(child.size)}</span>
+                  <span className="tabular shrink-0 text-[12px] text-fg-3" title={child.pending ? t("disk.pending") : undefined}>
+                    {formatSize(child.size)}
+                    {child.pending && "…"}
+                  </span>
                 </span>
                 <span className="mt-1 block h-[3px] overflow-hidden rounded-full bg-hover">
-                  <span className="block h-full rounded-full" style={{ width: `${share * 100}%`, background: tint(colors.get(key), 86) }} />
+                  <span className={cx("block h-full rounded-full", child.pending && "animate-pulse")} style={{ width: `${share * 100}%`, background: tint(colors.get(key), 86) }} />
                 </span>
               </span>
             </button>
@@ -639,18 +678,23 @@ function LargestFiles({ view, title, onTarget }: { view: DiskNode; title: string
   const [files, setFiles] = useState<LargeFile[] | null>(null);
   const [error, setError] = useState<unknown>(null);
 
-  // 打开别的文件夹、删了东西以后（view 换了）重新取
+  const scanning = useDisk((state) => state.scanning);
+  // 打开别的文件夹、删了东西以后（view 换了）重新取；扫描中 view 每次刷新都会换，跟着取扫到现在最大的
   useEffect(() => {
     let alive = true;
     setError(null);
-    api.diskLargest(view.path, LARGEST).then(
+    const prefix = view.path.join("/");
+    const load = scanning
+      ? api.diskLiveLargest().then((list) => list.filter((f) => !prefix || f.path.join("/").startsWith(`${prefix}/`)))
+      : api.diskLargest(view.path, LARGEST);
+    load.then(
       (list) => alive && setFiles(list),
       (reason) => alive && setError(reason),
     );
     return () => {
       alive = false;
     };
-  }, [view]);
+  }, [view, scanning]);
 
   if (error) return <p className="m-0 p-4 text-[12px] text-danger">{errorText(language, error)}</p>;
   if (!files) {

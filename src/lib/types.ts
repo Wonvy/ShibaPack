@@ -708,6 +708,8 @@ export interface DiskNode {
   files: number;
   /** 还能往里点。 */
   hasChildren: boolean;
+  /** 边扫边看时：这一项还没扫完，大小还会变。 */
+  pending?: boolean;
   children: DiskNode[];
 }
 

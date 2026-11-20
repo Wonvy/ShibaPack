@@ -34,6 +34,8 @@ trash = "5"
 toml = "0.8"
 rusqlite = { version = "0.40", features = ["bundled"], optional = true }
 ureq = { version = "3", features = ["json"], optional = true }
+# 磁盘分析的并行扫描：空闲线程从别的线程那里“偷”没扫的文件夹（work stealing），所有文件夹一起往前走
+rayon = "1.10"
 # 安装监控时实时监听文件改动（macOS 用 FSEvents，Windows 用 ReadDirectoryChangesW，Linux 用 inotify）
 notify = "8.2"
 sysinfo = { version = "0.40.4", default-features = false, features = ["system", "disk", "gpu"] }

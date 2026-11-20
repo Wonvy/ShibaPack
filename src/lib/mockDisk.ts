@@ -90,6 +90,43 @@ function settle(node: Fake): Fake {
 }
 
 let tree: Fake | null = null;
+/** 预览里的扫描进行到哪了（0 到 1），没在扫时是 -1。边扫边看按它算每个文件夹扫了多少。 */
+let liveShare = -1;
+let liveTree: Fake | null = null;
+
+/** 第一层第 i 项扫了多少（0 到 1）：一项接一项地扫。 */
+function liveFactor(i: number, n: number): number {
+  return Math.min(1, Math.max(0, liveShare * n * 1.15 - i));
+}
+
+function liveNode(node: Fake, path: string[], factor: number, withChildren: boolean): DiskNode {
+  const kind = node.kind ?? "dir";
+  const children = withChildren && node.children ? node.children.map((c) => liveNode(c, c.kind === "small" ? [] : [...path, c.name], factor, false)) : [];
+  return {
+    name: node.name,
+    path,
+    kind,
+    size: Math.round((node.size ?? 0) * factor),
+    files: Math.round((node.files ?? 0) * factor),
+    hasChildren: withChildren && kind === "dir" && (node.children?.length ?? 0) > 0,
+    pending: factor < 1,
+    children: children.filter((c) => c.size > 0 || c.pending).sort((a, b) => b.size - a.size),
+  };
+}
+
+function liveView(path: string[]): DiskNode | null {
+  if (!liveTree || liveShare < 0 || path.length > 1) return null;
+  const top = liveTree.children ?? [];
+  const parts = top.map((child, i) => ({ child, factor: liveFactor(i, top.length) })).filter((p) => p.factor > 0);
+  if (path.length === 0) {
+    const children = parts.map(({ child, factor }) => liveNode(child, child.kind === "small" ? [] : [child.name], factor, true)).sort((a, b) => b.size - a.size);
+    return { name: "demo", path: [], kind: "dir", size: children.reduce((s, c) => s + c.size, 0), files: children.reduce((s, c) => s + c.files, 0), hasChildren: true, pending: true, children };
+  }
+  const found = parts.find((p) => p.child.name === path[0]);
+  if (!found) return null;
+  const node = liveNode(found.child, path, found.factor, true);
+  return { ...node, hasChildren: true };
+}
 
 function find(path: string[]): Fake | null {
   let node = tree;
@@ -173,22 +210,46 @@ export async function mockDiskCall(command: string, args: Record<string, unknown
       const settled = settle(TREE);
       const total = settled.size ?? 0;
       const files = settled.files ?? 0;
-      const steps = 16;
+      // 慢一点，边扫边看看得清
+      const steps = 40;
+      liveTree = settled;
+      liveShare = 0;
       for (let i = 1; i <= steps; i++) {
         await sleep(110);
-        if (cancelled) throw "cancelled";
+        if (cancelled) {
+          liveShare = -1;
+          throw "cancelled";
+        }
         const share = i / steps;
+        liveShare = share;
         const places = ["Library/Caches", "Library/Developer/Xcode", "Pictures/Photos Library.photoslibrary", "Desktop/ShibaPack/target", "Documents/项目资料"];
         listeners.forEach((l) =>
           l({ files: Math.round(files * share), dirs: Math.round(files * share * 0.08), bytes: Math.round(total * share), current: `${args.root}/${places[i % places.length]}` }),
         );
       }
       tree = settled;
+      liveShare = -1;
       return { root: String(args.root), size: total, files, denied: 3, deniedExamples: ["/Users/demo/Library/Mail", "/Users/demo/Library/Safari"], elapsedMs: 1840 } satisfies DiskSummary;
     }
     case "disk_cancel":
       cancelled = true;
       return null;
+    case "disk_live_view":
+      return liveView(args.path as string[]);
+    case "disk_live_largest": {
+      if (!liveTree || liveShare < 0) return [];
+      const out: LargeFile[] = [];
+      const top = liveTree.children ?? [];
+      top.forEach((child, i) => {
+        if (liveFactor(i, top.length) < 1) return;
+        const walk = (node: Fake, at: string[]) => {
+          if (node.kind === "file") out.push({ path: at, name: node.name, size: node.size ?? 0, folder: `~/${at.slice(0, -1).join("/")}`, modifiedMs: Date.now() });
+          for (const c of node.children ?? []) walk(c, [...at, c.name]);
+        };
+        walk(child, [child.name]);
+      });
+      return out.sort((a, b) => b.size - a.size).slice(0, 200);
+    }
     case "disk_largest": {
       const start = find(args.path as string[]);
       if (!start) throw "not_found";

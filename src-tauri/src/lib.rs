@@ -78,6 +78,8 @@ struct AppState {
     cleanup_cancel: AtomicBool,
     /// 磁盘分析：最近一次扫完的树（只在内存里），和停止扫描的开关。
     disk: Mutex<Option<shibapack_core::disk::Scan>>,
+    /// 正在扫的时候：边扫边看的累计（扫完或停下就清掉）。
+    disk_live: Mutex<Option<Arc<shibapack_core::disk::Live>>>,
     disk_cancel: AtomicBool,
     /// 失败日志放在哪（应用自己的日志文件夹，只和这台电脑有关）。
     log_dir: PathBuf,
@@ -1504,7 +1506,31 @@ struct DiskSummary {
     elapsed_ms: u64,
 }
 
-/// 扫一个文件夹或一块盘（只读）。扫的时候发 `disk://progress`；停下了返回 `cancelled`。
+/// 边扫边看时最大的文件留几个。
+const LARGEST_LIVE: usize = 200;
+
+/// 扫描中的样子（没在扫时是 null）：`path` 只能是根或第一层的文件夹，还没扫完的项带 `pending`。
+#[tauri::command]
+async fn disk_live_view(app: AppHandle, path: Vec<String>, min_ratio: f64) -> Option<shibapack_core::disk::ViewNode> {
+    blocking(app, move |_app, state| {
+        let live = state.disk_live.lock().ok()?.clone()?;
+        live.view(&path, min_ratio.clamp(0.0, 0.5))
+    })
+    .await
+}
+
+/// 扫描中到现在为止最大的文件（没在扫时是空的）。
+#[tauri::command]
+async fn disk_live_largest(app: AppHandle) -> Vec<LargeFile> {
+    blocking(app, move |_app, state| {
+        let Some(live) = state.disk_live.lock().ok().and_then(|slot| slot.clone()) else { return Vec::new() };
+        let root = live.root().to_path_buf();
+        large_files(&root, live.largest())
+    })
+    .await
+}
+
+/// 扫一个文件夹或一块盘（只读）。扫的时候发 `disk://progress`，界面可以用 `disk_live_view` 先看；停下了返回 `cancelled`。
 #[tauri::command]
 async fn disk_scan(app: AppHandle, root: String) -> CmdResult<DiskSummary> {
     blocking(app, move |app, state| {
@@ -1513,10 +1539,22 @@ async fn disk_scan(app: AppHandle, root: String) -> CmdResult<DiskSummary> {
             return Err("file_missing".into());
         }
         state.disk_cancel.store(false, Ordering::SeqCst);
-        let scan = shibapack_core::disk::scan(&root, &state.disk_cancel, &|progress| {
-            let _ = app.emit("disk://progress", progress);
-        })
-        .ok_or_else(|| "cancelled".to_string())?;
+        let live = Arc::new(shibapack_core::disk::Live::new(&root, LARGEST_LIVE));
+        if let Ok(mut slot) = state.disk_live.lock() {
+            *slot = Some(Arc::clone(&live));
+        }
+        let scan = shibapack_core::disk::scan(
+            &root,
+            &state.disk_cancel,
+            &|progress| {
+                let _ = app.emit("disk://progress", progress);
+            },
+            Some(&live),
+        );
+        if let Ok(mut slot) = state.disk_live.lock() {
+            *slot = None;
+        }
+        let scan = scan.ok_or_else(|| "cancelled".to_string())?;
         let summary = DiskSummary {
             root: scan.root.to_string_lossy().to_string(),
             size: scan.tree.size,
@@ -1572,22 +1610,27 @@ async fn disk_largest(app: AppHandle, path: Vec<String>, limit: usize) -> CmdRes
             let found = shibapack_core::disk::largest_files(&scan.tree, &path, limit.min(1000)).ok_or_else(|| "not_found".to_string())?;
             (scan.root.clone(), found)
         };
-        let home = if cfg!(windows) { std::env::var_os("USERPROFILE") } else { std::env::var_os("HOME") }.map(PathBuf::from);
-        Ok(found
-            .into_iter()
-            .map(|(path, size)| {
-                let full = shibapack_core::disk::full_path(&root, &path);
-                let modified_ms = fs::metadata(&full)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_millis() as u64);
-                let folder = full.parent().map(|p| shibapack_core::disk::display_path(p, home.as_deref())).unwrap_or_default();
-                LargeFile { name: path.last().cloned().unwrap_or_default(), path, size, folder, modified_ms }
-            })
-            .collect())
+        Ok(large_files(&root, found))
     })
     .await
+}
+
+/// 给界面的大文件：所在文件夹（用户文件夹写成 ~）和修改时间。
+fn large_files(root: &Path, found: Vec<(Vec<String>, u64)>) -> Vec<LargeFile> {
+    let home = if cfg!(windows) { std::env::var_os("USERPROFILE") } else { std::env::var_os("HOME") }.map(PathBuf::from);
+    found
+        .into_iter()
+        .map(|(path, size)| {
+            let full = shibapack_core::disk::full_path(root, &path);
+            let modified_ms = fs::metadata(&full)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64);
+            let folder = full.parent().map(|p| shibapack_core::disk::display_path(p, home.as_deref())).unwrap_or_default();
+            LargeFile { name: path.last().cloned().unwrap_or_default(), path, size, folder, modified_ms }
+        })
+        .collect()
 }
 
 /// 磁盘分析里文件夹（或大文件）是做什么的。`mode` 是 `cached`（只看缓存，不问 AI）或 `ask`（没记下的问 AI）。
@@ -2877,6 +2920,7 @@ pub fn run() {
                 uninstall: Mutex::new(HashMap::new()),
                 monitor: Mutex::new(None),
                 disk: Mutex::new(None),
+                disk_live: Mutex::new(None),
                 disk_cancel: AtomicBool::new(false),
                 process_icons: Mutex::new(HashMap::new()),
                 startup: Mutex::new(Vec::new()),
@@ -2939,6 +2983,8 @@ pub fn run() {
             disk_scan,
             disk_cancel,
             disk_largest,
+            disk_live_view,
+            disk_live_largest,
             trace_start,
             trace_status,
             trace_finish,

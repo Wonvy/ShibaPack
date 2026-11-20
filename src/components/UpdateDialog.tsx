@@ -5,8 +5,10 @@
 import { AlertTriangle, CircleCheck, ExternalLink, LoaderCircle, Sparkles } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { api } from "../lib/api";
+import { errorText } from "../lib/i18n";
 import { useApp, useLanguage, useT } from "../lib/store";
-import { checkForUpdate, finishUpdate, startUpdate } from "../lib/updater";
+import { checkForUpdate, downloadInstaller, finishUpdate, startUpdate } from "../lib/updater";
+import { isMac } from "../lib/api";
 import { Logo } from "./chrome";
 import { Button, Modal, cx } from "./ui";
 
@@ -87,7 +89,24 @@ export function UpdateDialog() {
   const attempt = useApp((state) => state.attempt);
   const current = useApp((state) => state.status?.version ?? "");
   const update = useApp((state) => state.appUpdate);
-  const newer = ["available", "downloading", "ready", "installed"].includes(update.phase);
+  // 装的时候出了错，新版本也还在：照样看新版本的说明
+  const newer =
+    ["available", "downloading", "ready", "installed"].includes(update.phase) ||
+    (update.phase === "error" && update.version !== "" && update.version !== current);
+  const [fetching, setFetching] = useState(false);
+  const notify = useApp((state) => state.notify);
+  /** 自动安装装不上时：下载安装包并打开，让用户自己装。 */
+  const manual = async () => {
+    setFetching(true);
+    try {
+      const path = await downloadInstaller();
+      notify(t("update.installerOpened", { path }));
+    } catch (error) {
+      notify(errorText(language, error), "error");
+    } finally {
+      setFetching(false);
+    }
+  };
   // 有新版本时看新版本的说明，否则看当前版本的说明
   const version = newer ? update.version : current;
   const [notes, setNotes] = useState<{ version: string; text: string | null; failed: boolean } | null>(null);
@@ -209,6 +228,25 @@ export function UpdateDialog() {
           ) : (
             <div className="h-full bg-accent transition-[width] duration-200" style={{ width: `${percent}%` }} />
           )}
+        </div>
+      )}
+
+      {/* 装不上是因为没有权限替换自己：说清楚为什么，给两个办法 */}
+      {update.phase === "error" && update.blocked && (
+        <div className="mt-3 rounded-lg border border-line px-3 py-2.5 text-[12px] leading-relaxed text-fg-2">
+          <p className="m-0">{isMac ? t("update.blockedMac") : t("update.blockedOther")}</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {isMac && (
+              <Button size="sm" onClick={() => void attempt(() => api.openStartupSettings("appManagement"))}>
+                {t("update.openAppManagement")}
+              </Button>
+            )}
+            {update.version && (
+              <Button size="sm" busy={fetching} onClick={() => void manual()}>
+                {t("update.downloadInstaller")}
+              </Button>
+            )}
+          </div>
         </div>
       )}
 

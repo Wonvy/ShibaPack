@@ -29,11 +29,13 @@ import {
   SearchX,
   Sparkles,
   Star,
+  PackageMinus,
   Trash2,
   WandSparkles,
 } from "lucide-react";
 import { type PointerEvent, type ReactNode, createContext, memo, useContext, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { DetailToggle } from "../components/chrome";
+import { SummaryCard, useHoverCard } from "../components/HoverCard";
 import { type ColumnDef, type Columns, ColumnsContext, TableHeader, useTableColumns, useWidth } from "../components/columns";
 import { PlatformIcon, PlatformIcons } from "../components/PlatformIcon";
 import { SoftwareIcon, useSoftwareIcon } from "../components/SoftwareIcon";
@@ -83,12 +85,13 @@ import {
   softwareSize,
   sortedVersions,
   versionPaths,
+  shownSummary,
 } from "../lib/library";
 import { type PackageView, type SortKey, usePrefs } from "../lib/prefs";
 import { type InstallFilter, useAiReady, useApp, useLanguage, useT } from "../lib/store";
 import type { InstalledApp, Platform, Software, Version } from "../lib/types";
 
-// 列表视图的列：名称、版本、平台、大小、添加时间、安装/卸载。名称占满剩下的宽度；右边几列的宽度可以拖，
+// 列表视图的列：名称、版本、平台、大小、添加时间、安装/升级（卸载在右键菜单里）。名称占满剩下的宽度；右边几列的宽度可以拖，
 // 右键表头勾选显示哪几列（见 components/columns）。栏太窄时添加时间、大小、平台从右往左暂时收起。
 // 版本列默认要放得下“1.96.2 ⌄ → 1.97.0”，下面一行是本机装的版本
 type LibraryColumn = "version" | "platform" | "size" | "added" | "action";
@@ -559,7 +562,11 @@ function useItem(software: Software) {
         { label: t("classify.menu"), icon: Sparkles, onSelect: () => classify([software.id]) },
         ...describe([software]),
         { label: t("menu.openFolder"), icon: FolderOpen, separated: true, onSelect: () => void revealSoftware(software) },
-        { label: t("detail.deleteSoftware"), icon: Trash2, danger: true, separated: true, onSelect: () => void deleteSoftware(software) },
+        // 卸载只在这里和详情栏的 ⋯ 菜单里，列表上不放按钮
+        ...(installedApp?.uninstallable
+          ? [{ label: t("link.uninstall"), icon: PackageMinus, separated: true, onSelect: () => void uninstallApp(installedApp) }]
+          : []),
+        { label: t("detail.deleteSoftware"), icon: Trash2, danger: true, separated: !installedApp?.uninstallable, onSelect: () => void deleteSoftware(software) },
       ];
   return {
     installedApp,
@@ -827,8 +834,8 @@ function Welcome() {
 }
 
 /**
- * 安装 / 升级 / 卸载按钮，列表、卡片、文件夹视图共用。
- * “升级”是需要处理的新情况，一直显示；安装、卸载只在鼠标停在这一行上、或这一行被选中时出现，
+ * 安装 / 升级按钮，列表、卡片、文件夹视图共用。
+ * “升级”是需要处理的新情况，一直显示；安装只在鼠标停在这一行上、或这一行被选中时出现（卸载不放按钮，在右键菜单里），
  * 免得一整列按钮盖过软件名，也不容易误点卸载。所在的行要带 `group` 类。
  * 没有适合本机的安装包时显示一条短横线；装着但不能卸载（系统自带）时什么都不显示。
  */
@@ -842,7 +849,7 @@ function ActionButton({
   software: Software;
   installedApp?: InstalledApp;
   upgrade: boolean;
-  /** 这一行被选中时，安装、卸载也一直显示。 */
+  /** 这一行被选中时，安装按钮也一直显示。 */
   selected?: boolean;
   /** 没有适合本机的安装包时是否画一条短横线（列表里画，卡片里不画）。 */
   dash?: boolean;
@@ -883,13 +890,7 @@ function ActionButton({
       </Button>
     );
   }
-  if (installedApp?.uninstallable) {
-    return (
-      <Button variant="quiet" size="sm" className={onHover} {...guard} onClick={run(() => void uninstallApp(installedApp))}>
-        {t("link.uninstall")}
-      </Button>
-    );
-  }
+  // 已经装着的不放卸载按钮：卸载在右键菜单里
   if (installedApp || !dash) return null;
   return (
     <span title={t("link.noInstaller")} className={cx("px-2 text-[12px] text-fg-4", onHover)}>
@@ -989,7 +990,7 @@ const Row = memo(function Row({ software, selected }: { software: Software; sele
 
 /**
  * 网格视图里的一个软件：居中的大图标，下面是名字和版本，别的都收起来。
- * 收藏和已安装是图标角上的小标记；安装、卸载按钮鼠标停上去或选中时才出现，能升级时一直显示。
+ * 收藏和已安装是图标角上的小标记；安装按钮鼠标停上去或选中时才出现，能升级时一直显示；卸载在右键菜单里。
  */
 const Card = memo(function Card({ software, selected }: { software: Software; selected: boolean }) {
   const t = useT();
@@ -1000,6 +1001,12 @@ const Card = memo(function Card({ software, selected }: { software: Software; se
   const version = main?.version || "—";
   const online = hasUpdate(software) ? software.subscription?.latest?.version : null;
   const installedText = installedApp && (installedApp.version ? t("link.installedVersion", { version: installedApp.version }) : t("link.installed"));
+  // 鼠标停一会儿浮出简介（网格里只放得下名字和版本）
+  const language = useLanguage();
+  const summary = useApp((state) => state.library?.summaries[software.name]);
+  const translate = useApp((state) => state.library?.settings.translateSummaries ?? true);
+  const shown = shownSummary(summary, language, translate);
+  const hover = useHoverCard(shown ? <SummaryCard name={software.name} publisher={software.publisher} text={shown.text} /> : null);
   return (
     <ContextMenu items={menu}>
       <div
@@ -1007,11 +1014,22 @@ const Card = memo(function Card({ software, selected }: { software: Software; se
         tabIndex={0}
         aria-pressed={selected}
         {...handlers}
+        onMouseEnter={hover.handlers.onMouseEnter}
+        onMouseLeave={hover.handlers.onMouseLeave}
+        onPointerDown={(event) => {
+          hover.handlers.onPointerDown();
+          handlers.onPointerDown(event);
+        }}
+        onContextMenu={() => {
+          hover.handlers.onContextMenu();
+          handlers.onContextMenu();
+        }}
         className={cx(
           "group flex min-w-0 flex-col items-center rounded-lg px-2 pt-4 pb-2 text-center transition-colors",
           selected ? "bg-accent-soft" : "hover:bg-hover",
         )}
       >
+        {hover.card}
         <span className="relative">
           <SoftwareIcon name={software.name} icon={icon} size={48} stack={software.versions.length} />
           {software.starred && (

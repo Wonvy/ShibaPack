@@ -2,6 +2,7 @@
 
 use crate::{
     catalog::CATALOG_FILE,
+    fileinfo::{self, InfoCache},
     icons,
     identify::{is_installer, normalize_name, same_software},
     import::{sha256_file, ImportHint, ImportItem, ImportReport},
@@ -9,7 +10,7 @@ use crate::{
     model::*,
     store::{sanitize, unique_path, Repo, DATA_DIR, INDEX_FILE},
     webicon::WebIcon,
-    Error, Result,
+    new_id, Error, Result,
 };
 use serde::Deserialize;
 use std::{
@@ -418,6 +419,103 @@ impl Repo {
         }
     }
 
+    /// 用安装包自带的属性补全已经登记的软件（Windows 的 exe、msi 文件属性里的产品版本、公司名）：
+    /// 版本号是空的文件（放在 `unknown` 文件夹里的），读到版本号就挪到那个版本，托管的文件跟着挪到对应的文件夹；
+    /// 发布者空着的软件补上公司名。
+    ///
+    /// 读过的按 SHA-256 记在 `.shibapack/cache/fileinfo.json`（读不出来的也记），同一个文件只读一次。
+    /// 一次最多真的去读 `limit` 个文件。返回 (有没有改动, 还有没有没读的)。
+    pub fn fill_file_info(&mut self, limit: usize) -> Result<(bool, bool)> {
+        let cache_dir = self.data_dir().join("cache");
+        let mut cache = InfoCache::load(&cache_dir);
+        let (mut reads, mut more) = (0, false);
+        // (软件 id, 版本 id, 文件 id, 读到的信息)
+        let mut found = Vec::new();
+        for software in &self.lib.software {
+            let wants_publisher = software.publisher.trim().is_empty();
+            for version in &software.versions {
+                if !version.version.is_empty() && !wants_publisher {
+                    continue;
+                }
+                for file in &version.files {
+                    if !fileinfo::has_info(&file.name) || file.sha256.is_empty() {
+                        continue;
+                    }
+                    if !cache.files.contains_key(&file.sha256) && reads >= limit {
+                        more = true;
+                        continue;
+                    }
+                    let (info, read) = cache.get_or_read(&file.sha256, &self.abs_path(file));
+                    reads += usize::from(read);
+                    if let Some(info) = info {
+                        found.push((software.id.clone(), version.id.clone(), file.id.clone(), info));
+                    }
+                }
+            }
+        }
+        if reads > 0 {
+            let _ = cache.save(&cache_dir);
+        }
+        let mut changed = false;
+        for (software_id, version_id, file_id, info) in found {
+            let Ok(s) = self.software_at(&software_id) else { continue };
+            if self.lib.software[s].publisher.trim().is_empty() && !info.company.trim().is_empty() {
+                self.lib.software[s].publisher = info.company.trim().to_string();
+                changed = true;
+            }
+            let Ok(v) = self.version_at(s, &version_id) else { continue };
+            if self.lib.software[s].versions[v].version.is_empty() && !info.version.is_empty() {
+                changed |= self.move_file_to_version(s, v, &file_id, &info.version);
+            }
+        }
+        if changed {
+            self.save()?;
+        }
+        Ok((changed, more))
+    }
+
+    /// 把一个文件从它现在的版本挪到另一个版本（没有就新建），托管的文件在磁盘上跟着挪到 `软件名/新版本号/`。
+    /// 原来的版本挪空了、也没写备注就删掉。目标版本里已经有内容相同的文件时不挪。返回有没有挪。
+    fn move_file_to_version(&mut self, s: usize, v: usize, file_id: &str, version: &str) -> bool {
+        let Some(f) = self.lib.software[s].versions[v].files.iter().position(|f| f.id == file_id) else { return false };
+        let sha256 = self.lib.software[s].versions[v].files[f].sha256.clone();
+        let existing = self.lib.software[s].versions.iter().position(|other| other.version == version);
+        if existing.is_some_and(|t| self.lib.software[s].versions[t].files.iter().any(|other| other.sha256 == sha256)) {
+            return false;
+        }
+        // 托管文件先在磁盘上挪：`软件名/unknown/文件` → `软件名/版本号/文件`。挪不动就只改记录，文件留在原处也能找到
+        let mut file = self.lib.software[s].versions[v].files.remove(f);
+        if file.storage == Storage::Managed {
+            let parts: Vec<&str> = file.path.split('/').collect();
+            if parts.len() >= 3 && parts[1] == "unknown" {
+                let new_rel = format!("{}/{}/{}", parts[0], sanitize(version), parts[2..].join("/"));
+                let (from, to) = (self.root_join(&file.path), self.root_join(&new_rel));
+                if !to.exists() && to.parent().is_some_and(|dir| fs::create_dir_all(dir).is_ok()) && fs::rename(&from, &to).is_ok() {
+                    file.path = new_rel;
+                    self.remove_empty_dirs(from.parent());
+                }
+            }
+        }
+        let software = &mut self.lib.software[s];
+        let t = match existing {
+            Some(t) => t,
+            None => {
+                let added_at = software.versions[v].added_at.clone();
+                software.versions.push(Version { id: new_id(), version: version.to_string(), note: String::new(), added_at, files: Vec::new() });
+                software.versions.len() - 1
+            }
+        };
+        let target_id = software.versions[t].id.clone();
+        software.versions[t].files.push(file);
+        if software.versions[v].files.is_empty() && software.versions[v].note.trim().is_empty() {
+            let old = software.versions.remove(v);
+            if software.default_version_id.as_deref() == Some(old.id.as_str()) {
+                software.default_version_id = Some(target_id);
+            }
+        }
+        true
+    }
+
     /// 联网找图标要用的信息。软件已经有图标、没有主页也没有 GitHub 仓库、
     /// 或者上次用同样的信息找过没找到时，返回 None。
     pub fn web_icon_query(&self, software_id: &str) -> Result<Option<WebIconQuery>> {
@@ -482,7 +580,7 @@ impl Repo {
                 .iter()
                 .flat_map(|v| &v.files)
                 .map(|f| self.abs_path(f))
-                .filter(|path| path.is_file())
+                .filter_map(|path| crate::import::icon_source(&path))
                 .find_map(|path| self.icon_from(&id, &path));
             let borrowed = || {
                 let app = installed.iter().find(|app| app.icon.is_some() && same_software(&app.name, &software.name))?;
@@ -617,6 +715,8 @@ impl Repo {
                     status: "failed".into(),
                     software_id: None,
                     message: Some(err.to_string()),
+                    step: Some("copy".into()),
+                    reason: Some(err.reason().to_string()),
                 }),
             }
         }
@@ -715,6 +815,17 @@ impl Repo {
     }
 
     /// 存一条联网取回的简介。`None` 表示查过了但没有，也记下来，免得每次启动都再查。
+    /// 一次存好几个简介（让 AI 一批写完时），只存一次索引。
+    pub fn set_summaries(&mut self, summaries: Vec<(String, Summary)>) -> Result<()> {
+        if summaries.is_empty() {
+            return Ok(());
+        }
+        for (name, summary) in summaries {
+            self.lib.summaries.insert(name, summary);
+        }
+        self.save()
+    }
+
     /// 删掉一个名字的简介（清空自己写的描述时）。之后开着“联网获取简介”的话会再去网上找。
     pub fn clear_summary(&mut self, name: &str) -> Result<()> {
         if self.lib.summaries.remove(name).is_some() {
@@ -1115,5 +1226,36 @@ mod tests {
         let second = repo.lib.software[0].id.clone();
         repo.delete_software(&second, true).unwrap();
         assert!(!shared.exists(), "最后一个用它的记录删掉后才移进回收站");
+    }
+
+    #[test]
+    fn file_properties_fix_unknown_versions_once() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        let src_dir = tempfile::tempdir().unwrap();
+        let file = src_dir.path().join("WinThumbsPreloader.msi");
+        crate::fileinfo::write_test_msi(&file, "WinThumbsPreloader", "1.1.0.0", "Dmitry Bruhov");
+        let mut repo = Repo::open(repo_dir.path()).unwrap();
+        // 以前导入的：没读属性，版本号是空的，放在 unknown 里
+        let old = ImportHint { version: Some(String::new()), ..Default::default() };
+        repo.import_paths(&[file], Storage::Managed, &old, &mut |_| {}).unwrap();
+        repo.lib.software[0].publisher.clear();
+        let unknown_id = repo.lib.software[0].versions[0].id.clone();
+        repo.lib.software[0].default_version_id = Some(unknown_id);
+        assert_eq!(repo.lib.software[0].versions[0].files[0].path, "WinThumbsPreloader/unknown/WinThumbsPreloader.msi");
+
+        assert_eq!(repo.fill_file_info(0).unwrap(), (false, true), "一个都不让读时说还有没读的");
+        assert_eq!(repo.fill_file_info(10).unwrap(), (true, false));
+        let software = &repo.lib.software[0];
+        assert_eq!(software.publisher, "Dmitry Bruhov");
+        assert_eq!(software.versions.len(), 1, "挪空了的 unknown 版本删掉");
+        assert_eq!(software.versions[0].version, "1.1.0");
+        assert_eq!(software.default_version_id.as_deref(), Some(software.versions[0].id.as_str()));
+        let moved = &software.versions[0].files[0];
+        assert_eq!(moved.path, "WinThumbsPreloader/1.1.0/WinThumbsPreloader.msi");
+        assert!(repo.abs_path(moved).is_file());
+        assert!(!repo.root().join("WinThumbsPreloader/unknown").exists());
+        // 记在缓存里：之后不再读
+        assert!(repo.data_dir().join("cache/fileinfo.json").is_file());
+        assert_eq!(repo.fill_file_info(0).unwrap(), (false, false));
     }
 }

@@ -32,6 +32,8 @@ export interface Columns<K extends string = string> {
   template: string;
 }
 
+const NONE: string[] = [];
+
 /** 名称列至少留这么宽，放不下时才收起别的列。 */
 const NAME_MIN = 160;
 /** 列与列之间的空隙，和 `gap-x-3` 一致。 */
@@ -87,7 +89,8 @@ export function TableHeader<K extends string>({
   className?: string;
 }) {
   const t = useT();
-  const hidden = usePrefs((state) => state.tableColumns[table]?.hidden ?? []);
+  // 没存过这个表格的设置时用同一个空数组：每次给一个新的 [] 会让界面一直重画
+  const hidden = usePrefs((state) => state.tableColumns[table]?.hidden ?? NONE);
   const toggleColumn = usePrefs((state) => state.toggleColumn);
   const resetColumns = usePrefs((state) => state.resetColumns);
   const menu: MenuEntry[] = [

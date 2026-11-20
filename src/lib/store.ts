@@ -10,7 +10,9 @@ import { applyTheme } from "./theme";
 import type {
   Asset,
   CheckProgress,
+  DropEntry,
   ImportHint,
+  ImportReport,
   InstalledApp,
   LangPack,
   Language,
@@ -49,9 +51,11 @@ export interface AppUpdate {
   dismissed: boolean;
   /** 新版本的更新说明（更新包里带的；没带时“软件更新”窗口去 GitHub 上取）。 */
   notes: string;
+  /** 装不上是因为没有权限替换自己（macOS 的“App 管理”限制）：窗口里给出放行和手动安装的办法。 */
+  blocked: boolean;
 }
 
-export const NO_UPDATE: AppUpdate = { phase: "idle", version: "", progress: null, error: "", dismissed: false, notes: "" };
+export const NO_UPDATE: AppUpdate = { phase: "idle", version: "", progress: null, error: "", dismissed: false, notes: "", blocked: false };
 
 /** 一个正在下载或排队的文件。 */
 export interface DownloadState {
@@ -59,6 +63,24 @@ export interface DownloadState {
   name: string;
   received: number;
   total: number | null;
+}
+
+/** 导入窗口：拖进中间栏后先在这里选分类、存储方式，确认后导入并显示进度和结果。 */
+export interface ImportDialogState {
+  paths: string[];
+  /** 已经看过的拖入项（从侧栏拖进来时先看过了）。 */
+  entries?: DropEntry[];
+  /** 预先选好的分类（拖到侧栏的某个分类上；`null` 是拖到了“未分类”上）。 */
+  categoryId?: string | null;
+  /** 不是从这个窗口开始的导入有失败：直接显示结果和失败原因。 */
+  report?: ImportReport;
+}
+
+export interface ImportOptions {
+  /** 移动进仓库（不留原文件）。不给时按设置来。 */
+  move?: boolean;
+  /** 不弹提示、不跳到导入的软件、失败时也不开结果窗口（导入窗口自己显示结果）。 */
+  quiet?: boolean;
 }
 
 export interface Toast {
@@ -81,8 +103,12 @@ interface AppState {
   selectedIds: string[];
   progress: Progress | null;
   /** 导入进行中时又拖进来、选进来的文件，排着队等前一批导完。 */
-  importQueue: { paths: string[]; mode?: Storage; hint?: ImportHint }[];
+  importQueue: { paths: string[]; mode?: Storage; hint?: ImportHint; options?: ImportOptions; done: (report: ImportReport | null) => void }[];
   dropping: boolean;
+  /** 从系统拖文件进来时，指针下面可以落下的地方（侧栏的分类：`category:<id>`、`uncategorized`）。 */
+  fileDropTarget: string | null;
+  /** 打开着的导入窗口。 */
+  importDialog: ImportDialogState | null;
   /** 屏幕下方的提示，最新的在最后，最多同时 3 条。新提示不会把还没看完的出错提示挤掉。 */
   toasts: Toast[];
   dismissToast: (id: number) => void;
@@ -146,6 +172,8 @@ interface AppState {
         | "platform"
         | "installFilter"
         | "dropping"
+        | "fileDropTarget"
+        | "importDialog"
         | "settingsOpen"
         | "selectedInstalledId"
         | "classifyIds"
@@ -184,7 +212,7 @@ interface AppState {
   /** 自己写的描述（按名字存）。空字符串表示删掉。 */
   writeSummary: (name: string, text: string) => Promise<boolean>;
   /** `hint.name` 给了时，所有文件都归到这个软件下（在详情栏里给某个软件选文件添加版本）。从系统拖进来的文件不带它，一律按文件名认。 */
-  importPaths: (paths: string[], mode?: Storage, hint?: ImportHint) => Promise<void>;
+  importPaths: (paths: string[], mode?: Storage, hint?: ImportHint, options?: ImportOptions) => Promise<ImportReport | null>;
   /** 停下正在进行的导入（在两个文件之间停），排着队的也不导了。 */
   cancelImport: () => void;
   importCancelled: boolean;
@@ -223,6 +251,7 @@ let aiKeyCheckedFor: string | null = null;
 let started = false;
 // 后台任务的状态：补图标、联网找图标、取简介
 let fillingIcons = false;
+let fillingInfo = false;
 /** 本机的图标（安装包里、已安装软件那边）至少补过一轮，之后才联网找，免得网站图标抢在真图标前面。 */
 let localIconsDone = false;
 /** 软件 id → 这次运行里已经拿去联网找图标的“主页 + GitHub 仓库”。改了主页会再找一次。 */
@@ -271,6 +300,24 @@ export const useApp = create<AppState>()((set, get) => {
       localIconsDone = true;
     }
     queueWebIcons();
+  };
+
+  /** 用安装包自带的属性（exe、msi 的产品版本、公司名）补版本号和发布者。读过的后端会缓存，不会每次重读。 */
+  const fillFileInfo = async () => {
+    if (fillingInfo) return;
+    fillingInfo = true;
+    try {
+      for (let round = 0; round < 500; round++) {
+        const result = await api.fillFileInfo();
+        const current = get().library;
+        if (result.library && current) set({ library: { ...current, software: result.library.software } });
+        if (!result.more) break;
+      }
+    } catch {
+      // 读不出来就保持原样
+    } finally {
+      fillingInfo = false;
+    }
   };
 
   /** 还没有图标、但填了主页或关联了 GitHub 的软件，联网找网站图标或仓库主人的头像。同时最多 3 个。 */
@@ -387,6 +434,7 @@ export const useApp = create<AppState>()((set, get) => {
     set({ library, selectedId, selectedIds, ...(scopeGone ? { scope: { kind: "all" } as Scope } : {}) });
     void refreshLinks();
     void fillIcons();
+    void fillFileInfo();
     queueWebIcons();
     queueSummaries(library);
     if (library.settings.ai.baseUrl !== aiKeyCheckedFor) void get().refreshAiKey();
@@ -409,6 +457,8 @@ export const useApp = create<AppState>()((set, get) => {
     aiKeySaved: false,
     aiBusy: {},
     dropping: false,
+    fileDropTarget: null,
+    importDialog: null,
     toasts: [],
     settingsOpen: false,
     installed: null,
@@ -496,6 +546,8 @@ export const useApp = create<AppState>()((set, get) => {
         others.splice(oldest >= 0 ? oldest : 0, 1);
       }
       set({ toasts: [...others, { id, text, kind }] });
+      // 出错的提示都记进失败日志（在设置的“失败日志”里看）
+      if (kind === "error") void api.logFailure(get().route, text).catch(() => {});
       // 出错的提示多留一会儿
       setTimeout(() => get().dismissToast(id), kind === "error" ? 8000 : 3200);
     },
@@ -576,37 +628,30 @@ export const useApp = create<AppState>()((set, get) => {
       const todo = items.filter((item) => item.name.trim() && !get().aiBusy[item.name] && !already.includes(item));
       if (todo.length === 0) return;
       set({ aiBusy: { ...get().aiBusy, ...Object.fromEntries(todo.map((item) => [item.name, true])) } });
-      let done = 0;
-      let failed = 0;
-      let lastError: unknown = null;
-      for (const item of todo) {
-        try {
-          const library = await api.aiDescribe(item.name, item.publisher);
+      const lang = language();
+      const release = () =>
+        set({ aiBusy: Object.fromEntries(Object.entries(get().aiBusy).filter(([name]) => !todo.some((item) => item.name === name))) });
+      try {
+        if (todo.length === 1) {
+          const library = await api.aiDescribe(todo[0].name, todo[0].publisher);
           const current = get().library;
           // 只取回简介这一部分，免得用旧的快照盖掉这期间的其他改动
           if (current) set({ library: { ...current, summaries: library.summaries } });
-          done++;
-        } catch (error) {
-          failed++;
-          lastError = error;
-          // 密钥、余额、地址这类问题，后面的也一样会失败
-          if (/^(ai_(not_configured|bad_url|no_key|no_model|auth|balance|region|wrong_path|keychain|network)|not_configured)\b/.test(String(error))) {
-            failed += todo.length - done - failed;
-            break;
-          }
-        } finally {
-          const { [item.name]: _done, ...rest } = get().aiBusy;
-          set({ aiBusy: rest });
+        } else {
+          // 好几个时凑成一批问 AI（后端每次请求放 15 个），不是一个一个问
+          const result = await api.aiDescribeMany(todo);
+          const current = get().library;
+          if (current) set({ library: { ...current, summaries: result.library.summaries } });
+          get().notify(
+            result.unknown > 0
+              ? translate(lang, "ai.describedSome", { n: result.written, failed: result.unknown })
+              : translate(lang, "ai.describedMany", { n: result.written }),
+          );
         }
-      }
-      set({ aiBusy: Object.fromEntries(Object.entries(get().aiBusy).filter(([name]) => !todo.some((item) => item.name === name))) });
-      const lang = language();
-      if (todo.length === 1) {
-        if (lastError !== null) get().notify(errorText(lang, lastError), "error");
-      } else if (failed === 0) {
-        get().notify(translate(lang, "ai.describedMany", { n: done }));
-      } else {
-        get().notify(`${translate(lang, "ai.describedSome", { n: done, failed })} ${errorText(lang, lastError)}`, "error");
+      } catch (error) {
+        get().notify(errorText(lang, error), "error");
+      } finally {
+        release();
       }
     },
 
@@ -620,29 +665,36 @@ export const useApp = create<AppState>()((set, get) => {
       }
     },
 
-    importPaths: async (paths, mode, hint) => {
+    importPaths: async (paths, mode, hint, options = {}) => {
       const library = get().library;
-      if (!library || paths.length === 0) return;
+      if (!library || paths.length === 0) return null;
       // 正在导入：排队，等前一批导完再导，不能悄悄丢掉
       if (importing) {
-        set({ importQueue: [...get().importQueue, { paths, mode, hint }] });
-        get().notify(translate(language(), "import.queued"));
-        return;
+        if (!options.quiet) get().notify(translate(language(), "import.queued"));
+        return new Promise((done) => set({ importQueue: [...get().importQueue, { paths, mode, hint, options, done }] }));
       }
       importing = true;
       set({ progress: { phase: "collect", current: 0, total: 0, file: "" } });
+      let report: ImportReport | null = null;
       try {
         // 没指定存储模式时按设置来；“移动进仓库”也只在按设置导入时生效（扫描建索引明确要求只记位置）
         const { defaultStorage, moveOnImport } = library.settings;
-        const result = await api.importPaths(paths, mode ?? defaultStorage, hint, !mode && defaultStorage === "managed" && moveOnImport);
+        const move = options.move ?? (!mode && defaultStorage === "managed" && moveOnImport);
+        const result = await api.importPaths(paths, mode ?? defaultStorage, hint, move);
         adopt(result.library);
-        const { imported, duplicates, failed, items, cancelled } = result.report;
-        if (cancelled) {
+        report = result.report;
+        const { imported, duplicates, failed, items, cancelled } = report;
+        if (options.quiet) {
+          // 导入窗口自己显示结果
+        } else if (failed > 0) {
+          // 有失败的：打开结果窗口，一个个说清楚哪个文件、在哪一步、为什么
+          set({ importDialog: { paths, report } });
+        } else if (cancelled) {
           get().notify(translate(language(), "import.cancelled", { imported, duplicates, failed }));
         } else if (items.length === 0) {
           get().notify(translate(language(), "import.none"));
         } else {
-          get().notify(translate(language(), "import.done", { imported, duplicates, failed }), failed ? "error" : "info");
+          get().notify(translate(language(), "import.done", { imported, duplicates, failed }));
           // 只导入了一个软件时直接选中它
           const ids = new Set(items.filter((i) => i.status === "imported").map((i) => i.softwareId));
           if (ids.size === 1) {
@@ -651,7 +703,8 @@ export const useApp = create<AppState>()((set, get) => {
           }
         }
       } catch (error) {
-        get().notify(errorText(language(), error), "error");
+        if (!options.quiet) get().notify(errorText(language(), error), "error");
+        else throw error;
       } finally {
         importing = false;
         set({ progress: null });
@@ -659,11 +712,13 @@ export const useApp = create<AppState>()((set, get) => {
         const [next, ...rest] = get().importQueue;
         if (next && !get().importCancelled) {
           set({ importQueue: rest });
-          void get().importPaths(next.paths, next.mode, next.hint);
+          void get().importPaths(next.paths, next.mode, next.hint, next.options).then(next.done, () => next.done(null));
         } else {
+          for (const waiting of get().importQueue) waiting.done(null);
           set({ importQueue: [], importCancelled: false });
         }
       }
+      return report;
     },
 
     cancelImport: () => {

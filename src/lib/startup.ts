@@ -2,10 +2,10 @@
 
 import { create } from "zustand";
 import { confirm } from "../components/dialogs";
-import { api } from "./api";
+import { api, onAiProgress } from "./api";
 import { type Key, errorText, translate } from "./i18n";
 import { useApp } from "./store";
-import type { Explanation, StartupAction, StartupItem, StartupListing } from "./types";
+import type { AiProgress, Explanation, StartupAction, StartupItem, StartupListing } from "./types";
 
 interface StartupState {
   /** 还没列出来时是 null。 */
@@ -17,13 +17,19 @@ interface StartupState {
   scannedAt: number;
   /** 列表出错的原因（整个列不出来时）。 */
   error: string | null;
+  /** 选中的；多选时是最先选的那个（Shift 连选从它算起）。 */
   selectedId: string | null;
+  /** 多选时所有选中的；单选时只有 selectedId 一个。 */
+  selectedIds: string[];
   /** 正在做的操作：id → 操作。做完之前那一行的开关、按钮都不能再点。 */
   busy: Record<string, StartupAction>;
   /** AI 的解释，按 id。解释本身记在仓库的缓存里，这里只是这次运行里取过的。 */
   explanations: Record<string, Explanation>;
   explaining: Record<string, boolean>;
+  /** 一批让 AI 解释时的进度。 */
+  explainProgress: AiProgress | null;
   select: (id: string | null) => void;
+  setSelection: (ids: string[], primary: string | null) => void;
   load: () => Promise<void>;
 }
 
@@ -34,10 +40,13 @@ export const useStartup = create<StartupState>()((set, get) => ({
   scannedAt: 0,
   error: null,
   selectedId: null,
+  selectedIds: [],
   busy: {},
   explanations: {},
   explaining: {},
-  select: (id) => set({ selectedId: id }),
+  explainProgress: null,
+  select: (id) => set({ selectedId: id, selectedIds: id ? [id] : [] }),
+  setSelection: (ids, primary) => set({ selectedIds: ids, selectedId: primary ?? ids[0] ?? null }),
   load: async () => {
     if (get().loading) return;
     set({ loading: true });
@@ -55,12 +64,22 @@ export const useStartup = create<StartupState>()((set, get) => ({
 }));
 
 function adopt(listing: StartupListing) {
-  const selected = useStartup.getState().selectedId;
+  const { selectedId, selectedIds } = useStartup.getState();
+  const ids = new Set(listing.items.map((item) => item.id));
   useStartup.setState({
     items: listing.items,
     notes: listing.notes,
-    selectedId: selected && listing.items.some((item) => item.id === selected) ? selected : null,
+    selectedId: selectedId && ids.has(selectedId) ? selectedId : null,
+    selectedIds: selectedIds.filter((id) => ids.has(id)),
   });
+  // 以前让 AI 解释过的一次拿出来（只读缓存，不问 AI），列表里直接显示
+  const missing = listing.items.filter((item) => !useStartup.getState().explanations[item.id]).map((item) => item.id);
+  if (missing.length > 0) {
+    api.aiExplainStartup(missing, "cached").then(
+      (result) => useStartup.setState({ explanations: { ...useStartup.getState().explanations, ...result.explanations } }),
+      () => {},
+    );
+  }
 }
 
 function language() {
@@ -112,8 +131,8 @@ export async function startupAct(item: StartupItem, action: StartupAction): Prom
 export async function loadExplanation(item: StartupItem) {
   if (useStartup.getState().explanations[item.id]) return;
   try {
-    const found = await api.aiExplainStartup(item.id, "cached");
-    if (found) useStartup.setState({ explanations: { ...useStartup.getState().explanations, [item.id]: found } });
+    const result = await api.aiExplainStartup([item.id], "cached");
+    useStartup.setState({ explanations: { ...useStartup.getState().explanations, ...result.explanations } });
   } catch {
     // 缓存读不到就当没有
   }
@@ -121,17 +140,39 @@ export async function loadExplanation(item: StartupItem) {
 
 /** 让 AI 解释这一项。有记下的解释就直接用；`refresh` 为真（点了“重新解释”）才重新问。 */
 export async function explainStartup(item: StartupItem, refresh = false) {
+  return explainMany([item], refresh);
+}
+
+/**
+ * 让 AI 解释一批：以前解释过的直接用，没解释过的凑成一批问（每次请求 10 项），不是一项一项问。
+ * `refresh` 为真时全部重新问。一批的时候最后提示解释了几项。
+ */
+export async function explainMany(items: StartupItem[], refresh = false) {
   const state = useStartup.getState();
-  if (state.explaining[item.id]) return;
-  useStartup.setState({ explaining: { ...state.explaining, [item.id]: true } });
+  const todo = items.filter((item) => !state.explaining[item.id]);
+  if (todo.length === 0) return;
+  useStartup.setState({ explaining: { ...state.explaining, ...Object.fromEntries(todo.map((item) => [item.id, true])) } });
+  const stop = todo.length > 1 ? await onAiProgress((progress) => useStartup.setState({ explainProgress: progress })) : null;
   try {
-    const found = await api.aiExplainStartup(item.id, refresh ? "refresh" : "auto");
-    if (found) useStartup.setState({ explanations: { ...useStartup.getState().explanations, [item.id]: found } });
+    const result = await api.aiExplainStartup(
+      todo.map((item) => item.id),
+      refresh ? "refresh" : "auto",
+    );
+    useStartup.setState({ explanations: { ...useStartup.getState().explanations, ...result.explanations } });
+    if (todo.length > 1) {
+      const n = Object.keys(result.explanations).length;
+      const key = result.asked === 0 ? "startup.explainedCached" : result.missing > 0 ? "startup.explainedMissing" : "startup.explainedMany";
+      useApp.getState().notify(tr(key, { n, asked: result.asked, missing: result.missing }));
+    } else if (result.missing > 0) {
+      useApp.getState().notify(errorText(language(), "ai_unknown"), "error");
+    }
   } catch (error) {
     useApp.getState().notify(errorText(language(), error), "error");
   } finally {
-    const { [item.id]: _done, ...rest } = useStartup.getState().explaining;
-    useStartup.setState({ explaining: rest });
+    stop?.();
+    const explaining = { ...useStartup.getState().explaining };
+    for (const item of todo) delete explaining[item.id];
+    useStartup.setState({ explaining, explainProgress: null });
   }
 }
 
@@ -184,9 +225,10 @@ export function triggerText(item: StartupItem): string[] {
   });
 }
 
-/** 列表里名字下面那一行：自带的说明，没有时写属于哪个应用（和名字一样时不写），再没有就是命令。 */
-export function subtitle(item: StartupItem): string {
+/** 列表里名字下面那一行：自带的说明，其次是 AI 的解释，再其次写属于哪个应用（和名字一样时不写），再没有就是命令。 */
+export function subtitle(item: StartupItem, explanation?: string): string {
   if (item.description && item.description !== item.name) return item.description;
+  if (explanation) return explanation;
   if (item.app && item.app !== item.name) return tr("startup.belongsTo", { app: item.app });
   return item.command || item.location;
 }

@@ -8,6 +8,34 @@ One section per version, titled `## <version>`, with a Chinese and an English pa
 `.github/workflows/release.yml` puts that section into the GitHub Release notes and `latest.json`; the update window
 in ShibaPack (opened from the version number in the bottom-right corner) shows the part that matches the interface language.
 
+## 0.5.0
+
+### 中文
+
+- 导入窗口：把文件拖进窗口后先弹出窗口，看每个文件会被认成什么，选放进当前分类、智能分类、指定分类还是不分类，再选复制、移动或只记录位置。确认后窗口不关，显示进度，导完列出结果；选了智能分类时可以接着给这次导入的软件分类
+- 直接拖到左栏的某个分类上，就导入进那个分类
+- 文件夹可以当作一个安装包：绿色版软件的文件夹、macOS 的 `.app` 整个导入，版本号、发布者和图标从里面的主程序取，“运行”打开主程序
+- 文件名里看不出版本号时，读 exe、msi 文件属性里的产品版本、产品名和公司名（比如 WinThumbsPreloader.exe 会认成 1.1.0），读过的会缓存；以前放在“unknown”里的会在后台自动挪到对应的版本
+- 导入失败时写清楚是哪个文件、在哪一步、什么原因（没有权限、磁盘满、文件被占用、网络磁盘断开……）
+- 新增失败日志：导入、更新、启动项操作失败时记下来，在“设置 → 失败日志”里查看
+- 网格视图里鼠标停一下就浮出软件简介
+- 启动与服务的列表可以调列宽、排序、多选和全选，右键让 AI 解释；多项一起解释时合成一次请求，快很多
+- 列表里不再在鼠标停上去时显示卸载按钮，卸载都在右键菜单里
+- 修复：Windows 上用安装程序（setup.exe）装的 ShibaPack 自动更新时没有权限。macOS 上替换应用被系统拦下时，更新窗口会说明原因，并可以打开“App 管理”设置或下载安装包手动安装
+
+### English
+
+- An import window: dropping files onto the window first shows what each file will be recognized as, lets you put them in the current category, smart categorize them, pick a category or leave them uncategorized, and choose copy, move or index only. The window stays open while importing, shows progress and ends with the results; with smart categorize you can go straight on to categorizing the new apps
+- Drop files on a category in the sidebar to import them straight into it
+- Folders can be installers: a portable app's folder or a macOS `.app` is imported as one app, with the version, publisher and icon taken from the main program inside; Run opens that program
+- When the file name has no version, the product version, product name and company are read from the properties of exe and msi files (WinThumbsPreloader.exe becomes 1.1.0, for example) and cached; files filed under "unknown" before are moved to the right version in the background
+- Failed imports now say which file failed, at which step and why (permission denied, disk full, file in use, network drive disconnected…)
+- A failure log: failed imports, updates and startup item changes are recorded under Settings → Failure log
+- Hover over an app in a grid to see its summary
+- The startup & services list has resizable, sortable columns, multi-select and select all, and an AI explanation from the right-click menu; several items are explained in one request, which is much faster
+- Lists no longer show an uninstall button on hover; uninstall from the right-click menu
+- Fixed: on Windows, ShibaPack installed with the setup.exe installer could not update itself for lack of permission. On macOS, when the system blocks replacing the app, the update window explains why and offers to open the App Management settings or download the installer
+
 ## 0.4.0
 
 ### 中文

@@ -286,7 +286,8 @@ export function StatusBar() {
   const files = library.software.reduce((sum, s) => sum + fileCount(s), 0);
   const size = library.software.reduce((sum, s) => sum + softwareSize(s), 0);
   // ShibaPack 自己有新版本时，版本号右边带一个小箭头，点了重新弹出更新提示
-  const appUpdate = ["available", "downloading", "ready", "installed"].includes(update.phase);
+  // 有新版本（包括没能自动装上的）：版本号换成强调色
+  const appUpdate = ["available", "downloading", "ready", "installed"].includes(update.phase) || (update.phase === "error" && update.version !== "");
   return (
     <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-line bg-side px-3 text-[12px] text-fg-3">
       <span className="flex min-w-0 items-center gap-1.5">
@@ -327,7 +328,9 @@ export function StatusBar() {
 export function UpdateCard() {
   const t = useT();
   const update = useApp((state) => state.appUpdate);
-  const shown = ["available", "downloading", "ready", "installed"].includes(update.phase) && !update.dismissed;
+  // 新版本没能自动装上时也提示一下，点“查看”在更新窗口里看原因和办法
+  const failedInstall = update.phase === "error" && update.version !== "";
+  const shown = (["available", "downloading", "ready", "installed"].includes(update.phase) || failedInstall) && !update.dismissed;
   if (!shown) return null;
   const vars = { version: update.version };
   const percent = update.progress === null ? null : Math.round(update.progress * 100);
@@ -340,6 +343,7 @@ export function UpdateCard() {
           {update.phase === "downloading" && t("update.downloading", vars)}
           {update.phase === "ready" && t("update.ready", vars)}
           {update.phase === "installed" && t("update.installed", vars)}
+          {failedInstall && t("update.installFailed", vars)}
         </span>
         {update.phase === "downloading" && percent !== null && <span className="tabular shrink-0 text-[12px] text-fg-3">{percent}%</span>}
       </div>
@@ -354,7 +358,7 @@ export function UpdateCard() {
       ) : (
         <div className="mt-2.5 flex justify-end gap-2">
           <Button variant="ghost" className="mr-auto" onClick={openUpdateDialog}>
-            {t("update.notesLink")}
+            {failedInstall ? t("update.view") : t("update.notesLink")}
           </Button>
           <Button variant="ghost" onClick={dismissUpdate}>
             {t("update.later")}

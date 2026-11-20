@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useContext, useEffect, useMemo, useState } from "react";
 import { DetailToggle } from "../components/chrome";
+import { SummaryCard, useHoverCard } from "../components/HoverCard";
 import { type ColumnDef, type Columns, ColumnsContext, TableHeader, useTableColumns, useWidth } from "../components/columns";
 import { SoftwareIcon } from "../components/SoftwareIcon";
 import { SummaryText } from "../components/SummaryText";
@@ -33,15 +34,15 @@ import { useAiReady, useApp, useLanguage, useT } from "../lib/store";
 import type { InstalledApp, Software } from "../lib/types";
 
 type Column = "name" | "version" | "date" | "size";
-// 列表的列：名称、版本、仓库里有没有、安装日期、大小、卸载。宽度可以拖，右键表头勾选显示哪几列；
-// 栏窄时安装日期、大小、仓库从右往左暂时收起（见 components/columns）
-type InstalledColumn = "version" | "repo" | "date" | "size" | "action";
+// 列表的列：名称、版本、仓库里有没有、安装日期、大小。宽度可以拖，右键表头勾选显示哪几列；
+// 栏窄时安装日期、大小、仓库从右往左暂时收起（见 components/columns）。
+// 卸载只在右键菜单和详情栏里，列表里不放（鼠标停上去冒出来的按钮容易误点）
+type InstalledColumn = "version" | "repo" | "date" | "size";
 const INSTALLED_COLUMNS: ColumnDef<InstalledColumn>[] = [
   { key: "version", initial: 110, min: 64, max: 260 },
   { key: "repo", initial: 96, min: 72, max: 220, autoHide: 3 },
   { key: "date", initial: 92, min: 76, max: 200, end: true, autoHide: 1 },
   { key: "size", initial: 80, min: 60, max: 160, end: true, autoHide: 2 },
-  { key: "action", initial: 64, min: 64, max: 96, end: true },
 ];
 /** 一行里除了各列之外占的宽度：列表的左右留白加上行自己的左右留白。 */
 const ROW_CHROME = 16 + 22;
@@ -207,11 +208,8 @@ export function InstalledView() {
                 repo: t("installed.col.repo"),
                 date: t("installed.col.date"),
                 size: t("installed.col.size"),
-                action: t("lib.col.action"),
               }}
               cells={{
-                // 这一列只放按钮，不用列名
-                action: <span />,
                 version: header("version", t("installed.col.version")),
                 date: header("date", t("installed.col.date")),
                 size: header("size", t("installed.col.size")),
@@ -313,25 +311,6 @@ function useSubtitle(app: InstalledApp): { text: string; described: boolean } {
   return { text: app.publisher || t(`source.${app.source}`), described: false };
 }
 
-/** 卸载按钮：鼠标停上去或选中时才出现，一直占着位置，列不会跳。 */
-function UninstallButton({ app, selected }: { app: InstalledApp; selected: boolean }) {
-  const t = useT();
-  if (!app.uninstallable) return null;
-  return (
-    <Button
-      variant="quiet"
-      size="sm"
-      className={selected ? "" : "invisible group-hover:visible group-focus-within:visible"}
-      onClick={(event) => {
-        event.stopPropagation();
-        void uninstallApp(app);
-      }}
-    >
-      {t("installed.uninstall")}
-    </Button>
-  );
-}
-
 /** 列表视图的一行。 */
 function InstalledRow({
   app,
@@ -386,11 +365,6 @@ function InstalledRow({
         )}
         {show("date") && <div className="tabular truncate text-right text-[12px] text-fg-3">{app.installedAt && formatDate(app.installedAt, language)}</div>}
         {show("size") && <div className="tabular truncate text-right text-[12px] text-fg-2">{size === null ? "" : formatSize(size)}</div>}
-        {show("action") && (
-          <div className="flex justify-end">
-            <UninstallButton app={app} selected={selected} />
-          </div>
-        )}
       </div>
     </ContextMenu>
   );
@@ -414,21 +388,29 @@ function InstalledTile({
   const menu = useInstalledMenu(app, group);
   const subtitle = useSubtitle(app);
   const selectInstalled = useApp((state) => state.selectInstalled);
+  // 鼠标停一会儿浮出简介（网格里只放得下名字和版本）
+  const hover = useHoverCard(subtitle.described ? <SummaryCard name={app.name} publisher={app.publisher} text={subtitle.text} /> : null);
   return (
     <ContextMenu items={menu}>
       <div
         role="button"
         tabIndex={0}
         aria-pressed={selected}
-        title={subtitle.described ? subtitle.text : undefined}
         onClick={onSelect}
-        onContextMenu={() => !group && !selected && selectInstalled(app.id)}
+        onMouseEnter={hover.handlers.onMouseEnter}
+        onMouseLeave={hover.handlers.onMouseLeave}
+        onPointerDown={hover.handlers.onPointerDown}
+        onContextMenu={() => {
+          hover.handlers.onContextMenu();
+          if (!group && !selected) selectInstalled(app.id);
+        }}
         onKeyDown={(event) => event.key === "Enter" && onSelect(event)}
         className={cx(
           "group flex min-w-0 flex-col items-center rounded-lg px-2 pt-4 pb-2 text-center transition-colors",
           selected ? "bg-accent-soft" : "hover:bg-hover",
         )}
       >
+        {hover.card}
         <span className="relative">
           <SoftwareIcon name={app.name} icon={app.icon} size={48} />
           {software && (
@@ -443,9 +425,6 @@ function InstalledTile({
         </span>
         <span className="mt-2.5 line-clamp-2 w-full text-[13px] leading-snug font-medium break-words">{app.name}</span>
         <span className="tabular mt-0.5 max-w-full truncate text-[12px] text-fg-3">{app.version || "—"}</span>
-        <div className="mt-1.5 flex h-6 items-center justify-center">
-          <UninstallButton app={app} selected={selected} />
-        </div>
       </div>
     </ContextMenu>
   );

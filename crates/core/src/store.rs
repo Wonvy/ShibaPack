@@ -99,7 +99,7 @@ impl Repo {
                     repo.lib = lib;
                     repo.disk_stamp = stamp_of(&index);
                 }
-                Err(err @ (Error::Io(_) | Error::Code(_))) => return Err(err),
+                Err(err @ (Error::Io(_) | Error::Code(_) | Error::Step(..))) => return Err(err),
                 Err(Error::Json(_)) => {
                     // 留下损坏的文件供排查，再从备份里找一份能读的
                     fs::rename(&index, unique_path(repo.root.join("software.json.corrupt")))?;
@@ -392,9 +392,13 @@ impl Repo {
             for version in &software.versions {
                 for file in &version.files {
                     report.checked += 1;
-                    let reason = match fs::metadata(self.abs_path(file)) {
+                    let path = self.abs_path(file);
+                    let reason = match fs::metadata(&path) {
                         Ok(meta) if meta.is_file() && meta.len() == file.size => continue,
                         Ok(meta) if meta.is_file() => "size",
+                        // 当作安装包导入的文件夹：里面的文件加起来的大小对得上就行
+                        Ok(meta) if meta.is_dir() && crate::import::folder_size(&path) == file.size => continue,
+                        Ok(meta) if meta.is_dir() => "size",
                         _ => "missing",
                     };
                     report.problems.push(MissingFile {

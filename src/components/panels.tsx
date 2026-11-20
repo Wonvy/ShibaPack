@@ -1,6 +1,6 @@
 // 首次启动的引导页、设置对话框。
 
-import { ArchiveRestore, FolderInput, FolderOpen, Globe, HardDrive, Info, type LucideIcon, SlidersHorizontal, Sparkles, TriangleAlert } from "lucide-react";
+import { ArchiveRestore, FolderInput, FolderOpen, Globe, HardDrive, Info, type LucideIcon, ScrollText, SlidersHorizontal, Sparkles, TriangleAlert } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useState } from "react";
 import { api, pickFolder, pickJsonFile, pickSavePath } from "../lib/api";
 import { type Key, effectivePack, errorText, languages } from "../lib/i18n";
@@ -12,6 +12,7 @@ import type { Theme } from "../lib/types";
 /** 设置里“导入文件时”的三种做法：复制进仓库、移动进仓库、只记录位置。 */
 type ImportMode = "copy" | "move" | "indexed";
 import { AiSettingsForm } from "./AiSettings";
+import { FailureLogPage } from "./FailureLog";
 import { BackupPage, RepoLocation, StoragePage } from "./StorageSettings";
 import { Logo } from "./chrome";
 import { Button, Modal, Segmented, Select, SettingRow as Row, Switch, cx } from "./ui";
@@ -60,7 +61,7 @@ export function SetupGuide() {
 }
 
 /** 设置的各页。左边一列选项卡（按组隔开一点），右边是这一页的内容。 */
-type SettingsPage = "general" | "library" | "storage" | "backup" | "online" | "ai" | "about";
+type SettingsPage = "general" | "library" | "storage" | "backup" | "online" | "ai" | "logs" | "about";
 const PAGES: { page: SettingsPage; icon: LucideIcon; label: Key; hint?: Key; group: number }[] = [
   { page: "general", icon: SlidersHorizontal, label: "settings.general", group: 0 },
   { page: "library", icon: FolderInput, label: "settings.library", group: 1 },
@@ -68,6 +69,7 @@ const PAGES: { page: SettingsPage; icon: LucideIcon; label: Key; hint?: Key; gro
   { page: "backup", icon: ArchiveRestore, label: "settings.backup", group: 1 },
   { page: "online", icon: Globe, label: "settings.online", group: 2 },
   { page: "ai", icon: Sparkles, label: "settings.ai", hint: "settings.aiHint", group: 2 },
+  { page: "logs", icon: ScrollText, label: "settings.logs", group: 3 },
   { page: "about", icon: Info, label: "settings.about", group: 3 },
 ];
 
@@ -99,6 +101,7 @@ export function SettingsDialog() {
     backup: () => <BackupPage />,
     online: () => <OnlinePage />,
     ai: () => <AiSettingsForm />,
+    logs: () => <FailureLogPage />,
     about: () => <AboutPage />,
   };
 

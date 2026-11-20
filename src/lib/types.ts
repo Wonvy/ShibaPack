@@ -85,12 +85,35 @@ export interface Candidate {
   version: string;
 }
 
+/** 失败日志里的一条。 */
+export interface FailureEntry {
+  time: string;
+  /** 哪一块：import、update、startup、library、installed…… */
+  area: string;
+  message: string;
+  detail: string;
+}
+
 /** AI 对一个启动项的解释。`cached` 为真时是以前记下的，这次没有问 AI。 */
 export interface Explanation {
   text: string;
   model: string;
   at: string;
   cached: boolean;
+}
+
+/** 一批启动项的 AI 解释：id → 解释。`asked` 是这次真的问了 AI 的项数，`missing` 是问了但没给出解释的。 */
+export interface Explanations {
+  explanations: Record<string, Explanation>;
+  asked: number;
+  missing: number;
+}
+
+/** AI 一批写简介的结果。 */
+export interface DescribeResult {
+  library: Library;
+  written: number;
+  unknown: number;
 }
 
 /** AI 分类的建议。`cached` 是其中有几个用的是上次 AI 的建议（这次没有问）。 */
@@ -353,6 +376,26 @@ export interface ImportHint {
   name?: string;
   version?: string;
   platform?: Platform;
+  /** 放进哪个分类：新建的软件放进去，已有的软件还没分类时也放进去。 */
+  categoryId?: string;
+  /** 整个当作一个安装包导入的文件夹（绿色版软件等）。其余文件夹展开成里面的安装包。 */
+  packages?: string[];
+}
+
+/** 拖进来的一项，导入前在确认窗口里显示。 */
+export interface DropEntry {
+  path: string;
+  name: string;
+  isDir: boolean;
+  size: number | null;
+  /** 文件夹看起来是一个软件，建议整个导入。 */
+  package: boolean;
+  /** 文件夹里能找到的安装包个数。 */
+  installers: number;
+  /** 文件是认得的安装包。 */
+  installer: boolean;
+  guessName: string;
+  guessVersion: string;
 }
 
 export interface Progress {
@@ -366,7 +409,12 @@ export interface ImportItem {
   path: string;
   status: "imported" | "duplicate" | "failed";
   softwareId: string | null;
+  /** 失败时系统或程序给的原话。 */
   message: string | null;
+  /** 失败在哪一步：read 读取、copy 放进仓库、save 登记进索引。 */
+  step?: string | null;
+  /** 失败的原因代码（permission_denied、disk_full、in_use……），归不了类的是 io。 */
+  reason?: string | null;
 }
 
 export interface ImportReport {

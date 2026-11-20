@@ -154,6 +154,9 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: ${{ steps.signing.outputs.signed == 'true' }}
+          # latest.json 里通用的 windows-x86_64 指向 -setup.exe（当前用户安装，不要管理员权限），不是 MSI。
+          # 新版 ShibaPack 会按自己是怎么装的去取 -nsis 或 -msi 那一项，这一条是给旧版用的
+          updaterJsonPreferNsis: true
           args: ${{ matrix.args }} ${{ env.UNSIGNED_ARGS }}
 
   # 三个系统都打包成功了才走到这里（有一个失败，这一步就不会运行，草稿留着不发布）。

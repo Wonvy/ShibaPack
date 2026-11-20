@@ -2,6 +2,9 @@
 
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  CheckSquare,
   ChevronDown,
   Circle,
   CircleDot,
@@ -24,20 +27,51 @@ import {
   Square,
   Users,
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useContext, useEffect, useMemo, useState } from "react";
 import { DetailToggle } from "../components/chrome";
+import { type ColumnDef, type Columns, ColumnsContext, TableHeader, useTableColumns, useWidth } from "../components/columns";
 import { StartupIcon as ItemIcon } from "../components/StartupIcon";
 import { Button, Chip, ContextMenu, Dropdown, EmptyState, FilterMenu, IconButton, type MenuEntry, Segmented, Switch, cx } from "../components/ui";
 import { aiUsable } from "../lib/ai";
 import { api, hostPlatform } from "../lib/api";
 import type { Key } from "../lib/i18n";
 import { usePrefs } from "../lib/prefs";
-import { explainStartup, loadExplanation, startTypeLabel, startupAct, subtitle, triggerText, useStartup } from "../lib/startup";
+import { explainMany, explainStartup, loadExplanation, startTypeLabel, startupAct, subtitle, triggerText, useStartup } from "../lib/startup";
 import { formatDate } from "../lib/library";
 import { useApp, useLanguage, useT } from "../lib/store";
 import type { StartupAction, StartupItem } from "../lib/types";
 
 type StatusFilter = "all" | "enabled" | "disabled" | "running";
+type SortColumn = "name" | "source" | "status" | "auto";
+
+// 列表的列：名称一直在，右边几列的宽度在表头上拖，右键表头勾选显示哪几列；栏窄时来源、状态先收起。
+// 启动项和服务各记各的列宽。“自动运行”一列在 Windows 服务里放启动类型的菜单，默认宽一些
+type StartupColumn = "source" | "status" | "auto";
+const STARTUP_COLUMNS: ColumnDef<StartupColumn>[] = [
+  { key: "source", initial: 100, min: 72, max: 220, autoHide: 1 },
+  { key: "status", initial: 84, min: 64, max: 180, autoHide: 2 },
+  { key: "auto", initial: 72, min: 64, max: 180, end: true },
+];
+const SERVICE_COLUMNS: ColumnDef<StartupColumn>[] = [
+  { key: "status", initial: 84, min: 64, max: 180, autoHide: 2 },
+  { key: "auto", initial: 72, min: 64, max: 180, end: true },
+];
+const SERVICE_COLUMNS_WIDE: ColumnDef<StartupColumn>[] = [
+  { key: "status", initial: 84, min: 64, max: 180, autoHide: 2 },
+  { key: "auto", initial: 124, min: 64, max: 200, end: true },
+];
+/** 一行里除了各列之外占的宽度：列表的左右留白加上行自己的左右留白。 */
+const ROW_CHROME = 16 + 22;
+
+/** “自动运行”一列怎么排：开着的在前；Windows 服务按自动、延迟、手动、禁用。 */
+function autoRank(item: StartupItem): number {
+  const order = ["auto", "enabled", "delayed", "manual", "disabled"];
+  if (item.startTypes.length > 0 && item.startType) {
+    const at = order.indexOf(item.startType);
+    return at >= 0 ? at : order.length;
+  }
+  return item.enabled ? 0 : 4;
+}
 type OriginFilter = "thirdParty" | "all" | "system";
 
 /** 系统自带的设置页里有启动项管理的系统。 */
@@ -50,8 +84,13 @@ export function StartupView() {
   const loading = useStartup((state) => state.loading);
   const error = useStartup((state) => state.error);
   const selectedId = useStartup((state) => state.selectedId);
+  const selectedIds = useStartup((state) => state.selectedIds);
   const select = useStartup((state) => state.select);
+  const setSelection = useStartup((state) => state.setSelection);
   const load = useStartup((state) => state.load);
+  const route = useApp((state) => state.route);
+  const [sort, setSort] = useState<{ column: SortColumn; asc: boolean }>({ column: "name", asc: true });
+  const [frame, frameWidth] = useWidth<HTMLDivElement>();
   const tab = usePrefs((state) => state.startupTab);
   const setPrefs = usePrefs((state) => state.set);
   const search = useApp((state) => state.search);
@@ -74,7 +113,7 @@ export function StartupView() {
   );
   const list = useMemo(() => {
     const query = search.trim().toLowerCase();
-    return byOrigin.filter(
+    const shown = byOrigin.filter(
       (item) =>
         item.kind === tab &&
         (status === "all" ||
@@ -84,16 +123,78 @@ export function StartupView() {
         (!query ||
           [item.name, item.label, item.description, item.publisher, item.app, item.command].some((text) => text.toLowerCase().includes(query))),
     );
-  }, [byOrigin, tab, status, search]);
+    const byName = (a: StartupItem, b: StartupItem) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+    const running = (item: StartupItem) => (item.running === true ? 0 : item.running === false ? 1 : 2);
+    const source = (item: StartupItem) => t(`startup.source.${item.source}` as Key);
+    const compare: Record<SortColumn, (a: StartupItem, b: StartupItem) => number> = {
+      name: byName,
+      source: (a, b) => source(a).localeCompare(source(b)) || byName(a, b),
+      status: (a, b) => running(a) - running(b) || byName(a, b),
+      auto: (a, b) => autoRank(a) - autoRank(b) || byName(a, b),
+    };
+    return shown.sort((a, b) => compare[sort.column](a, b) * (sort.asc ? 1 : -1));
+  }, [byOrigin, tab, status, search, sort, t]);
   // 第三方的看完了，提一句还有多少系统自带的没列出来
   const hiddenSystem = origin === "thirdParty" ? (items ?? []).filter((item) => item.system && item.kind === tab).length : 0;
   // “自动运行”一列：Windows 服务要放启动类型的菜单，宽一些；别的只有开关
-  const columns = gridColumns(tab, list.some((item) => item.startTypes.length > 0));
+  const defs = tab === "startup" ? STARTUP_COLUMNS : list.some((item) => item.startTypes.length > 0) ? SERVICE_COLUMNS_WIDE : SERVICE_COLUMNS;
+  const columns = useTableColumns(tab, defs, frameWidth - ROW_CHROME);
+  // 选中的：多选时是 selectedIds，单选时就是 selectedId 那一个
+  const chosen = selectedIds.length > 0 ? selectedIds : selectedId ? [selectedId] : [];
+
+  /** 点一行：⌘ / Ctrl 加选或取消，Shift 从上次点的那一行连选到这一行，否则单选。 */
+  const clickRow = (id: string, event: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) => {
+    if (event.metaKey || event.ctrlKey) {
+      const next = chosen.includes(id) ? chosen.filter((x) => x !== id) : [...chosen, id];
+      setSelection(next, next.includes(id) ? id : (next[0] ?? null));
+    } else if (event.shiftKey && selectedId && list.some((item) => item.id === selectedId)) {
+      const from = list.findIndex((item) => item.id === selectedId);
+      const to = list.findIndex((item) => item.id === id);
+      setSelection(list.slice(Math.min(from, to), Math.max(from, to) + 1).map((item) => item.id), selectedId);
+    } else {
+      select(id);
+    }
+  };
+
+  // ⌘ / Ctrl + A 全选当前列出来的，Esc 取消多选。焦点在输入框、或者开着对话框和菜单时不管
+  useEffect(() => {
+    if (route !== "startup") return;
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable=true]")) return;
+      if (document.querySelector('[role="dialog"],[role="menu"]')) return;
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        setSelection(
+          list.map((item) => item.id),
+          selectedId ?? list[0]?.id ?? null,
+        );
+      } else if (event.key === "Escape" && chosen.length > 1) {
+        select(selectedId);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [route, list, selectedId, chosen.length, setSelection, select]);
+
+  const header = (column: SortColumn, label: string) => {
+    const Arrow = sort.asc ? ArrowUp : ArrowDown;
+    return (
+      <button
+        type="button"
+        onClick={() => setSort({ column, asc: sort.column === column ? !sort.asc : true })}
+        className={cx("flex min-w-0 items-center gap-1 text-left hover:text-fg-2", column === "auto" && "ml-auto")}
+      >
+        <span className="truncate">{label}</span>
+        {sort.column === column && <Arrow size={12} strokeWidth={2} aria-hidden className="shrink-0" />}
+      </button>
+    );
+  };
   const tabNotes = notes.filter((note) => (tab === "service" ? note === "services_failed" : note !== "services_failed"));
   const filtering = search.trim() !== "" || status !== "all";
 
   return (
-    <div className="@container flex min-h-0 flex-1 flex-col">
+    <div ref={frame} className="@container flex min-h-0 flex-1 flex-col">
       {/* 和别的列表一样分三段：左边是标题（这里是两个分页），正中间是筛选，右边是按钮 */}
       <div className="grid h-11 shrink-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 border-b border-line pr-2 pl-3">
         <div className="flex min-w-0 items-center">
@@ -164,16 +265,30 @@ export function StartupView() {
           }
         />
       ) : (
-        <>
-          <div className={cx("grid h-8 shrink-0 items-center gap-x-3 border-b border-line pr-5 pl-[52px] text-[12px] text-fg-3", columns)}>
-            <span>{t("startup.col.name")}</span>
-            {tab === "startup" && <span className="hidden @[620px]:block">{t("startup.col.source")}</span>}
-            <span>{t("startup.col.status")}</span>
-            <span className="text-right whitespace-nowrap">{t("startup.col.auto")}</span>
-          </div>
+        <ColumnsContext.Provider value={columns}>
+          <TableHeader
+            table={tab}
+            defs={defs}
+            columns={columns}
+            className="pr-5 pl-[56px]"
+            first={header("name", t("startup.col.name"))}
+            firstLabel={t("startup.col.name")}
+            labels={{ source: t("startup.col.source"), status: t("startup.col.status"), auto: t("startup.col.auto") }}
+            cells={{
+              source: header("source", t("startup.col.source")),
+              status: header("status", t("startup.col.status")),
+              auto: header("auto", t("startup.col.auto")),
+            }}
+          />
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pt-1 pb-3">
             {list.map((item) => (
-              <StartupRow key={item.id} item={item} columns={columns} selected={item.id === selectedId} onSelect={() => select(item.id)} />
+              <StartupRow
+                key={item.id}
+                item={item}
+                selected={chosen.includes(item.id)}
+                group={chosen.length > 1 && chosen.includes(item.id) ? chosen : null}
+                onSelect={(event) => clickRow(item.id, event)}
+              />
             ))}
             {hiddenSystem > 0 && !filtering && (
               <div className="flex items-center justify-center gap-2 px-3 pt-3 text-[12px] text-fg-3">
@@ -184,7 +299,7 @@ export function StartupView() {
               </div>
             )}
           </div>
-        </>
+        </ColumnsContext.Provider>
       )}
     </div>
   );
@@ -280,13 +395,32 @@ function AutoControl({ item }: { item: StartupItem }) {
   );
 }
 
-/** 右键菜单：启用或停用、启动或停止、打开所在位置、复制命令、让 AI 解释。 */
-function useStartupMenu(item: StartupItem): MenuEntry[] {
+/** 多选时的右键菜单：一起让 AI 解释（凑成一批问，不是一项一项问）。 */
+function batchMenu(group: string[], canAi: boolean, t: ReturnType<typeof useT>): MenuEntry[] {
+  const items = () => {
+    const all = useStartup.getState().items ?? [];
+    return group.flatMap((id) => all.filter((item) => item.id === id));
+  };
+  const explained = group.filter((id) => useStartup.getState().explanations[id]).length;
+  return [
+    ...(canAi
+      ? [
+          { label: t("startup.explainMany", { n: group.length }), icon: Sparkles, onSelect: () => void explainMany(items()) },
+          ...(explained > 0 ? [{ label: t("startup.explainAgainMany", { n: group.length }), icon: RotateCw, onSelect: () => void explainMany(items(), true) }] : []),
+        ]
+      : [{ label: t("startup.aiSetup"), icon: Sparkles, onSelect: () => useApp.getState().patch({ settingsOpen: true }) }]),
+    { label: t("batch.clear"), icon: CheckSquare, separated: true, onSelect: () => useStartup.getState().select(null) },
+  ];
+}
+
+/** 右键菜单：启用或停用、启动或停止、打开所在位置、复制命令、让 AI 解释。右键的是多选里的一项时，作用于全部选中的。 */
+function useStartupMenu(item: StartupItem, group: string[] | null): MenuEntry[] {
   const t = useT();
   const attempt = useApp((state) => state.attempt);
   const notify = useApp((state) => state.notify);
   const busy = useStartup((state) => Boolean(state.busy[item.id]));
   const canAi = useApp((state) => aiUsable(state.library?.settings.ai, state.aiKeySaved));
+  if (group) return batchMenu(group, canAi, t);
   const entries: MenuEntry[] = [];
   if (item.startTypes.length > 0) {
     item.startTypes.forEach((type, index) =>
@@ -333,22 +467,25 @@ function useStartupMenu(item: StartupItem): MenuEntry[] {
   return entries;
 }
 
-/**
- * 列表的列：名称、来源（只有启动项有，栏窄时收起）、状态、自动运行。
- * 写成完整的类名，Tailwind 才认得出来。
- */
-function gridColumns(tab: "startup" | "service", wideControl: boolean): string {
-  if (tab === "startup") {
-    return wideControl
-      ? "grid-cols-[minmax(0,1fr)_76px_116px] @[620px]:grid-cols-[minmax(0,1fr)_96px_80px_116px]"
-      : "grid-cols-[minmax(0,1fr)_76px_64px] @[620px]:grid-cols-[minmax(0,1fr)_96px_80px_64px]";
-  }
-  return wideControl ? "grid-cols-[minmax(0,1fr)_76px_116px] @[620px]:grid-cols-[minmax(0,1fr)_84px_116px]" : "grid-cols-[minmax(0,1fr)_76px_64px] @[620px]:grid-cols-[minmax(0,1fr)_84px_64px]";
-}
-
-function StartupRow({ item, columns, selected, onSelect }: { item: StartupItem; columns: string; selected: boolean; onSelect: () => void }) {
+function StartupRow({
+  item,
+  selected,
+  group,
+  onSelect,
+}: {
+  item: StartupItem;
+  selected: boolean;
+  group: string[] | null;
+  onSelect: (event: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) => void;
+}) {
   const t = useT();
-  const menu = useStartupMenu(item);
+  const menu = useStartupMenu(item, group);
+  const columns = useContext(ColumnsContext) as Columns<StartupColumn>;
+  const show = (key: StartupColumn) => columns.visible.includes(key);
+  const explanation = useStartup((state) => state.explanations[item.id]?.text);
+  const explaining = useStartup((state) => Boolean(state.explaining[item.id]));
+  const select = useStartup((state) => state.select);
+  const line = subtitle(item, explanation);
   return (
     <ContextMenu items={menu}>
       <div
@@ -356,12 +493,11 @@ function StartupRow({ item, columns, selected, onSelect }: { item: StartupItem; 
         tabIndex={0}
         aria-pressed={selected}
         onClick={onSelect}
-        onKeyDown={(event) => event.target === event.currentTarget && event.key === "Enter" && onSelect()}
-        className={cx(
-          "group grid min-h-[50px] items-center gap-x-3 rounded-md py-1.5 pr-3 pl-2.5 transition-colors",
-          columns,
-          selected ? "bg-active" : "hover:bg-hover",
-        )}
+        // 右键的不在多选里时，先单选它，菜单作用于它自己
+        onContextMenu={() => !group && !selected && select(item.id)}
+        onKeyDown={(event) => event.target === event.currentTarget && event.key === "Enter" && onSelect(event)}
+        style={{ gridTemplateColumns: columns.template }}
+        className={cx("group grid min-h-[50px] items-center gap-x-3 rounded-md py-1.5 pr-3 pl-2.5 transition-colors", selected ? "bg-active" : "hover:bg-hover")}
       >
         <div className="flex min-w-0 items-center gap-2.5">
           <span className={cx("flex", !item.enabled && "opacity-50 grayscale")}>
@@ -371,17 +507,20 @@ function StartupRow({ item, columns, selected, onSelect }: { item: StartupItem; 
             <div className="flex min-w-0 items-center gap-1.5">
               <span className={cx("truncate text-[13px] font-medium", !item.enabled && "text-fg-3")}>{item.name}</span>
               {item.system && <Chip className="h-[18px] px-1">{t("startup.system")}</Chip>}
+              {explaining && <LoaderCircle size={12} strokeWidth={2} className="shrink-0 animate-spin text-accent" aria-label={t("startup.explaining")} />}
             </div>
-            <div className="truncate text-[12px] text-fg-3" title={subtitle(item)}>
-              {subtitle(item)}
+            <div className={cx("truncate text-[12px]", explanation && line === explanation ? "text-fg-2" : "text-fg-3")} title={line}>
+              {line}
             </div>
           </div>
         </div>
-        {item.kind === "startup" && <div className="hidden truncate text-[12px] text-fg-3 @[620px]:block">{t(`startup.source.${item.source}` as Key)}</div>}
-        <RunState item={item} />
-        <div className="flex min-w-0 justify-end">
-          <AutoControl item={item} />
-        </div>
+        {show("source") && <div className="truncate text-[12px] text-fg-3">{t(`startup.source.${item.source}` as Key)}</div>}
+        {show("status") && <RunState item={item} />}
+        {show("auto") && (
+          <div className="flex min-w-0 justify-end">
+            <AutoControl item={item} />
+          </div>
+        )}
       </div>
     </ContextMenu>
   );
@@ -390,6 +529,81 @@ function StartupRow({ item, columns, selected, onSelect }: { item: StartupItem; 
 // ── 详情栏 ───────────────────────────────────────────────────
 
 export function StartupDetail() {
+  const many = useStartup((state) => state.selectedIds.length > 1);
+  return many ? <StartupBatch /> : <StartupSingle />;
+}
+
+/** 多选时的详情栏：一起让 AI 解释，下面列出每一项和它的解释，一处看完。 */
+function StartupBatch() {
+  const t = useT();
+  const ids = useStartup((state) => state.selectedIds);
+  const all = useStartup((state) => state.items);
+  const explanations = useStartup((state) => state.explanations);
+  const explaining = useStartup((state) => state.explaining);
+  const progress = useStartup((state) => state.explainProgress);
+  const select = useStartup((state) => state.select);
+  const canAi = useApp((state) => aiUsable(state.library?.settings.ai, state.aiKeySaved));
+  const patch = useApp((state) => state.patch);
+  // 不能在选择器里拼新数组：每次都是新的，界面会一直重画
+  const items = useMemo(() => ids.flatMap((id) => (all ?? []).filter((item) => item.id === id)), [ids, all]);
+  const busy = items.some((item) => explaining[item.id]);
+  const done = items.filter((item) => explanations[item.id]).length;
+  return (
+    <div className="flex h-full flex-col">
+      <div className="shrink-0 px-4 pt-4">
+        <div className="flex items-center gap-2">
+          <CheckSquare size={18} strokeWidth={1.75} aria-hidden className="text-accent" />
+          <span className="text-[15px] font-semibold">{t("startup.selected", { n: items.length })}</span>
+        </div>
+        <p className="mt-1.5 mb-0 text-[12px] leading-relaxed text-fg-3">{t("batch.keys")}</p>
+        {canAi ? (
+          <div className="mt-3 flex gap-2">
+            <Button variant="primary" className="flex-1" busy={busy} onClick={() => void explainMany(items)}>
+              {!busy && <Sparkles size={14} strokeWidth={1.75} aria-hidden />}
+              {busy && progress ? t("startup.explainProgress", { done: progress.done, total: progress.total }) : t("startup.explainMany", { n: items.length })}
+            </Button>
+            {done > 0 && (
+              <IconButton label={t("startup.explainAgainMany", { n: items.length })} disabled={busy} onClick={() => void explainMany(items, true)}>
+                <RotateCw size={15} strokeWidth={1.75} />
+              </IconButton>
+            )}
+          </div>
+        ) : (
+          <p className="mt-2 mb-0 text-[12px] leading-relaxed text-fg-3">
+            {t("startup.aiHint")}{" "}
+            <button type="button" className="font-medium text-accent hover:underline" onClick={() => patch({ settingsOpen: true })}>
+              {t("startup.aiSetup")}
+            </button>
+          </p>
+        )}
+      </div>
+      <div className="mt-3 min-h-0 flex-1 overflow-y-auto border-t border-line">
+        {items.map((item) => {
+          const text = explanations[item.id]?.text || item.description;
+          return (
+            <div key={item.id} className="flex gap-2.5 border-b border-line px-4 py-2.5 last:border-b-0">
+              <ItemIcon item={item} size={22} />
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="truncate text-[13px] font-medium">{item.name}</span>
+                  {explaining[item.id] && <LoaderCircle size={12} strokeWidth={2} className="shrink-0 animate-spin text-accent" aria-hidden />}
+                </div>
+                <p className={cx("selectable m-0 mt-0.5 text-[12px] leading-relaxed", text ? "text-fg-2" : "text-fg-4")}>{text || t("startup.notExplained")}</p>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="shrink-0 border-t border-line p-3">
+        <Button variant="ghost" className="w-full" onClick={() => select(null)}>
+          {t("batch.clear")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function StartupSingle() {
   const t = useT();
   const item = useStartup((state) => state.items?.find((i) => i.id === state.selectedId));
   const busy = useStartup((state) => (item ? state.busy[item.id] : undefined));

@@ -21,6 +21,8 @@ uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
 plist = "1"
 pelite = "0.10"
+# MSI 安装包里的产品名、版本号、发布者（Property 表）
+msi = "0.8"
 memmap2 = "0.9"
 # 卸载残留清理：文件和文件夹移到回收站（废纸篓），不直接删
 trash = "5"

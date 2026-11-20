@@ -502,9 +502,12 @@ function stats(): Stats {
 
 async function importPaths(paths: string[], mode: Storage, hint?: ImportHint) {
   const emit = (progress: Progress) => listeners.forEach((handler) => handler(progress));
-  // 选的是文件夹时，假装在里面找到了几个安装包
+  // 选的是文件夹时，假装在里面找到了几个安装包；标成“整个导入”的文件夹和 .app 当作一个安装包
+  const packages = new Set(hint?.packages ?? []);
   const files = paths.flatMap((path) =>
-    /\.\w{2,8}$/.test(path) ? [path] : ["Postman-win64-11.23.0-Setup.exe", "Postman-11.23.0-arm64.dmg", "Postman-11.23.0-x64.deb"].map((n) => `${path}/${n}`),
+    /\.\w{2,8}$/.test(path) || packages.has(path)
+      ? [path]
+      : ["Postman-win64-11.23.0-Setup.exe", "Postman-11.23.0-arm64.dmg", "Postman-11.23.0-x64.deb"].map((n) => `${path}/${n}`),
   );
   emit({ phase: "collect", current: 0, total: 0, file: "" });
   await sleep(350);
@@ -513,6 +516,15 @@ async function importPaths(paths: string[], mode: Storage, hint?: ImportHint) {
     const base = path.split(/[\\/]/).pop()!;
     emit({ phase: "import", current: i + 1, total: files.length, file: base });
     await sleep(450);
+    // 预览里演示失败：名字带 broken 的没有权限，带 locked 的被占用
+    if (/broken/i.test(base)) {
+      items.push({ path, status: "failed", softwareId: null, message: "Permission denied (os error 13)", step: "copy", reason: "permission_denied" });
+      continue;
+    }
+    if (/locked/i.test(base)) {
+      items.push({ path, status: "failed", softwareId: null, message: "Resource busy (os error 16)", step: "read", reason: "in_use" });
+      continue;
+    }
     const match = base.match(/^(.*?)[-_ ](?:win64[-_ ])?v?(\d+(?:\.\d+)+)/);
     // 在详情栏里给某个软件添加版本时，名字以那个软件为准
     const name = hint?.name ?? (match?.[1] ?? base.replace(/\.\w+$/, "")).replace(/[-_]/g, " ").trim();
@@ -523,8 +535,10 @@ async function importPaths(paths: string[], mode: Storage, hint?: ImportHint) {
       continue;
     }
     if (!target) {
-      target = software(name, "", null, false, [], 0);
+      target = software(name, "", hint?.categoryId ?? null, false, [], 0);
       lib.software.push(target);
+    } else if (!target.categoryId && hint?.categoryId) {
+      target.categoryId = hint.categoryId;
     }
     let slot = target.versions.find((v) => v.version === version);
     if (!slot) {
@@ -537,10 +551,16 @@ async function importPaths(paths: string[], mode: Storage, hint?: ImportHint) {
   emit({ phase: "done", current: files.length, total: files.length, file: "" });
   const count = (status: string) => items.filter((item) => item.status === status).length;
   return {
-    report: { imported: count("imported"), duplicates: count("duplicate"), failed: 0, items },
+    report: { imported: count("imported"), duplicates: count("duplicate"), failed: count("failed"), items },
     library: snapshot(),
   };
 }
+
+/** 预览里的失败日志。 */
+const mockLog: { time: string; area: string; message: string; detail: string }[] = [
+  { time: new Date(Date.now() - 3600_000).toISOString(), area: "import", message: "not_a_file", detail: "/Users/demo/Downloads/broken.exe" },
+  { time: new Date(Date.now() - 7200_000).toISOString(), area: "update", message: "Failed to move the new app into place", detail: "0.4.0" },
+];
 
 /** 预览里的 AI 缓存：启动项的解释、分类建议。 */
 const explainCache: Record<string, { text: string; model: string; at: string; cached: boolean }> = {};
@@ -677,6 +697,21 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       await sleep(500);
       if ((args.reference as string).includes("nothing")) throw "source_not_found";
       return fakeRelease(args.kind as SourceKind, args.reference as string);
+    case "log_failure":
+      mockLog.unshift({ time: new Date().toISOString(), area: String(args.area), message: String(args.message), detail: String(args.detail ?? "") });
+      return null;
+    case "read_failure_log":
+      return mockLog.slice(0, Number(args.limit ?? 500));
+    case "clear_failure_log":
+      mockLog.length = 0;
+      return null;
+    case "open_log_folder":
+      return null;
+    case "updater_target":
+      return null;
+    case "download_installer":
+      await sleep(800);
+      return `/Users/demo/Downloads/ShibaPack_${args.version}_universal.dmg`;
     case "release_notes":
       await sleep(400);
       return "## 0.4.0\n\n### 中文\n- 新增：启动与服务\n- 新增：顶栏搜索可以在 GitHub、Homebrew 上找\n\n### English\n- New: startup items and services\n- New: search GitHub and Homebrew from the top bar\n\n---\n\nDownload the installer for your system from the assets below.";
@@ -813,25 +848,51 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       mockStartupAction(args.id as string, args.action as string);
       return { items: startupItems, notes: [] };
     }
-    case "ai_explain_startup": {
-      // 和真的一样：记下来的直接给，`cached` 只看记下的，`refresh` 才重新“问 AI”
-      const id = args.id as string;
+    case "ai_explain_startup_many": {
+      // 和真的一样：记下来的直接给；没解释过的凑成一批“问 AI”（预览里每 10 项等一会儿）
+      const ids = args.ids as string[];
       const mode = args.mode as string;
-      if (mode !== "refresh" && explainCache[id]) return { ...explainCache[id], cached: true };
-      if (mode === "cached") return null;
-      await sleep(1100);
-      const target = startupItems.find((item) => item.id === id);
-      const name = target?.app || target?.name || "";
-      explainCache[id] = {
-        text: tr(
-          `这是 ${name} 的后台组件，用来在后台检查更新或保持连接。停用后 ${name} 本身还能正常打开，只是不会在后台自动做这些事。（预览里的 AI 解释）`,
-          `This is a background component of ${name} that checks for updates or keeps a connection open. If you disable it, ${name} still opens normally but stops doing this in the background. (AI explanation in preview)`,
-        ),
-        model: lib.settings.ai.model || "deepseek-chat",
-        at: new Date().toISOString(),
-        cached: false,
-      };
-      return explainCache[id];
+      const explanations: Record<string, { text: string; model: string; at: string; cached: boolean }> = {};
+      const todo: string[] = [];
+      for (const id of ids) {
+        if (mode !== "refresh" && explainCache[id]) explanations[id] = { ...explainCache[id], cached: true };
+        else todo.push(id);
+      }
+      if (mode === "cached" || todo.length === 0) return { explanations, asked: 0, missing: 0 };
+      const emit = (done: number) => aiListeners.forEach((handler) => handler({ done, total: todo.length }));
+      emit(0);
+      for (let done = 0; done < todo.length; done = Math.min(todo.length, done + 10)) {
+        await sleep(900);
+        emit(Math.min(todo.length, done + 10));
+      }
+      for (const id of todo) {
+        const target = startupItems.find((item) => item.id === id);
+        const name = target?.app || target?.name || "";
+        explainCache[id] = {
+          text: tr(
+            `这是 ${name} 的后台组件，用来在后台检查更新或保持连接。停用后 ${name} 本身还能正常打开，只是不会在后台自动做这些事。（预览里的 AI 解释）`,
+            `This is a background component of ${name} that checks for updates or keeps a connection open. If you disable it, ${name} still opens normally but stops doing this in the background. (AI explanation in preview)`,
+          ),
+          model: lib.settings.ai.model || "deepseek-chat",
+          at: new Date().toISOString(),
+          cached: false,
+        };
+        explanations[id] = explainCache[id];
+      }
+      return { explanations, asked: todo.length, missing: 0 };
+    }
+    case "ai_describe_many": {
+      const items = args.items as { name: string }[];
+      await sleep(1200);
+      for (const item of items) {
+        lib.summaries[item.name] = {
+          text: tr(`${item.name} 是一款常用的桌面软件。（预览里的 AI 简介，一批写的）`, `${item.name} is a popular desktop app. (AI summary in preview, written in a batch)`),
+          source: `AI · ${lib.settings.ai.model}`,
+          fetchedAt: new Date().toISOString(),
+          lang: english ? "en" : "zh",
+        };
+      }
+      return { library: snapshot(), written: items.length, unknown: 0 };
     }
     case "set_summary": {
       const name = args.name as string;
@@ -841,7 +902,26 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       return snapshot();
     }
     case "fill_icons":
+    case "fill_file_info":
       return { library: null, more: false };
+    case "inspect_drop":
+      return (args.paths as string[]).map((path) => {
+        const name = path.split(/[\\/]/).pop()!;
+        const isDir = !/\.\w{2,8}$/.test(name) || /\.app$/i.test(name);
+        const portable = /portable|\.app$/i.test(name);
+        const match = name.match(/^(.*?)[-_ ]v?(\d+(?:\.\d+)+)/);
+        return {
+          path,
+          name,
+          isDir,
+          size: isDir ? null : 48 * MB,
+          package: isDir && portable,
+          installers: isDir && !/\.app$/i.test(name) ? (portable ? 1 : 3) : 0,
+          installer: !isDir && /\.(exe|msi|dmg|pkg|deb|rpm|zip|appimage)$/i.test(name),
+          guessName: (match?.[1] ?? name.replace(/\.\w+$/, "")).replace(/[-_]/g, " ").trim(),
+          guessVersion: match?.[2] ?? (portable ? "2.4.1" : ""),
+        };
+      });
     case "fetch_icon":
       // 预览里不联网，图标都用首字方块
       return null;

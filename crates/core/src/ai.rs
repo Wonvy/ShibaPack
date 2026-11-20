@@ -472,6 +472,11 @@ fn clean_description(answer: &str) -> Result<String, AiError> {
 /// 解释一个启动项或服务：是什么、属于哪个软件、能不能停用。`facts` 见 `startup::facts`。只读，不存。
 pub fn explain_startup(service: &Service, language: &str, facts: &str) -> Result<String, AiError> {
     let answer = service.chat(&explain_prompt(language), facts, false, 0.2)?;
+    clean_explanation(&answer)
+}
+
+/// 整理模型写的解释：去掉引号和 Markdown，合成一段。模型说不认识时返回 `Unknown`。
+fn clean_explanation(answer: &str) -> Result<String, AiError> {
     let text = answer.trim().trim_matches(|c: char| matches!(c, '"' | '“' | '”' | '`') || c.is_whitespace());
     if text.is_empty() || text.to_ascii_uppercase().starts_with("UNKNOWN") {
         return Err(AiError::Unknown);
@@ -498,6 +503,183 @@ and whether it is safe to disable or stop it (say what would stop working, and w
 State only what you are confident about. If you do not recognize it, say so in one sentence and describe only what the facts show. \
 No Markdown, no headings, no lists, no quotation marks. If you have nothing useful to say, reply with exactly UNKNOWN."
     )
+}
+
+// ── 一次问一批 ───────────────────────────────────────────────
+
+/// 一次请求里放几个启动项的解释（每个要两三句话，比分类长）。
+const EXPLAIN_BATCH: usize = 10;
+/// 一次请求里写几个软件的简介。
+const DESCRIBE_BATCH: usize = 15;
+
+/// 一批启动项一起解释：每次请求放 10 个，比一个一个问快得多。`items` 是（键，`startup::facts` 的内容）。
+/// 返回（键，解释）；模型漏掉、或者说不认识的不在结果里。`progress(已完成, 总数)` 在每批回来后调用。
+pub fn explain_startup_many(
+    service: &Service,
+    language: &str,
+    items: &[(String, String)],
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<Vec<(String, String)>, AiError> {
+    explain_many_with(&mut |system, user| service.chat(system, user, true, 0.2), language, items, cancel, progress)
+}
+
+fn explain_many_with(
+    chat: &mut dyn FnMut(&str, &str) -> Result<String, AiError>,
+    language: &str,
+    items: &[(String, String)],
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<Vec<(String, String)>, AiError> {
+    let total = items.len();
+    let mut out = Vec::new();
+    progress(0, total);
+    for (batch, chunk) in items.chunks(EXPLAIN_BATCH).enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(AiError::Cancelled);
+        }
+        let offset = batch * EXPLAIN_BATCH;
+        let lines: Vec<String> =
+            chunk.iter().enumerate().map(|(i, (_, facts))| json!({ "id": format!("e{}", offset + i + 1), "facts": facts }).to_string()).collect();
+        let answer = chat(&explain_many_prompt(language), &format!("Items (one JSON object per line):\n{}", lines.join("\n")))?;
+        let texts = parse_texts(&answer);
+        if texts.is_empty() {
+            return Err(AiError::BadAnswer(clip(answer.trim(), 200)));
+        }
+        for (id, text) in texts {
+            let Some(index) = id.strip_prefix('e').and_then(|n| n.parse::<usize>().ok()) else { continue };
+            let Some((key, _)) = index.checked_sub(offset + 1).and_then(|i| chunk.get(i)) else { continue };
+            if let Ok(text) = clean_explanation(&text) {
+                out.push((key.clone(), text));
+            }
+        }
+        progress((offset + chunk.len()).min(total), total);
+    }
+    Ok(out)
+}
+
+fn explain_many_prompt(language: &str) -> String {
+    let lang = language_name(language);
+    let length = if compact(language) { "at most 150 characters" } else { "at most 80 words" };
+    format!(
+        "You help people understand what runs automatically on their computer. For each startup item or background service \
+in the list, explain in {lang}, in two or three short plain sentences ({length}): what it is and which software it belongs to, \
+what it does, and whether it is safe to disable or stop it (say what would stop working, and warn clearly if it is needed by \
+the operating system). State only what you are confident about. If you do not recognize an item, say so in one sentence and \
+describe only what its facts show. No Markdown, no headings, no lists, no quotation marks inside the text.\n\
+Answer with JSON only, in exactly this shape, including every item once:\n\
+{{\"items\":[{{\"id\":\"e1\",\"text\":\"...\"}}]}}"
+    )
+}
+
+/// 一批软件一起写简介：每次请求放 15 个。`items` 是（简介按什么名字存，发布者）。
+/// 返回（名字，简介）；模型说不认识（UNKNOWN）或者漏掉的不在结果里。
+pub fn describe_many(
+    service: &Service,
+    lib: &Library,
+    items: &[(String, String)],
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<Vec<(String, Summary)>, AiError> {
+    describe_many_with(&mut |system, user| service.chat(system, user, true, 0.3), service.model(), lib, items, cancel, progress)
+}
+
+fn describe_many_with(
+    chat: &mut dyn FnMut(&str, &str) -> Result<String, AiError>,
+    model: &str,
+    lib: &Library,
+    items: &[(String, String)],
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<Vec<(String, Summary)>, AiError> {
+    let language = &lib.settings.language;
+    let total = items.len();
+    let mut out = Vec::new();
+    progress(0, total);
+    for (batch, chunk) in items.chunks(DESCRIBE_BATCH).enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(AiError::Cancelled);
+        }
+        let offset = batch * DESCRIBE_BATCH;
+        let lines: Vec<String> = chunk
+            .iter()
+            .enumerate()
+            .map(|(i, (name, publisher))| describe_line(lib, name, publisher, &format!("a{}", offset + i + 1)))
+            .collect();
+        let answer = chat(&describe_many_prompt(language), &format!("Applications (one JSON object per line):\n{}", lines.join("\n")))?;
+        let texts = parse_texts(&answer);
+        if texts.is_empty() {
+            return Err(AiError::BadAnswer(clip(answer.trim(), 200)));
+        }
+        for (id, text) in texts {
+            let Some(index) = id.strip_prefix('a').and_then(|n| n.parse::<usize>().ok()) else { continue };
+            let Some((name, _)) = index.checked_sub(offset + 1).and_then(|i| chunk.get(i)) else { continue };
+            if let Ok(text) = clean_description(&text) {
+                let summary = Summary { text, source: format!("AI · {model}"), fetched_at: now(), lang: base_language(language), translations: Default::default() };
+                out.push((name.clone(), summary));
+            }
+        }
+        progress((offset + chunk.len()).min(total), total);
+    }
+    Ok(out)
+}
+
+/// 发给模型的一个软件：名字、发布者，仓库里有同名软件时再带主页和安装包文件名，有联网取到的简介也带上。
+fn describe_line(lib: &Library, name: &str, publisher: &str, id: &str) -> String {
+    let software = lib.software.iter().find(|s| s.name == name);
+    let mut item = json!({ "id": id, "name": name });
+    let publisher = software.map(|s| s.publisher.trim()).filter(|p| !p.is_empty()).unwrap_or(publisher.trim());
+    if !publisher.is_empty() {
+        item["publisher"] = json!(publisher);
+    }
+    if let Some(homepage) = software.map(|s| s.homepage.trim()).filter(|h| !h.is_empty()) {
+        item["homepage"] = json!(homepage);
+    }
+    let files = software.map(file_names).unwrap_or_default();
+    if !files.is_empty() {
+        item["files"] = json!(files);
+    }
+    if let Some(existing) = lib.summaries.get(name).filter(|s| !s.text.trim().is_empty() && !s.source.starts_with("AI")) {
+        item["existing"] = json!(clip(existing.text.trim(), 200));
+    }
+    item.to_string()
+}
+
+fn describe_many_prompt(language: &str) -> String {
+    let lang = language_name(language);
+    let length = if compact(language) { "at most 80 characters" } else { "at most 40 words" };
+    format!(
+        "You write entries for a software catalog. For each application in the list, write a description in {lang}: one or two \
+plain sentences, {length}, saying what it is and what people use it for. \"existing\" is a description found online, possibly in \
+another language, that you may use. State only facts you are confident about. No marketing tone, no version numbers, no prices, \
+no Markdown, no quotation marks inside the text. If you do not recognize an application, set its text to exactly UNKNOWN.\n\
+Answer with JSON only, in exactly this shape, including every application once:\n\
+{{\"items\":[{{\"id\":\"a1\",\"text\":\"...\"}}]}}"
+    )
+}
+
+/// 读“每项一段文字”的回答：`{"items":[{"id":..,"text":..}]}`，容忍代码块包裹、前后多余的话、顶层直接是数组。
+fn parse_texts(answer: &str) -> Vec<(String, String)> {
+    let start = answer.find(['{', '[']);
+    let end = answer.rfind(['}', ']']);
+    let Some(value) = start.zip(end).filter(|(s, e)| s < e).and_then(|(s, e)| serde_json::from_str::<Value>(&answer[s..=e]).ok()) else {
+        return Vec::new();
+    };
+    let items = match &value {
+        Value::Array(items) => items,
+        other => match ["items", "results"].iter().find_map(|k| other.get(*k).and_then(Value::as_array)) {
+            Some(items) => items,
+            None => return Vec::new(),
+        },
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(Value::as_str)?.trim().to_string();
+            let text = ["text", "description", "explanation"].iter().find_map(|k| item.get(*k).and_then(Value::as_str))?.to_string();
+            Some((id, text))
+        })
+        .collect()
 }
 
 // ── 智能分类 ─────────────────────────────────────────────────
@@ -714,6 +896,59 @@ mod tests {
 
     fn category(id: &str, name: &str, parent: Option<&str>) -> Category {
         Category { id: id.into(), name: name.into(), parent_id: parent.map(String::from), color: None, icon: None }
+    }
+
+    #[test]
+    fn explains_in_batches() {
+        let items: Vec<(String, String)> = (1..=12).map(|i| (format!("k{i}"), format!("Name: item{i}"))).collect();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let mut chat = |_system: &str, user: &str| -> Result<String, AiError> {
+            let ids: Vec<String> = user.lines().skip(1).filter_map(|line| serde_json::from_str::<Value>(line).ok()?["id"].as_str().map(str::to_string)).collect();
+            asked.borrow_mut().push(ids.len());
+            // 第一批漏掉一个，还有一个说不认识
+            let answers: Vec<Value> = ids
+                .iter()
+                .filter(|id| id.as_str() != "e3")
+                .map(|id| json!({ "id": id, "text": if id == "e4" { "UNKNOWN".to_string() } else { format!("**说明** {id}") } }))
+                .collect();
+            Ok(format!("```json\n{}\n```", json!({ "items": answers })))
+        };
+        let mut steps = Vec::new();
+        let out = explain_many_with(&mut chat, "zh-CN", &items, &AtomicBool::new(false), &mut |done, total| steps.push((done, total))).unwrap();
+        assert_eq!(*asked.borrow(), vec![10, 2], "12 个分两次问");
+        assert_eq!(out.len(), 10);
+        assert!(!out.iter().any(|(k, _)| k == "k3" || k == "k4"));
+        assert_eq!(out[0], ("k1".to_string(), "说明 e1".to_string()));
+        assert_eq!(steps.last(), Some(&(12, 12)));
+        // 回答完全看不懂时报错
+        let mut broken = |_s: &str, _u: &str| -> Result<String, AiError> { Ok("sorry".into()) };
+        assert!(matches!(explain_many_with(&mut broken, "zh-CN", &items, &AtomicBool::new(false), &mut |_, _| {}), Err(AiError::BadAnswer(_))));
+        // 取消了就不再问
+        assert_eq!(explain_many_with(&mut chat, "zh-CN", &items, &AtomicBool::new(true), &mut |_, _| {}), Err(AiError::Cancelled));
+    }
+
+    #[test]
+    fn describes_in_batches() {
+        let mut lib = Library::default();
+        lib.software.push(software("s1", "Visual Studio Code", None));
+        let items: Vec<(String, String)> = (0..16).map(|i| (if i == 0 { "Visual Studio Code".to_string() } else { format!("App{i}") }, String::new())).collect();
+        let mut sizes = Vec::new();
+        let mut first_line = String::new();
+        let mut chat = |_system: &str, user: &str| -> Result<String, AiError> {
+            let lines: Vec<Value> = user.lines().skip(1).filter_map(|line| serde_json::from_str(line).ok()).collect();
+            if first_line.is_empty() {
+                first_line = lines[0].to_string();
+            }
+            sizes.push(lines.len());
+            let answers: Vec<Value> = lines.iter().map(|l| json!({ "id": l["id"], "text": if l["name"] == "App2" { "UNKNOWN" } else { "一款软件。" } })).collect();
+            Ok(json!({ "items": answers }).to_string())
+        };
+        let out = describe_many_with(&mut chat, "m", &lib, &items, &AtomicBool::new(false), &mut |_, _| {}).unwrap();
+        assert_eq!(sizes, vec![15, 1]);
+        assert_eq!(out.len(), 15, "App2 说不认识，不写");
+        assert!(first_line.contains("\"name\":\"Visual Studio Code\""));
+        assert_eq!(out[0].1.source, "AI · m");
+        assert_eq!(out[0].1.text, "一款软件。");
     }
 
     #[test]

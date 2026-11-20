@@ -4,7 +4,7 @@
 // macOS 和 Linux 上可以在应用运行时把新版本装好，重启后生效；
 // Windows 的安装程序必须先关掉应用，所以下载完成后要等用户点一下才安装。
 
-import { hostPlatform, isTauri } from "./api";
+import { api, hostPlatform, isTauri } from "./api";
 import { type AppUpdate, useApp } from "./store";
 
 type DownloadEvent =
@@ -31,7 +31,21 @@ const autoUpdate = () => useApp.getState().library?.settings.autoUpdate ?? true;
 async function lookUp(): Promise<Pending | null> {
   if (!isTauri) return previewUpdate();
   const { check } = await import("@tauri-apps/plugin-updater");
-  return check();
+  // Windows 上按当初怎么装的取对应的更新包：用 -setup.exe 装的不要管理员权限，不能拿 MSI 去更新它
+  const target = await api.updaterTarget().catch(() => null);
+  return check(target ? { target } : undefined);
+}
+
+/** 装不上是因为没有权限替换自己。macOS 上没有苹果开发者签名的应用，系统的“App 管理”默认不让它改自己。 */
+function permissionProblem(error: unknown): boolean {
+  return /permission|not permitted|operation not permitted|move the new app|access is denied|os error (1|5|13)\b/i.test(String(error));
+}
+
+/** 更新出错：记进失败日志，权限问题单独标出来。 */
+function failed(error: unknown) {
+  const text = String(error);
+  void api.logFailure("update", text, useApp.getState().appUpdate.version).catch(() => {});
+  set({ phase: "error", error: text, blocked: permissionProblem(error) });
 }
 
 /**
@@ -44,7 +58,7 @@ export async function checkForUpdate(manual: boolean) {
   if (busy || phase === "downloading" || phase === "ready" || phase === "installed") return;
   busy = true;
   try {
-    if (manual) set({ phase: "checking", error: "", dismissed: false });
+    if (manual) set({ phase: "checking", error: "", dismissed: false, blocked: false });
     pending = await lookUp();
     if (!pending) {
       set({ phase: manual ? "upToDate" : "idle" });
@@ -53,7 +67,9 @@ export async function checkForUpdate(manual: boolean) {
     set({ phase: "available", version: pending.version, notes: pending.body?.trim() ?? "", dismissed: false });
     if (autoUpdate()) await download();
   } catch (error) {
-    set(manual ? { phase: "error", error: String(error) } : { phase: "idle" });
+    // 自动检查时网络不通就算了；已经找到新版本、是下载或安装出的错，照样告诉用户
+    if (manual || pending) failed(error);
+    else set({ phase: "idle" });
   } finally {
     busy = false;
   }
@@ -85,9 +101,10 @@ export async function startUpdate() {
   if (busy) return;
   busy = true;
   try {
+    set({ blocked: false, error: "" });
     await download();
   } catch (error) {
-    set({ phase: "error", error: String(error) });
+    failed(error);
   } finally {
     busy = false;
   }
@@ -105,8 +122,14 @@ export async function finishUpdate() {
       location.reload();
     }
   } catch (error) {
-    set({ phase: "error", error: String(error) });
+    failed(error);
   }
+}
+
+/** 自动安装装不上时：把安装包下载到“下载”文件夹并打开，让用户自己装。 */
+export async function downloadInstaller() {
+  const version = useApp.getState().appUpdate.version;
+  return api.downloadInstaller(version);
 }
 
 export function dismissUpdate() {

@@ -1,11 +1,12 @@
 //! 导入安装包：识别、算哈希、去重，按存储模式复制进仓库或只记路径。
 
 use crate::{
+    fileinfo::{self, FileInfo},
     identify::{identify, is_installer, normalize_name, Identity},
     model::*,
     new_id, now,
     store::{clean_path, sanitize, unique_path, Repo, DATA_DIR},
-    Error, Result,
+    AtStep, Error, Result,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -25,11 +26,22 @@ const SAVE_EVERY: Duration = Duration::from_secs(30);
 
 /// 导入时手动指定的信息，覆盖从文件名识别的结果。
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct ImportHint {
     pub name: Option<String>,
     pub version: Option<String>,
     pub platform: Option<Platform>,
+    /// 放进哪个分类：新建的软件放进去，已有的软件还没分类的也放进去，已经分好类的不动。
+    pub category_id: Option<String>,
+    /// 当作一个安装包整个导入的文件夹（绿色版软件、带着一堆文件的安装程序）。其余文件夹照旧展开成里面的安装包。
+    pub packages: Vec<String>,
+}
+
+impl ImportHint {
+    /// 当作一个安装包的文件夹，去掉了符号链接。
+    pub fn package_set(&self) -> HashSet<PathBuf> {
+        self.packages.iter().map(|p| fs::canonicalize(p).map(|p| clean_path(&p)).unwrap_or_else(|_| PathBuf::from(p))).collect()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -49,7 +61,12 @@ pub struct ImportItem {
     /// imported / duplicate / failed
     pub status: String,
     pub software_id: Option<String>,
+    /// 失败时系统或程序给的原话。
     pub message: Option<String>,
+    /// 失败在哪一步：read（读取、算校验值）、copy（复制或移动进仓库）、save（登记进索引）。
+    pub step: Option<String>,
+    /// 失败的原因代码：permission_denied、disk_full、in_use、file_missing、copy_mismatch……归不了类的是 io。
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -69,25 +86,237 @@ pub enum Outcome {
     Duplicate(String),
 }
 
-/// 一个准备导入的文件，最慢的一步（算哈希）已经做完。这一步只读文件本身，不碰索引。
+/// 一个准备导入的文件（或当作安装包的文件夹），最慢的一步（算哈希）已经做完。这一步只读文件本身，不碰索引。
 pub struct Hashed {
     /// 文件的绝对路径（去掉了符号链接）。
     pub abs: PathBuf,
     pub file_name: String,
     pub size: u64,
     pub sha256: String,
+    /// 是一个文件夹（整个当作一个安装包）。
+    pub is_dir: bool,
+    /// 文件自带的产品名、版本号、发布者（exe、msi；文件夹取里面的主程序）。文件名里看不出来时用它补。
+    pub info: Option<FileInfo>,
+    /// 从文件夹里面的东西看出来的平台（有 .exe 是 Windows，是 .app 是 macOS）。
+    pub platform: Option<Platform>,
 }
 
 /// 读一个待导入的文件、算哈希。不需要占着仓库，可以在别的操作照常进行时做。
+/// 文件夹整个当作一个安装包：哈希按里面每个文件的相对路径和内容算，大小是全部文件加起来。
 pub fn hash_source(src: &Path) -> Result<Hashed> {
     let meta = fs::metadata(src)?;
+    let abs = clean_path(&fs::canonicalize(src)?);
+    let file_name = abs.file_name().unwrap_or_default().to_string_lossy().to_string();
+    if meta.is_dir() {
+        let (size, sha256) = hash_folder(&abs)?;
+        let (info, platform) = folder_info(&abs);
+        return Ok(Hashed { abs, file_name, size, sha256, is_dir: true, info, platform });
+    }
     if !meta.is_file() {
         return Err(Error::Code("not_a_file"));
     }
-    let abs = clean_path(&fs::canonicalize(src)?);
-    let file_name = abs.file_name().unwrap_or_default().to_string_lossy().to_string();
     let sha256 = sha256_file(&abs)?;
-    Ok(Hashed { abs, file_name, size: meta.len(), sha256 })
+    let info = fileinfo::read(&abs);
+    Ok(Hashed { abs, file_name, size: meta.len(), sha256, is_dir: false, info, platform: None })
+}
+
+/// 文件夹的哈希：按相对路径排好，每个文件的“相对路径 + 内容哈希”串起来再算一次。和文件放在哪无关，
+/// 内容一样的文件夹哈希就一样（查重复用）。返回（总大小，哈希）。
+pub fn hash_folder(dir: &Path) -> Result<(u64, String)> {
+    let mut files: Vec<(String, PathBuf)> = walkdir::WalkDir::new(dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| (to_rel(e.path().strip_prefix(dir).unwrap_or(e.path())), e.into_path()))
+        .collect();
+    files.sort();
+    let mut hasher = Sha256::new();
+    let mut size = 0;
+    for (rel, path) in &files {
+        size += fs::metadata(path)?.len();
+        hasher.update(rel.as_bytes());
+        hasher.update([0]);
+        hasher.update(sha256_file(path)?.as_bytes());
+        hasher.update([0]);
+    }
+    Ok((size, hex::encode(hasher.finalize())))
+}
+
+/// 文件夹里所有文件加起来的大小（校验时用）。
+pub fn folder_size(dir: &Path) -> u64 {
+    walkdir::WalkDir::new(dir).into_iter().filter_map(|e| e.ok()).filter(|e| e.file_type().is_file()).filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum()
+}
+
+/// 是不是 macOS 的应用（`.app` 文件夹）。它本身就是一个整体，导入时不往里面找安装包。
+pub fn is_app_bundle(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("app")) && path.is_dir()
+}
+
+/// 文件夹看起来是不是一个软件（应该整个当作一个安装包）：是 .app；或者里面第一层有程序（.exe）还带着它的
+/// 库文件（.dll），这是绿色版软件和“解压后运行 setup”的安装程序的样子；或者第一层就是一个 .app。
+/// 一堆安装包放在一起的文件夹（只有 exe、msi、dmg……没有 dll）不算，照旧展开。
+pub fn looks_like_package(dir: &Path) -> bool {
+    if is_app_bundle(dir) {
+        return true;
+    }
+    let Ok(entries) = fs::read_dir(dir) else { return false };
+    let names: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    let ext_is = |p: &PathBuf, ext: &str| p.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext));
+    let has_exe = names.iter().any(|p| p.is_file() && ext_is(p, "exe"));
+    let has_dll = names.iter().any(|p| p.is_file() && ext_is(p, "dll"));
+    let apps = names.iter().filter(|p| is_app_bundle(p)).count();
+    (has_exe && has_dll) || (apps == 1 && names.iter().filter(|p| is_installer(&p.file_name().unwrap_or_default().to_string_lossy())).count() <= 1)
+}
+
+/// 文件夹里的主程序：.app 本身；第一层里和文件夹同名的 exe，没有时最大的那个（卸载程序、更新程序不算）；
+/// 第一层的一个 .app。
+pub fn main_program(dir: &Path) -> Option<PathBuf> {
+    if is_app_bundle(dir) {
+        return Some(dir.to_path_buf());
+    }
+    let entries: Vec<PathBuf> = fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).collect();
+    if let Some(app) = entries.iter().find(|p| is_app_bundle(p)) {
+        return Some(app.clone());
+    }
+    let folder = normalize_name(&dir.file_name().unwrap_or_default().to_string_lossy());
+    let mut exes: Vec<(PathBuf, u64)> = entries
+        .into_iter()
+        .filter(|p| p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe")))
+        .filter(|p| {
+            let stem = p.file_stem().unwrap_or_default().to_string_lossy().to_lowercase();
+            !stem.starts_with("unins") && !stem.contains("uninstall") && !stem.contains("update") && !stem.contains("crash")
+        })
+        .filter_map(|p| fs::metadata(&p).ok().map(|m| (p, m.len())))
+        .collect();
+    exes.sort_by(|a, b| b.1.cmp(&a.1));
+    let by_name = exes.iter().find(|(p, _)| {
+        let stem = normalize_name(&p.file_stem().unwrap_or_default().to_string_lossy());
+        !stem.is_empty() && (folder.contains(&stem) || stem.contains(&folder))
+    });
+    by_name.or(exes.first()).map(|(p, _)| p.clone())
+}
+
+/// 文件夹里的主程序带着的信息，和看得出来的平台。
+fn folder_info(dir: &Path) -> (Option<FileInfo>, Option<Platform>) {
+    let Some(main) = main_program(dir) else { return (None, None) };
+    if is_app_bundle(&main) {
+        let plist = plist::Value::from_file(main.join("Contents/Info.plist")).ok().and_then(plist::Value::into_dictionary);
+        let text = |key: &str| plist.as_ref().and_then(|d| d.get(key)).and_then(plist::Value::as_string).map(|s| s.trim().to_string()).unwrap_or_default();
+        let name = Some(text("CFBundleDisplayName")).filter(|s| !s.is_empty()).unwrap_or_else(|| text("CFBundleName"));
+        let mut version = text("CFBundleShortVersionString");
+        if version.is_empty() {
+            version = text("CFBundleVersion");
+        }
+        let company = crate::installed::publisher_from_copyright(&text("NSHumanReadableCopyright"));
+        return (Some(FileInfo { product_name: name, version: fileinfo::clean_version(&version), company }), Some(Platform::Macos));
+    }
+    (fileinfo::read(&main), Some(Platform::Windows))
+}
+
+/// 文件夹当作安装包时用来取图标的文件：.app 的图标、主程序 exe，或者第一层的 .ico / .icns / .png。
+pub fn icon_source_in(dir: &Path) -> Option<PathBuf> {
+    if let Some(main) = main_program(dir) {
+        if is_app_bundle(&main) {
+            let plist = plist::Value::from_file(main.join("Contents/Info.plist")).ok().and_then(plist::Value::into_dictionary);
+            let declared = plist.as_ref().and_then(|d| d.get("CFBundleIconFile")).and_then(plist::Value::as_string).map(str::to_string);
+            if let Some(icon) = crate::installed::bundle_icon(&main, declared.as_deref()) {
+                return Some(icon);
+            }
+        } else {
+            return Some(main);
+        }
+    }
+    let entries: Vec<PathBuf> = fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).collect();
+    ["ico", "icns", "png"].iter().find_map(|ext| entries.iter().find(|p| p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext))).cloned())
+}
+
+/// 拖进来的一项，导入前给确认窗口看的样子。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DropEntry {
+    pub path: String,
+    pub name: String,
+    pub is_dir: bool,
+    /// 文件的大小。文件夹不算（NAS 上的大文件夹要走很久）。
+    pub size: Option<u64>,
+    /// 文件夹看起来是一个软件（绿色版、.app），建议整个当作一个安装包导入。
+    pub package: bool,
+    /// 文件夹里能找到的安装包个数（展开导入时会导入的那些）。
+    pub installers: usize,
+    /// 文件是不是认得的安装包。
+    pub installer: bool,
+    /// 按文件名和文件属性认出来的软件名、版本号（当作一个安装包导入时）。
+    pub guess_name: String,
+    pub guess_version: String,
+}
+
+/// 看一看拖进来的东西：每一项是文件还是文件夹、文件夹像不像一个软件、里面有几个安装包、会被认成什么软件。
+pub fn inspect(paths: &[PathBuf], data_dir: &Path) -> Vec<DropEntry> {
+    paths
+        .iter()
+        .map(|path| {
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let is_dir = path.is_dir();
+            let mut identity = identify(&name);
+            let info = if is_dir { folder_info(path).0 } else { fileinfo::read(path) };
+            if let Some(info) = &info {
+                if identity.version.is_empty() {
+                    identity.version = info.version.clone();
+                }
+                if generic_name(&identity.name) && !info.product_name.trim().is_empty() {
+                    identity.name = info.product_name.trim().to_string();
+                }
+            }
+            DropEntry {
+                path: path.to_string_lossy().to_string(),
+                is_dir,
+                size: (!is_dir).then(|| fs::metadata(path).map(|m| m.len()).unwrap_or(0)),
+                package: is_dir && looks_like_package(path),
+                installers: if is_dir && !is_app_bundle(path) { collect_files(&[path.clone()], data_dir, &HashSet::new()).len() } else { 0 },
+                installer: !is_dir && is_installer(&name),
+                guess_name: identity.name,
+                guess_version: identity.version,
+                name,
+            }
+        })
+        .collect()
+}
+
+/// 安装包取图标用的文件：文件本身；文件夹当作安装包时取里面的主程序或图标文件。
+pub fn icon_source(path: &Path) -> Option<PathBuf> {
+    if path.is_dir() {
+        icon_source_in(path)
+    } else {
+        path.is_file().then(|| path.to_path_buf())
+    }
+}
+
+/// 打开一个安装包时实际打开的东西：文件本身；文件夹里的主程序（.app 本身也是）；找不到主程序时是文件夹自己。
+pub fn launch_target(path: &Path) -> PathBuf {
+    if path.is_dir() {
+        main_program(path).unwrap_or_else(|| path.to_path_buf())
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// 把整个文件夹复制过去（不跟符号链接，链接本身照原样复制）。
+fn copy_dir(src: &Path, dest: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dest)?;
+    for entry in walkdir::WalkDir::new(src).min_depth(1).follow_links(false) {
+        let entry = entry.map_err(std::io::Error::other)?;
+        let target = dest.join(entry.path().strip_prefix(src).unwrap_or(entry.path()));
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&target)?;
+        } else if entry.file_type().is_symlink() {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(fs::read_link(entry.path())?, &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
 }
 
 /// 导入一个文件前做的决定：是重复的（带着已有软件的 id），或者要登记成什么、放在哪。
@@ -99,6 +328,10 @@ pub enum Plan {
 pub struct Placement {
     /// 从文件名认出（再按手动指定的信息改过）的软件名、版本、平台、架构。
     identity: Identity,
+    /// 新建软件时的发布者（文件自带的公司名）。
+    publisher: String,
+    /// 放进哪个分类（手动指定的）。
+    category: Option<String>,
     /// 放在哪个文件夹下：仓库里已经有这个软件时用它现有的名字（可能被改过）。
     folder: String,
     target: Target,
@@ -122,16 +355,25 @@ pub struct Placed {
 }
 
 /// 把展开好的文件列表收集出来：文件原样保留，文件夹里只取安装包。不进隐藏文件夹，也不进仓库自己的数据目录。
-pub fn collect_files(paths: &[PathBuf], data_dir: &Path) -> Vec<PathBuf> {
+/// `packages` 里的文件夹和 .app 整个当作一个安装包，不往里面找。
+pub fn collect_files(paths: &[PathBuf], data_dir: &Path, packages: &HashSet<PathBuf>) -> Vec<PathBuf> {
     let mut files = Vec::new();
     for path in paths {
-        if path.is_dir() {
-            let walker = walkdir::WalkDir::new(path).max_depth(MAX_SCAN_DEPTH).into_iter().filter_entry(|entry| {
+        let as_package = path.is_dir() && (is_app_bundle(path) || packages.contains(&fs::canonicalize(path).map(|p| clean_path(&p)).unwrap_or_else(|_| path.clone())));
+        if as_package {
+            files.push(path.clone());
+        } else if path.is_dir() {
+            let mut walker = walkdir::WalkDir::new(path).max_depth(MAX_SCAN_DEPTH).into_iter().filter_entry(|entry| {
                 let hidden = entry.depth() > 0 && entry.file_name().to_string_lossy().starts_with('.');
                 !hidden && !entry.path().starts_with(data_dir) && entry.file_name() != DATA_DIR
             });
-            for entry in walker.flatten() {
-                if entry.file_type().is_file() && is_installer(&entry.file_name().to_string_lossy()) {
+            while let Some(entry) = walker.next() {
+                let Ok(entry) = entry else { continue };
+                // 文件夹里的 .app 是一个整体，不往里面走
+                if entry.depth() > 0 && entry.file_type().is_dir() && is_app_bundle(entry.path()) {
+                    walker.skip_current_dir();
+                    files.push(entry.into_path());
+                } else if entry.file_type().is_file() && is_installer(&entry.file_name().to_string_lossy()) {
                     files.push(entry.into_path());
                 }
             }
@@ -147,6 +389,9 @@ pub fn collect_files(paths: &[PathBuf], data_dir: &Path) -> Vec<PathBuf> {
 /// 复制（或移动）进仓库的 `软件名/版本号/原文件名`。复制时先写 `.part` 再改名，中途失败不会留下半个文件。
 /// 不碰索引，只需要仓库根目录，可以在不占着仓库的情况下做。
 pub fn place_file(root: &Path, hashed: &Hashed, placement: &Placement, move_file: bool) -> Result<Placed> {
+    if hashed.is_dir {
+        return place_folder(root, hashed, placement, move_file);
+    }
     let (src, size, sha256) = (&hashed.abs, hashed.size, hashed.sha256.as_str());
     match &placement.target {
         Target::InRepo(rel) => return Ok(Placed { storage: Storage::Managed, path: rel.clone(), disk: src.clone(), created: false }),
@@ -198,6 +443,55 @@ pub fn place_file(root: &Path, hashed: &Hashed, placement: &Placement, move_file
     Ok(managed(dest, true))
 }
 
+/// 文件夹当作安装包时的 `place_file`：整个复制（或移动）到 `软件名/版本号/文件夹名`。
+/// 复制时先放进 `.part` 文件夹，复制完再改名；移动跨磁盘时核对内容一模一样才删原文件夹。
+fn place_folder(root: &Path, hashed: &Hashed, placement: &Placement, move_dir: bool) -> Result<Placed> {
+    let src = &hashed.abs;
+    match &placement.target {
+        Target::InRepo(rel) => return Ok(Placed { storage: Storage::Managed, path: rel.clone(), disk: src.clone(), created: false }),
+        Target::Indexed => {
+            return Ok(Placed { storage: Storage::Indexed, path: src.to_string_lossy().to_string(), disk: src.clone(), created: false })
+        }
+        Target::Managed => {}
+    }
+    let version = &placement.identity.version;
+    let version_dir = if version.is_empty() { "unknown".to_string() } else { sanitize(version) };
+    let dir = root.join(sanitize(&placement.folder)).join(version_dir);
+    fs::create_dir_all(&dir)?;
+    let mut dest = dir.join(&hashed.file_name);
+    let managed = |dest: PathBuf, created: bool| {
+        let path = dest.strip_prefix(root).map(to_rel).unwrap_or_default();
+        Placed { storage: Storage::Managed, path, disk: dest, created }
+    };
+    if dest.exists() {
+        if dest.is_dir() && hash_folder(&dest).map(|(_, h)| h == hashed.sha256).unwrap_or(false) {
+            return Ok(managed(dest, false));
+        }
+        dest = unique_path(dest);
+    }
+    if move_dir && fs::rename(src, &dest).is_ok() {
+        return Ok(managed(dest, true));
+    }
+    let part = dest.with_file_name(format!("{}.part", dest.file_name().unwrap_or_default().to_string_lossy()));
+    if let Err(err) = copy_dir(src, &part).and_then(|()| fs::rename(&part, &dest)) {
+        let _ = fs::remove_dir_all(&part);
+        return Err(err.into());
+    }
+    if move_dir {
+        if hash_folder(&dest)?.1 != hashed.sha256 {
+            let _ = fs::remove_dir_all(&dest);
+            return Err(Error::Code("copy_mismatch"));
+        }
+        let _ = fs::remove_dir_all(src);
+    }
+    Ok(managed(dest, true))
+}
+
+/// 认不出是什么软件时文件名里常见的词：这种时候用文件自带的产品名。
+fn generic_name(name: &str) -> bool {
+    matches!(normalize_name(name).as_str(), "" | "setup" | "install" | "installer" | "update" | "app" | "program" | "main" | "launcher" | "portable")
+}
+
 impl Repo {
     /// 导入一批文件或文件夹（托管时复制进仓库）。见 `import_paths_with`。
     pub fn import_paths(
@@ -226,7 +520,7 @@ impl Repo {
         on_progress: &mut dyn FnMut(Progress),
     ) -> Result<ImportReport> {
         on_progress(Progress { phase: "collect".into(), current: 0, total: 0, file: String::new() });
-        let files = collect_files(paths, &self.data_dir());
+        let files = collect_files(paths, &self.data_dir(), &hint.package_set());
         let total = files.len();
         let mut known = self.known_paths();
         let mut report = ImportReport::default();
@@ -258,12 +552,12 @@ impl Repo {
         if let Some(owner) = self.already_known(src, known) {
             return Ok(Outcome::Duplicate(owner));
         }
-        let hashed = hash_source(src)?;
+        let hashed = hash_source(src).at("read")?;
         match self.plan_import(&hashed, mode, hint) {
             Plan::Duplicate(owner) => Ok(Outcome::Duplicate(owner)),
             Plan::Add(placement) => {
-                let placed = place_file(self.root(), &hashed, &placement, move_files)?;
-                self.register(&hashed, placement, placed, known)
+                let placed = place_file(self.root(), &hashed, &placement, move_files).at("copy")?;
+                self.register(&hashed, placement, placed, known).at("save")
             }
         }
     }
@@ -271,6 +565,23 @@ impl Repo {
     /// 认软件名和版本、查重复，决定这个文件登记成什么、放在哪。只读索引。
     pub fn plan_import(&self, hashed: &Hashed, mode: Storage, hint: &ImportHint) -> Plan {
         let mut identity = identify(&hashed.file_name);
+        // 文件名里看不出来的，用文件自带的信息补：版本号（比如 WinThumbsPreloader.exe 的产品版本 1.1.0）、
+        // 软件名（文件叫 setup.exe 这种时）
+        let mut publisher = String::new();
+        if let Some(info) = &hashed.info {
+            if identity.version.is_empty() && !info.version.is_empty() {
+                identity.version = info.version.clone();
+            }
+            if generic_name(&identity.name) && !info.product_name.trim().is_empty() {
+                identity.name = info.product_name.trim().to_string();
+            }
+            publisher = info.company.trim().to_string();
+        }
+        if identity.platform == Platform::Cross {
+            if let Some(platform) = hashed.platform {
+                identity.platform = platform;
+            }
+        }
         if let Some(name) = hint.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
             identity.name = name.to_string();
         }
@@ -292,7 +603,8 @@ impl Repo {
         } else {
             Target::Indexed
         };
-        Plan::Add(Placement { identity, folder, target })
+        let category = hint.category_id.clone().filter(|id| self.lib.categories.iter().any(|c| &c.id == id));
+        Plan::Add(Placement { identity, publisher, category, folder, target })
     }
 
     /// 同一个软件、同一个版本里已经有内容相同的文件：返回那个软件的 id。
@@ -306,10 +618,14 @@ impl Repo {
     /// 把放好的文件登记进索引（不保存）。放文件的这段时间里如果别处已经登记了同样的内容，
     /// 就当重复处理，这次新放进仓库的那份删掉（内容已经在仓库里了）。
     pub fn register(&mut self, hashed: &Hashed, placement: Placement, placed: Placed, known: &mut HashSet<PathBuf>) -> Result<Outcome> {
-        let Placement { identity, .. } = placement;
+        let Placement { identity, publisher, category, .. } = placement;
         if let Some(owner) = self.duplicate_of(&identity, &hashed.sha256) {
             if placed.created && placed.disk != hashed.abs {
-                let _ = fs::remove_file(&placed.disk);
+                if placed.disk.is_dir() {
+                    let _ = fs::remove_dir_all(&placed.disk);
+                } else {
+                    let _ = fs::remove_file(&placed.disk);
+                }
                 self.remove_empty_dirs(placed.disk.parent());
             }
             return Ok(Outcome::Duplicate(owner));
@@ -333,10 +649,10 @@ impl Repo {
                 self.lib.software.push(Software {
                     id: new_id(),
                     name: identity.name,
-                    publisher: String::new(),
+                    publisher: publisher.clone(),
                     homepage: String::new(),
                     note: String::new(),
-                    category_id: None,
+                    category_id: category.clone(),
                     starred: false,
                     icon: None,
                     default_version_id: None,
@@ -348,6 +664,14 @@ impl Repo {
             }
         };
         let software = &mut self.lib.software[s];
+        // 放进指定的分类：已有的软件只在还没分类时放进去，已经分好类的不动
+        if software.category_id.is_none() {
+            software.category_id = category;
+        }
+        // 发布者还空着时用文件自带的公司名补上
+        if software.publisher.trim().is_empty() && !publisher.is_empty() {
+            software.publisher = publisher;
+        }
         let v = match software.versions.iter().position(|v| v.version == identity.version) {
             Some(v) => v,
             None => {
@@ -359,7 +683,7 @@ impl Repo {
         let software_id = software.id.clone();
         // 软件还没有图标（或只有联网取的）时，从刚导入的文件里取一个
         if crate::ops::needs_local_icon(&self.lib.software[s]) {
-            if let Some(icon) = self.icon_from(&software_id, &placed.disk) {
+            if let Some(icon) = icon_source(&placed.disk).and_then(|source| self.icon_from(&software_id, &source)) {
                 self.set_local_icon(s, icon);
             }
         }
@@ -382,15 +706,22 @@ impl ImportReport {
         let item = match outcome {
             Ok(Outcome::Imported(id)) => {
                 self.imported += 1;
-                ImportItem { path, status: "imported".into(), software_id: Some(id), message: None }
+                ImportItem { path, status: "imported".into(), software_id: Some(id), message: None, step: None, reason: None }
             }
             Ok(Outcome::Duplicate(id)) => {
                 self.duplicates += 1;
-                ImportItem { path, status: "duplicate".into(), software_id: Some(id), message: None }
+                ImportItem { path, status: "duplicate".into(), software_id: Some(id), message: None, step: None, reason: None }
             }
             Err(err) => {
                 self.failed += 1;
-                ImportItem { path, status: "failed".into(), software_id: None, message: Some(err.to_string()) }
+                ImportItem {
+                    path,
+                    status: "failed".into(),
+                    software_id: None,
+                    message: Some(err.to_string()),
+                    step: err.step().map(str::to_string),
+                    reason: Some(err.reason().to_string()),
+                }
             }
         };
         self.items.push(item);
@@ -617,10 +948,111 @@ mod tests {
         fs::write(&file, b"x").unwrap();
 
         let mut repo = Repo::open(repo_dir.path()).unwrap();
-        let hint = ImportHint { name: Some("微信".into()), version: Some("3.9.12".into()), platform: None };
+        let hint = ImportHint { name: Some("微信".into()), version: Some("3.9.12".into()), ..Default::default() };
         repo.import_paths(&[file], Storage::Managed, &hint, &mut |_| {}).unwrap();
         let software = &repo.lib.software[0];
         assert_eq!(software.name, "微信");
         assert_eq!(software.versions[0].files[0].path, "微信/3.9.12/setup.exe");
+    }
+
+    /// 一个绿色版软件的文件夹：主程序加它的库文件，还有子文件夹。
+    fn portable_folder(parent: &Path) -> PathBuf {
+        let dir = parent.join("Tool");
+        fs::create_dir_all(dir.join("data")).unwrap();
+        fs::write(dir.join("Tool.exe"), b"main program").unwrap();
+        fs::write(dir.join("helper.dll"), b"library").unwrap();
+        fs::write(dir.join("data/config.ini"), b"[x]").unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_folder_marked_as_package_is_imported_whole() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        let src_dir = tempfile::tempdir().unwrap();
+        let dir = portable_folder(src_dir.path());
+        assert!(looks_like_package(&dir));
+        assert!(!looks_like_package(src_dir.path()), "装着一个软件文件夹的上一层不算");
+        assert_eq!(main_program(&dir), Some(dir.join("Tool.exe")));
+
+        let mut repo = Repo::open(repo_dir.path()).unwrap();
+        repo.lib.categories.push(Category { id: "tools".into(), name: "工具".into(), parent_id: None, color: None, icon: None });
+        let hint = ImportHint { packages: vec![dir.to_string_lossy().to_string()], category_id: Some("tools".into()), ..Default::default() };
+        let report = repo.import_paths(&[dir.clone()], Storage::Managed, &hint, &mut |_| {}).unwrap();
+        assert_eq!((report.imported, report.failed), (1, 0), "{:?}", report.items.iter().map(|i| &i.message).collect::<Vec<_>>());
+        let software = &repo.lib.software[0];
+        assert_eq!(software.name, "Tool");
+        assert_eq!(software.category_id.as_deref(), Some("tools"));
+        let file = &software.versions[0].files[0];
+        assert_eq!(file.path, "Tool/unknown/Tool");
+        assert_eq!(file.size, (b"main program".len() + b"library".len() + b"[x]".len()) as u64);
+        assert_eq!(file.platform, Platform::Windows);
+        assert!(repo.root().join("Tool/unknown/Tool/data/config.ini").is_file());
+        assert!(dir.join("Tool.exe").is_file(), "复制模式不动原文件夹");
+        assert!(repo.verify().problems.is_empty(), "文件夹的大小按里面的文件加起来核对");
+        assert_eq!(launch_target(&repo.root().join("Tool/unknown/Tool")), repo.root().join("Tool/unknown/Tool/Tool.exe"));
+
+        // 同一个文件夹再导入一次是重复的
+        let again = repo.import_paths(&[dir.clone()], Storage::Managed, &hint, &mut |_| {}).unwrap();
+        assert_eq!(again.duplicates, 1);
+        // 没有标成安装包时照旧展开：里面的 Tool.exe 当作一个安装包
+        let expanded = collect_files(&[dir.clone()], &repo.data_dir(), &HashSet::new());
+        assert_eq!(expanded, vec![dir.join("Tool.exe")]);
+    }
+
+    #[test]
+    fn app_bundles_in_a_scanned_folder_are_whole_packages() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        let src_dir = tempfile::tempdir().unwrap();
+        let app = src_dir.path().join("Foo.app");
+        fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        fs::write(app.join("Contents/MacOS/Foo"), b"binary").unwrap();
+        // .app 里面的 exe（比如带着的 Windows 工具）不能被当成单独的安装包
+        fs::write(app.join("Contents/MacOS/tool.exe"), b"inner").unwrap();
+        let mut plist = plist::Dictionary::new();
+        plist.insert("CFBundleName".into(), "Foo".into());
+        plist.insert("CFBundleShortVersionString".into(), "2.1".into());
+        plist.insert("NSHumanReadableCopyright".into(), "Copyright © 2024 Foo Labs".into());
+        plist::Value::Dictionary(plist).to_file_xml(app.join("Contents/Info.plist")).unwrap();
+        fs::write(src_dir.path().join("Bar-1.0.dmg"), b"dmg").unwrap();
+
+        let mut repo = Repo::open(repo_dir.path()).unwrap();
+        let mut files = collect_files(&[src_dir.path().to_path_buf()], &repo.data_dir(), &HashSet::new());
+        files.sort();
+        assert_eq!(files, vec![src_dir.path().join("Bar-1.0.dmg"), app.clone()]);
+
+        let report = import(&mut repo, &[src_dir.path().to_path_buf()], Storage::Indexed);
+        assert_eq!((report.imported, report.failed), (2, 0));
+        let foo = repo.lib.software.iter().find(|s| s.name == "Foo").unwrap();
+        assert_eq!(foo.versions[0].version, "2.1", "版本号从 Info.plist 里来");
+        assert_eq!(foo.publisher, "Foo Labs");
+        assert_eq!(foo.versions[0].files[0].platform, Platform::Macos);
+    }
+
+    #[test]
+    fn file_properties_fill_in_a_missing_version() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        let src_dir = tempfile::tempdir().unwrap();
+        let file = src_dir.path().join("setup.msi");
+        crate::fileinfo::write_test_msi(&file, "WinThumbsPreloader", "1.1.0.0", "Dmitry Bruhov");
+        let mut repo = Repo::open(repo_dir.path()).unwrap();
+        let report = import(&mut repo, &[file], Storage::Managed);
+        assert_eq!(report.imported, 1);
+        let software = &repo.lib.software[0];
+        assert_eq!(software.name, "WinThumbsPreloader", "文件名是 setup 这种时用属性里的产品名");
+        assert_eq!(software.publisher, "Dmitry Bruhov");
+        assert_eq!(software.versions[0].version, "1.1.0", "文件名里没有版本号时用属性里的");
+        assert_eq!(software.versions[0].files[0].path, "WinThumbsPreloader/1.1.0/setup.msi");
+    }
+
+    #[test]
+    fn failures_say_which_step_and_why() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        let mut repo = Repo::open(repo_dir.path()).unwrap();
+        let report = import(&mut repo, &[PathBuf::from("/nonexistent/Tool-1.0.exe")], Storage::Managed);
+        assert_eq!(report.failed, 1);
+        let item = &report.items[0];
+        assert_eq!(item.step.as_deref(), Some("read"));
+        assert_eq!(item.reason.as_deref(), Some("file_missing"));
+        assert!(item.message.as_deref().is_some_and(|m| !m.is_empty()));
     }
 }

@@ -6,6 +6,7 @@ import { ClassifyDialog } from "./components/ClassifyDialog";
 import { UninstallDialog } from "./components/UninstallDialog";
 import { ImportProgress, ResizeHandle, StatusBar, ToastView, TopBar, UpdateCard } from "./components/chrome";
 import { DialogHost } from "./components/dialogs";
+import { ImportDialog } from "./components/ImportDialog";
 import { PackageDetail } from "./components/PackageDetail";
 import { SettingsDialog, SetupGuide } from "./components/panels";
 import { Sidebar } from "./components/Sidebar";
@@ -13,6 +14,7 @@ import { SourceDialog } from "./components/SourcePanel";
 import { UpdateDialog } from "./components/UpdateDialog";
 import { onFileDrop } from "./lib/api";
 import { useDrag } from "./lib/drag";
+import { dropOnCategory, fileDropTargetAt } from "./lib/filedrop";
 import { RAIL_WIDTH, SIDEBAR, usePrefs } from "./lib/prefs";
 import { useStartup } from "./lib/startup";
 import { useApp, useT } from "./lib/store";
@@ -53,13 +55,25 @@ export default function App() {
       // 自检时不查更新，免得两边互相干扰
       else scheduleUpdateChecks();
     });
-    // 把文件拖进窗口就导入，软件和版本按文件名认，落在哪里都一样。
-    // 不再按落点归到某个软件下：拖的时候很容易停在别的软件或详情栏上，结果成了那个软件的版本
+    // 从系统拖文件进窗口：
+    // - 落在侧栏的某个分类上：直接导入进这个分类（带着文件夹时先打开导入窗口，问文件夹是整个导入还是导入里面的安装包）
+    // - 落在别处：打开导入窗口，选分类和存储方式，确认后才导入
+    // 不按落点归到某个软件下：拖的时候很容易停在别的软件或详情栏上，结果成了那个软件的版本
     const off = onFileDrop(
-      (paths) => void useApp.getState().importPaths(paths),
-      (over) => {
+      (paths, point) => {
         const app = useApp.getState();
-        if (app.dropping !== over) app.patch({ dropping: over });
+        const target = app.fileDropTarget ?? fileDropTargetAt(point);
+        app.patch({ fileDropTarget: null });
+        if (!app.library) return;
+        if (target) void dropOnCategory(paths, target === "uncategorized" ? null : target.slice("category:".length));
+        else app.patch({ importDialog: { paths } });
+      },
+      (over, point) => {
+        const app = useApp.getState();
+        const target = over && point ? fileDropTargetAt(point) : null;
+        // 停在侧栏的分类上时，那一行变色，中间栏不再显示大的“松开导入”
+        const dropping = over && target === null;
+        if (app.dropping !== dropping || app.fileDropTarget !== target) app.patch({ dropping, fileDropTarget: target });
       },
     );
     return () => void off.then((stop) => stop());
@@ -164,6 +178,7 @@ export default function App() {
       </div>
       <SettingsDialog />
       <SourceDialog />
+      <ImportDialog />
       <ClassifyDialog />
       <UninstallDialog />
       <DialogHost />

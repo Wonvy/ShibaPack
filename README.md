@@ -10,16 +10,19 @@ Everything lives in a folder you choose. The index is a plain `software.json` fi
 
 ## Features
 
-- **Organized by app and version.** Drop installers in and ShibaPack reads the app name, version, platform and architecture from the file name, then files them as `App/Version/file`. Duplicates are detected by SHA-256.
+- **Organized by app and version.** Drop installers in and ShibaPack reads the app name, version, platform and architecture from the file name, then files them as `App/Version/file`. When the file name has no version, it reads the product version, product name and company from the properties of Windows installers (exe and msi). What it reads is cached, and versions missed by earlier imports are filled in in the background. Duplicates are detected by SHA-256.
+- **Confirm before importing.** Dropping files onto the window opens an import window: see what each file will be recognized as, choose the current category, smart categorize, a category of your choice or none, and pick how to store them. The window stays open while importing, shows progress, and ends with what was imported, what was already there and what failed, saying for each failure which step went wrong and why (permission denied, disk full, file in use…). Drop files on a category in the sidebar to import them straight into it.
+- **Folders as installers.** A portable app's folder or a macOS `.app` can be imported as one app: the version, publisher and icon come from the main program inside, and **Run** opens that program. A folder full of installers still imports the installers inside it.
 - **Three ways to add files.** *Copy* puts installers into the library folder. *Move* does the same and removes the originals (across drives it checks the copy first). *Record location only* remembers where a file already is (for example on a NAS) and never touches it.
 - **Several versions per app.** Pick a default version or always use the newest, see which version is installed on this computer, and clean up old versions in one step.
 - **Categories, favorites and smart categorize.** Nested categories, drag and drop to file apps, and a built-in, offline rule set that suggests a category for about 300 well-known apps. With an AI model set up, the AI can categorize instead, and write summaries for apps that have none.
-- **Installed software.** Lists the apps installed on this computer (as a list or a grid), matches them with your library, and shows which ones can be upgraded from an installer you already have. The details pane shows a short summary of what each app does. Install, upgrade and uninstall from one place; after uninstalling, ShibaPack can look for leftover folders, shortcuts and registry entries (Library files on macOS) and clean up the ones you tick. Files go to the Recycle Bin and registry entries are backed up first.
+- **Installed software.** Lists the apps installed on this computer (as a list or a grid; in the grid, hover over an app to see its summary), matches them with your library, and shows which ones can be upgraded from an installer you already have. The details pane shows a short summary of what each app does. Install, upgrade and uninstall from one place; after uninstalling, ShibaPack can look for leftover folders, shortcuts and registry entries (Library files on macOS) and clean up the ones you tick. Files go to the Recycle Bin and registry entries are backed up first.
 - **Startup items and services.** Lists what runs at login and in the background (login items, LaunchAgents and LaunchDaemons on macOS; Run keys, the Startup folder and services on Windows; autostart entries and systemd units on Linux) with the system's own descriptions. Enable, disable, start and stop them, and change the startup type of Windows services. System items are hidden by default and ask for confirmation before you change them. With an AI model set up, the AI can explain what an item does and whether it is safe to disable.
 - **Online sources.** Link an app to Homebrew Cask, GitHub Releases or winget to check for new versions and download them into the library.
 - **One search box for everything.** The search box in the top bar lists matches from the library, installed apps and startup items in a dropdown, and also searches GitHub and Homebrew. Pick a scope on its right to search only one place. Click an online result to see its latest release and add it to the library.
 - **Real icons.** Icons are taken from installers and installed apps. For apps with a homepage or a GitHub repository, ShibaPack can also use the site icon or the repository owner's avatar. Apps without an icon get a plain gray letter tile.
 - **Safe by default.** The index is backed up automatically (the last 8 copies, plus one per day for two weeks) and always right before a delete, deleted files go to a trash folder for 30 days, and a check finds files that went missing or changed size.
+- **Failure log.** Failed imports, updates and startup item changes are recorded under **Settings → Failure log**. The log stays on this computer.
 - **Offline catalog.** Optionally writes an `index.html` at the library root, so you can browse the library in any browser, even without ShibaPack.
 - **Updates itself.** ShibaPack checks GitHub Releases and can install its own updates.
 - Light and dark themes, English and Chinese interface, and importable language packs.
@@ -57,12 +60,12 @@ The installers are not signed with an Apple or Microsoft certificate yet:
 - **macOS:** the first time you open ShibaPack, macOS blocks it. Go to **System Settings → Privacy & Security** and click **Open Anyway**. If macOS says the app is damaged, run `xattr -dr com.apple.quarantine /Applications/ShibaPack.app` once.
 - **Windows:** if SmartScreen appears, click **More info → Run anyway**.
 
-After that, ShibaPack updates itself from GitHub Releases.
+After that, ShibaPack updates itself from GitHub Releases. If an automatic update on macOS says it isn't allowed to replace the app, allow ShibaPack under **System Settings → Privacy & Security → App Management**, or click **Download installer** in the update window and install it yourself.
 
 ## Getting started
 
 1. On first launch, choose a folder for your library (a new empty folder, or one that already holds installers).
-2. Add installers: drag files or folders onto the window, use **Add → Import files / Import folder**, or **Add → Add from an online source**.
+2. Add installers: drag files or folders onto the window and choose a category and storage in the import window, or drop them on a category in the sidebar to import them straight into it. You can also use **Add → Import files / Import folder**, or **Add → Add from an online source**.
 3. Use **Smart categorize** on *Uncategorized* to file everything in one go.
 
 A library folder looks like this:
@@ -125,7 +128,7 @@ npm run test:core
 npm run typecheck
 ```
 
-`test:core` runs the unit tests of the core library: reading and writing the index, backup and recovery, file name recognition, import and deduplication, edits, icon extraction, installed software, online sources, downloads, web icons and the offline catalog.
+`test:core` runs the unit tests of the core library: reading and writing the index, backup and recovery, file name recognition, import and deduplication, folder installers, file properties, edits, icon extraction, installed software, startup items, online sources, downloads, web icons, the offline catalog and the failure log.
 
 Tests that need the network are skipped by default. Run them with `--ignored`:
 

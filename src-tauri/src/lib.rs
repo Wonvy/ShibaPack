@@ -4,11 +4,11 @@
 
 use serde::{Deserialize, Serialize};
 use shibapack_core::{
-    ai, aicache::{self, AiCache, CachedSuggestion, CachedText}, download,
+    ai, aicache::{self, AiCache, CachedSuggestion, CachedText}, download, faillog,
     leftovers::{self, Leftover, RemoveReport, Target},
     import::{self, BatchSaver, Outcome, Plan},
     identify::same_software,
-    installed,
+    installed, AtStep,
     sources::{self, Candidate, SourceError},
     startup::{self, Listing, StartupItem},
     summary, AiSettings, Assignment, BackupInfo, Category, ImportHint, ImportReport, InstalledApp, Library, Progress, Release, Repo, Settings,
@@ -66,6 +66,13 @@ struct AppState {
     startup_turn: Mutex<()>,
     /// 读改写 AI 缓存文件时一次只让一个命令做（问 AI 的时候不占着它）。
     ai_cache_turn: Mutex<()>,
+    /// 失败日志放在哪（应用自己的日志文件夹，只和这台电脑有关）。
+    log_dir: PathBuf,
+}
+
+/// 记一条失败日志。
+fn log_failure_to(state: &State<AppState>, area: &str, message: &str, detail: &str) {
+    faillog::append(&state.log_dir, area, message, detail);
 }
 
 struct UninstallSession {
@@ -337,7 +344,7 @@ async fn import_paths(app: AppHandle, paths: Vec<String>, mode: Storage, move_fi
         let (root, data_dir, mut known) = with_repo_quick(&state, None, |repo| Ok((repo.root().to_path_buf(), repo.data_dir(), repo.known_paths())))
             .map_err(|e| e.to_string())?;
         // 展开文件夹也不占着仓库：NAS 上的大文件夹要走一会儿
-        let files = import::collect_files(&paths, &data_dir);
+        let files = import::collect_files(&paths, &data_dir, &hint.package_set());
         let total = files.len();
         let mut report = ImportReport::default();
         let mut saver = BatchSaver::new();
@@ -348,6 +355,10 @@ async fn import_paths(app: AppHandle, paths: Vec<String>, mode: Storage, move_fi
             }
             progress("import", i + 1, total, file.file_name().unwrap_or_default().to_string_lossy().to_string());
             let outcome = import_one(&state, &root, file, mode, move_files, &hint, &mut known);
+            if let Err(err) = &outcome {
+                let message = format!("{} · {} · {err}", err.step().unwrap_or("import"), err.reason());
+                log_failure_to(&state, "import", &message, &file.to_string_lossy());
+            }
             report.add(file, outcome);
             with_repo_quick(&state, Some(&root), |repo| saver.maybe_save(repo, report.imported)).map_err(|e| e.to_string())?;
         }
@@ -375,13 +386,24 @@ fn import_one(
     if let Some(owner) = with_repo_quick(state, Some(root), |repo| Ok(repo.already_known(file, known)))? {
         return Ok(Outcome::Duplicate(owner));
     }
-    let hashed = import::hash_source(file)?;
+    let hashed = import::hash_source(file).at("read")?;
     let placement = match with_repo_quick(state, Some(root), |repo| Ok(repo.plan_import(&hashed, mode, hint)))? {
         Plan::Duplicate(owner) => return Ok(Outcome::Duplicate(owner)),
         Plan::Add(placement) => placement,
     };
-    let placed = import::place_file(root, &hashed, &placement, move_files)?;
-    with_repo_quick(state, Some(root), |repo| repo.register(&hashed, placement, placed, known))
+    let placed = import::place_file(root, &hashed, &placement, move_files).at("copy")?;
+    with_repo_quick(state, Some(root), |repo| repo.register(&hashed, placement, placed, known)).at("save")
+}
+
+/// 导入前看一看拖进来的东西（给确认窗口用）：文件夹像不像一个软件、里面有几个安装包、会被认成什么。
+#[tauri::command]
+async fn inspect_drop(app: AppHandle, paths: Vec<String>) -> CmdResult<Vec<import::DropEntry>> {
+    blocking(app, move |_app, state| {
+        let data_dir = with_repo(&state, |repo| Ok(repo.data_dir()))?;
+        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+        Ok(import::inspect(&paths, &data_dir))
+    })
+    .await
 }
 
 /// 在两个文件之间停下正在进行的导入。已经导入的保留。
@@ -455,10 +477,12 @@ async fn delete_file(app: AppHandle, software_id: String, version_id: String, fi
 async fn run_file(app: AppHandle, software_id: String, version_id: String, file_id: String) -> CmdResult<()> {
     blocking(app, move |app, state| {
         let path = with_repo(&state, |repo| repo.file_path(&software_id, &version_id, &file_id))?;
-        if !path.is_file() {
+        if !path.exists() {
             return Err("file_missing".into());
         }
-        app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+        // 文件夹当作安装包时打开里面的主程序（.app 直接打开），找不到就打开文件夹
+        let target = import::launch_target(&path);
+        app.opener().open_path(target.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
     })
     .await
 }
@@ -858,6 +882,9 @@ async fn startup_action(app: AppHandle, id: String, action: String) -> CmdResult
         let action = startup::Action::parse(&action).ok_or_else(|| "not_supported".to_string())?;
         let item = find_startup(&state, &id)?;
         let result = startup::apply(&item, &action, &local_state_dir(app)?);
+        if let Err(err) = &result {
+            log_failure_to(&state, "startup", err, &format!("{action:?} · {}", item.label));
+        }
         // 失败了也重新列一遍：有的改动可能做了一半（比如停用成功、停止失败）
         let listing = relist_startup(app, &state)?;
         result.map(|()| listing)
@@ -888,6 +915,8 @@ fn open_startup_settings(app: AppHandle, page: String) -> CmdResult<()> {
         ("automation", "macos") => "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
         ("loginItems", "macos") => "x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
         ("loginItems", "windows") => "ms-settings:startupapps",
+        // macOS 的“App 管理”：没有苹果开发者签名的应用要在这里放行，才能更新自己
+        ("appManagement", "macos") => "x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles",
         _ => return Err("not_supported".into()),
     };
     app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
@@ -908,35 +937,156 @@ fn cache_dir(state: &State<AppState>) -> CmdResult<PathBuf> {
     with_repo(state, |repo| Ok(repo.data_dir().join("cache")))
 }
 
-/// 让 AI 解释一项启动项或服务是做什么的、能不能停用。解释记在缓存里，同一项下次直接用。
-/// `mode`：`cached` 只看缓存（没有就返回 null，不问 AI）；`auto` 有缓存用缓存，没有才问；`refresh` 一定重新问。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Explanations {
+    /// 启动项 id → 解释。
+    explanations: HashMap<String, Explanation>,
+    /// 这次真的问了 AI 的有几项（其余是以前记下的）。
+    asked: usize,
+    /// 问了但 AI 没给出解释的有几项（漏掉的、说不认识的）。
+    missing: usize,
+}
+
+/// 让 AI 解释一批启动项或服务：是什么、能不能停用。以前解释过的直接用记下的；没解释过的凑成一批问 AI
+/// （每次请求放 10 项），不是一项一项地问。解释记在仓库的缓存里。进度通过 `ai://progress` 发给界面。
+/// `mode`：`cached` 只看缓存、不问 AI；`auto` 有缓存用缓存，没有才问；`refresh` 全部重新问。
 #[tauri::command]
-async fn ai_explain_startup(app: AppHandle, id: String, mode: String) -> CmdResult<Option<Explanation>> {
-    blocking(app, move |_app, state| {
-        let item = find_startup(&state, &id)?;
+async fn ai_explain_startup_many(app: AppHandle, ids: Vec<String>, mode: String) -> CmdResult<Explanations> {
+    blocking(app, move |app, state| {
+        let items: Vec<StartupItem> = {
+            let list = state.startup.lock().map_err(|_| "internal".to_string())?;
+            ids.iter().filter_map(|id| list.iter().find(|item| &item.id == id).cloned()).collect()
+        };
         let dir = cache_dir(&state)?;
         let language = with_repo(&state, |repo| Ok(repo.lib.settings.language.clone()))?;
-        let key = aicache::explain_key(std::env::consts::OS, &item.source, &item.label, &language);
-        if mode != "refresh" {
-            let _turn = state.ai_cache_turn.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(hit) = AiCache::load(&dir).explain.get(&key) {
-                return Ok(Some(Explanation { text: hit.text.clone(), model: hit.model.clone(), at: hit.at.clone(), cached: true }));
-            }
-        }
-        if mode == "cached" {
-            return Ok(None);
-        }
-        let (service, library) = repo_ai(&state)?;
-        let text = ai::explain_startup(&service, &library.settings.language, &startup::facts(&item)).map_err(|e| e.code())?;
-        let entry = CachedText { text: text.clone(), model: service.model().to_string(), at: shibapack_core::now() };
+        let key_of = |item: &StartupItem| aicache::explain_key(std::env::consts::OS, &item.source, &item.label, &language);
+
+        let mut explanations = HashMap::new();
+        let mut todo: Vec<&StartupItem> = Vec::new();
         {
             let _turn = state.ai_cache_turn.lock().unwrap_or_else(|e| e.into_inner());
-            let mut cache = AiCache::load(&dir);
-            cache.explain.insert(key, entry.clone());
-            // 存不进去也照样把解释给用户，只是下次要重新问
-            let _ = cache.save(&dir);
+            let cache = AiCache::load(&dir);
+            for item in &items {
+                match cache.explain.get(&key_of(item)).filter(|_| mode != "refresh") {
+                    Some(hit) => {
+                        explanations.insert(item.id.clone(), Explanation { text: hit.text.clone(), model: hit.model.clone(), at: hit.at.clone(), cached: true });
+                    }
+                    None => todo.push(item),
+                }
+            }
         }
-        Ok(Some(Explanation { text, model: entry.model, at: entry.at, cached: false }))
+        if mode == "cached" || todo.is_empty() {
+            return Ok(Explanations { explanations, asked: 0, missing: 0 });
+        }
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        if let Ok(mut current) = state.ai_cancel.lock() {
+            current.store(true, Ordering::SeqCst);
+            *current = cancel.clone();
+        }
+        let (service, library) = repo_ai(&state)?;
+        let questions: Vec<(String, String)> = todo.iter().map(|item| (item.id.clone(), startup::facts(item))).collect();
+        let answers = ai::explain_startup_many(&service, &library.settings.language, &questions, &cancel, &mut |done, total| {
+            let _ = app.emit("ai://progress", AiProgress { done, total });
+        })
+        .map_err(|e| e.code())?;
+
+        let at = shibapack_core::now();
+        let model = service.model().to_string();
+        let _turn = state.ai_cache_turn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = AiCache::load(&dir);
+        for (id, text) in &answers {
+            let Some(item) = todo.iter().find(|item| &item.id == id) else { continue };
+            cache.explain.insert(key_of(item), CachedText { text: text.clone(), model: model.clone(), at: at.clone() });
+            explanations.insert(id.clone(), Explanation { text: text.clone(), model: model.clone(), at: at.clone(), cached: false });
+        }
+        // 存不进去也照样把解释给用户，只是下次要重新问
+        let _ = cache.save(&dir);
+        Ok(Explanations { explanations, asked: todo.len(), missing: todo.len() - answers.len() })
+    })
+    .await
+}
+
+// ── 失败日志与自己的更新 ─────────────────────────────────────
+
+/// 界面上出的错也记进失败日志（导入、启动项这些后端自己会记）。
+#[tauri::command]
+fn log_failure(state: State<AppState>, area: String, message: String, detail: Option<String>) {
+    log_failure_to(&state, &area, &message, detail.as_deref().unwrap_or(""));
+}
+
+/// 最近的失败日志，新的在前。
+#[tauri::command]
+async fn read_failure_log(app: AppHandle, limit: Option<usize>) -> Vec<faillog::FailureEntry> {
+    blocking(app, move |_app, state| faillog::read(&state.log_dir, limit.unwrap_or(500))).await
+}
+
+#[tauri::command]
+async fn clear_failure_log(app: AppHandle) -> CmdResult<()> {
+    blocking(app, move |_app, state| faillog::clear(&state.log_dir).map_err(|e| e.to_string())).await
+}
+
+/// 在文件管理器里打开日志文件夹（定位到日志文件）。
+#[tauri::command]
+async fn open_log_folder(app: AppHandle) -> CmdResult<()> {
+    blocking(app, move |app, state| {
+        std::fs::create_dir_all(&state.log_dir).map_err(|e| e.to_string())?;
+        let file = faillog::path(&state.log_dir);
+        if file.exists() {
+            app.opener().reveal_item_in_dir(file).map_err(|e| e.to_string())
+        } else {
+            app.opener().open_path(state.log_dir.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+        }
+    })
+    .await
+}
+
+/// 自己更新时用 latest.json 里的哪一项。Windows 上按当初怎么装的来：用 `-setup.exe` 装的（当前用户，
+/// 文件夹里有 uninstall.exe）用 NSIS 的更新包，不需要管理员权限；用 MSI 装的（所有用户，在 Program Files 里）用 MSI 的。
+/// 原来一律用 MSI，用 `-setup.exe` 装的人更新时要管理员权限，没有就装不上。别的系统用默认的。
+#[tauri::command]
+fn updater_target() -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        "x86" => "i686",
+        other => other,
+    };
+    let exe = std::env::current_exe().ok()?;
+    let nsis = exe.parent().is_some_and(|dir| dir.join("uninstall.exe").exists());
+    Some(format!("windows-{arch}-{}", if nsis { "nsis" } else { "msi" }))
+}
+
+/// 自动安装装不上时（macOS 不让没有签名的应用替换自己），把这个版本的安装包下载到“下载”文件夹并打开，
+/// 让用户自己装：macOS 是磁盘映像，Windows 是 `-setup.exe`，Linux 是 AppImage。返回下载好的文件路径。
+#[tauri::command]
+async fn download_installer(app: AppHandle, version: String) -> CmdResult<String> {
+    blocking(app, move |app, state| {
+        let version = version.trim_start_matches('v').to_string();
+        if version.is_empty() || !version.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')) {
+            return Err("invalid_reference".into());
+        }
+        let name = if cfg!(target_os = "macos") {
+            format!("ShibaPack_{version}_universal.dmg")
+        } else if cfg!(windows) {
+            format!("ShibaPack_{version}_x64-setup.exe")
+        } else {
+            format!("ShibaPack_{version}_amd64.AppImage")
+        };
+        let url = format!("https://github.com/{RELEASE_REPO}/releases/download/v{version}/{name}");
+        let dir = app.path().download_dir().map_err(|e| e.to_string())?;
+        let cancel = AtomicBool::new(false);
+        let done = download::download(&url, &dir, &name, None, &cancel, &mut |_, _| {}).map_err(|e| {
+            let code = e.code();
+            log_failure_to(&state, "update", &code, &url);
+            code
+        })?;
+        app.opener().open_path(done.path.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())?;
+        Ok(done.path.to_string_lossy().to_string())
     })
     .await
 }
@@ -951,6 +1101,19 @@ async fn fill_icons(app: AppHandle) -> CmdResult<FillResult> {
         let mut tried = state.icon_tried.lock().map_err(|_| "internal".to_string())?;
         with_repo(&state, |repo| {
             let (changed, more) = repo.fill_icons(8, &mut tried, &apps)?;
+            Ok(FillResult { library: changed.then(|| repo.lib.clone()), more })
+        })
+    })
+    .await
+}
+
+/// 用安装包自带的属性补版本号和发布者（版本号是空的文件挪到读到的版本），一次最多读 8 个文件。
+/// 读过的记在仓库的缓存里，同一个文件不再读。
+#[tauri::command]
+async fn fill_file_info(app: AppHandle) -> CmdResult<FillResult> {
+    blocking(app, move |_app, state| {
+        with_repo(&state, |repo| {
+            let (changed, more) = repo.fill_file_info(8)?;
             Ok(FillResult { library: changed.then(|| repo.lib.clone()), more })
         })
     })
@@ -1346,6 +1509,47 @@ async fn ai_describe(app: AppHandle, name: String, publisher: Option<String>) ->
     .await
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DescribeTarget {
+    name: String,
+    #[serde(default)]
+    publisher: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DescribeResult {
+    library: Library,
+    /// 写好了几个。
+    written: usize,
+    /// AI 不认识、或者漏掉的有几个。
+    unknown: usize,
+}
+
+/// 让 AI 给一批软件写简介：凑成一批问（每次请求放 15 个），写好的一次存进索引。进度通过 `ai://progress` 发给界面。
+#[tauri::command]
+async fn ai_describe_many(app: AppHandle, items: Vec<DescribeTarget>) -> CmdResult<DescribeResult> {
+    blocking(app, move |app, state| {
+        let targets: Vec<(String, String)> =
+            items.into_iter().map(|t| (t.name.trim().to_string(), t.publisher)).filter(|(name, _)| !name.is_empty()).collect();
+        let cancel = Arc::new(AtomicBool::new(false));
+        if let Ok(mut current) = state.ai_cancel.lock() {
+            current.store(true, Ordering::SeqCst);
+            *current = cancel.clone();
+        }
+        let (service, library) = repo_ai(&state)?;
+        let written = ai::describe_many(&service, &library, &targets, &cancel, &mut |done, total| {
+            let _ = app.emit("ai://progress", AiProgress { done, total });
+        })
+        .map_err(|e| e.code())?;
+        let count = written.len();
+        let library = mutate(&state, |repo| repo.set_summaries(written))?;
+        Ok(DescribeResult { library, written: count, unknown: targets.len() - count })
+    })
+    .await
+}
+
 /// 用 AI 给一批软件推荐分类，只读。进度通过 `ai://progress` 事件发给前端。
 #[tauri::command]
 async fn ai_suggest_categories(app: AppHandle, software_ids: Vec<String>, refresh: Option<bool>) -> CmdResult<AiSuggestions> {
@@ -1478,6 +1682,7 @@ pub fn run() {
                 startup: Mutex::new(Vec::new()),
                 startup_turn: Mutex::new(()),
                 ai_cache_turn: Mutex::new(()),
+                log_dir: app.path().app_log_dir().unwrap_or_else(|_| std::env::temp_dir().join("ShibaPack-logs")),
             });
             Ok(())
         })
@@ -1526,8 +1731,10 @@ pub fn run() {
             startup_action,
             reveal_startup,
             open_startup_settings,
-            ai_explain_startup,
+            ai_explain_startup_many,
             fill_icons,
+            fill_file_info,
+            inspect_drop,
             fetch_icon,
             fetch_summary,
             selftest_report,
@@ -1535,6 +1742,12 @@ pub fn run() {
             source_search,
             github_search,
             release_notes,
+            log_failure,
+            read_failure_log,
+            clear_failure_log,
+            open_log_folder,
+            updater_target,
+            download_installer,
             subscribe,
             unsubscribe,
             check_updates,
@@ -1551,6 +1764,7 @@ pub fn run() {
             ai_models,
             ai_test,
             ai_describe,
+            ai_describe_many,
             set_summary,
             ai_suggest_categories,
             cancel_ai,

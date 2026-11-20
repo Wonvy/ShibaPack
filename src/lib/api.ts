@@ -14,9 +14,12 @@ import type {
   Category,
   CheckProgress,
   CheckResult,
+  DescribeResult,
   DownloadProgress,
-  Explanation,
+  Explanations,
+  FailureEntry,
   FillResult,
+  DropEntry,
   ImportHint,
   ImportResult,
   InstalledApp,
@@ -117,14 +120,31 @@ export const api = {
   /** 启用、停用、启动、停止、重启，或改服务的启动类型。返回改完后重新列出来的结果。 */
   startupAction: (id: string, action: StartupAction) => call<StartupListing>("startup_action", { id, action }),
   revealStartup: (id: string) => call<void>("reveal_startup", { id }),
-  /** 打开系统自己管理启动项的设置页：`loginItems`，或 macOS 上允许控制“系统事件”的 `automation`。 */
-  openStartupSettings: (page: "loginItems" | "automation") => call<void>("open_startup_settings", { page }),
   /**
-   * 让 AI 解释这一项是做什么的、能不能停用。解释记在仓库的缓存里：
-   * `cached` 只看缓存（没有返回 null，不问 AI）；`auto` 有就用、没有才问；`refresh` 一定重新问。
+   * 打开系统自己的设置页：`loginItems` 启动项，macOS 上允许控制“系统事件”的 `automation`，
+   * 允许没有签名的应用更新自己的 `appManagement`（App 管理）。
    */
-  aiExplainStartup: (id: string, mode: "cached" | "auto" | "refresh") => call<Explanation | null>("ai_explain_startup", { id, mode }),
+  openStartupSettings: (page: "loginItems" | "automation" | "appManagement") => call<void>("open_startup_settings", { page }),
+  /** 记一条失败日志。 */
+  logFailure: (area: string, message: string, detail?: string) => call<void>("log_failure", { area, message, detail: detail ?? null }),
+  /** 最近的失败日志，新的在前。 */
+  readFailureLog: (limit = 500) => call<FailureEntry[]>("read_failure_log", { limit }),
+  clearFailureLog: () => call<void>("clear_failure_log"),
+  openLogFolder: () => call<void>("open_log_folder"),
+  /** 自己更新时用 latest.json 里的哪一项（Windows 按当初怎么装的来），其他系统是 null。 */
+  updaterTarget: () => call<string | null>("updater_target"),
+  /** 把这个版本的安装包下载到“下载”文件夹并打开，返回文件路径。 */
+  downloadInstaller: (version: string) => call<string>("download_installer", { version }),
+  /**
+   * 让 AI 解释一批启动项是做什么的、能不能停用：没解释过的凑成一批问，不是一项一项问。解释记在仓库的缓存里：
+   * `cached` 只看缓存、不问 AI；`auto` 有就用、没有才问；`refresh` 全部重新问。进度见 `onAiProgress`。
+   */
+  aiExplainStartup: (ids: string[], mode: "cached" | "auto" | "refresh") => call<Explanations>("ai_explain_startup_many", { ids, mode }),
+  /** 让 AI 一批写简介（每次请求放 15 个），写好的一次存进索引。进度见 `onAiProgress`。 */
+  aiDescribeMany: (items: { name: string; publisher?: string }[]) => call<DescribeResult>("ai_describe_many", { items }),
   fillIcons: () => call<FillResult>("fill_icons"),
+  fillFileInfo: () => call<FillResult>("fill_file_info"),
+  inspectDrop: (paths: string[]) => call<DropEntry[]>("inspect_drop", { paths }),
   /** 联网找图标（主页的网站图标或 GitHub 头像）。返回图标的相对路径，没找到时是 null。 */
   fetchIcon: (id: string) => call<string | null>("fetch_icon", { id }),
   /** 按名字取简介（需要时顺带翻译）。`refresh` 为真时不管有没有都重新取。 */

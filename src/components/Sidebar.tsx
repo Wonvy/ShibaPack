@@ -79,8 +79,11 @@ export function Sidebar() {
   const updates = library.software.filter(hasUpdate).length;
   // 正在拖一个软件时，“未分类”即使是空的也要露出来，好让人把软件拖回去
   const draggingSoftware = useDrag((state) => state.payload?.kind === "software");
-  const overUncategorized = useDrag((state) => state.target !== null && state.target.category === null);
-  const dropCategory = useDrag((state) => state.target?.category);
+  // 软件拖到分类上，或者从系统把安装包拖到分类上（直接导入进这个分类）
+  const fileDrop = useApp((state) => state.fileDropTarget);
+  const overUncategorized = useDrag((state) => state.target !== null && state.target.category === null) || fileDrop === "uncategorized";
+  const dragCategory = useDrag((state) => state.target?.category);
+  const dropCategory = dragCategory ?? (fileDrop?.startsWith("category:") ? fileDrop.slice("category:".length) : undefined);
 
   const isScope = (target: Scope) =>
     route === "library" && scope.kind === target.kind && (scope.kind !== "category" || scope.id === (target as { id: string }).id);
@@ -479,6 +482,7 @@ function Tree(props: TreeProps) {
   const collapsed = usePrefs((state) => state.collapsed);
   const toggle = usePrefs((state) => state.toggleCollapsed);
   const dropTarget = useDrag((state) => state.target);
+  const fileDrop = useApp((state) => state.fileDropTarget);
   const { parentId, depth, counts, isActive, onSelect, menuFor } = props;
 
   return (
@@ -489,7 +493,7 @@ function Tree(props: TreeProps) {
         const Icon = categoryIcon(category.icon);
         const count = counts.get(category.id) ?? 0;
         // 有东西正拖到这一行上：放进去时整行变色，排到前后时在上沿或下沿画一条线
-        const zone = dropTarget?.category === category.id ? dropTarget.zone : null;
+        const zone = dropTarget?.category === category.id ? dropTarget.zone : fileDrop === `category:${category.id}` ? "inside" : null;
         return (
           <div key={category.id}>
             <ContextMenu items={menuFor(category)}>

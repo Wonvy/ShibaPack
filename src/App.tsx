@@ -3,6 +3,7 @@
 import { Download } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ClassifyDialog } from "./components/ClassifyDialog";
+import { UninstallDialog } from "./components/UninstallDialog";
 import { ImportProgress, ResizeHandle, StatusBar, ToastView, TopBar, UpdateCard } from "./components/chrome";
 import { DialogHost } from "./components/dialogs";
 import { PackageDetail } from "./components/PackageDetail";
@@ -147,6 +148,8 @@ export default function App() {
               </div>
             </div>
           )}
+          {/* 状态栏只占中间一栏，左边的侧栏和右边的详情栏一直到窗口底部 */}
+          <StatusBar />
         </main>
         {docked && (
           <>
@@ -157,19 +160,19 @@ export default function App() {
           </>
         )}
         {floating && (
-          // 让出中间栏的工具栏（44px），点列表空白处或按 Esc 关闭
+          // 让出中间栏的工具栏（44px）和底下的状态栏（28px），点列表空白处或按 Esc 关闭
           <aside
-            className="absolute top-11 right-0 bottom-0 z-30 min-h-0 animate-fade border-l border-line bg-bg shadow-pop"
+            className="absolute top-11 right-0 bottom-7 z-30 min-h-0 animate-fade border-l border-line bg-bg shadow-pop"
             style={{ width: Math.min(detailWidth, windowWidth - sidebarWidth - 48) }}
           >
             {route === "library" ? <PackageDetail /> : <InstalledDetail />}
           </aside>
         )}
       </div>
-      <StatusBar />
       <SettingsDialog />
       <SourceDialog />
       <ClassifyDialog />
+      <UninstallDialog />
       <DialogHost />
       <ToastView />
       <UpdateCard />

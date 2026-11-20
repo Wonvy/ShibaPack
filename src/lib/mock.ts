@@ -14,6 +14,7 @@ import type {
   ImportItem,
   InstalledApp,
   LangPack,
+  Leftover,
   Library,
   PackageFile,
   Platform,
@@ -275,6 +276,35 @@ export function mockOnAi(handler: (progress: AiProgress) => void): () => void {
   return () => aiListeners.delete(handler);
 }
 
+/** 预览里正在卸载的软件和找到的残留。 */
+let uninstalling = { windows: false, name: "", startedAt: 0 };
+let lastLeftovers: Leftover[] = [];
+
+function mockLeftovers(name: string, windows: boolean): Leftover[] {
+  const MB = 1024 * 1024;
+  const item = (kind: Leftover["kind"], path: string, confidence: Leftover["confidence"], reason: string, size: number | null, value?: string): Leftover =>
+    ({ kind, path, confidence, reason, size, ...(value ? { value } : {}) });
+  if (windows) {
+    const short = name.replace(/^Microsoft /, "");
+    return [
+      item("folder", `C:\\Program Files (x86)\\Microsoft\\${short}\\Application`, "high", "installDir", 220 * MB),
+      item("folder", `C:\\Users\\demo\\AppData\\Local\\Microsoft\\${short}`, "high", "publisherName", 1840 * MB),
+      item("file", `C:\\Users\\demo\\Desktop\\${name}.lnk`, "medium", "shortcut", 2048),
+      item("folder", `C:\\Users\\demo\\AppData\\Roaming\\${short}Backup`, "low", "nameContains", 3 * MB),
+      item("registryKey", `HKCU\\Software\\Microsoft\\${short}`, "high", "publisherName", null),
+      item("registryKey", `HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${name}`, "high", "uninstallKey", null),
+      item("registryValue", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "high", "startup", null, `${short}AutoLaunch`),
+    ];
+  }
+  const id = `com.example.${name.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+  return [
+    item("folder", `/Users/demo/Library/Caches/${id}`, "high", "bundleId", 80 * MB),
+    item("file", `/Users/demo/Library/Preferences/${id}.plist`, "high", "bundleId", 4096),
+    item("folder", `/Users/demo/Library/Saved Application State/${id}.savedState`, "high", "bundleId", 20480),
+    item("folder", `/Users/demo/Library/Application Support/${name}`, "medium", "name", 320 * MB),
+  ];
+}
+
 let langPacks: LangPack[] = [];
 const downloadListeners = new Set<(progress: DownloadProgress) => void>();
 const checkListeners = new Set<(progress: CheckProgress) => void>();
@@ -315,7 +345,8 @@ let installedApps: InstalledApp[] = [
   app("Obsidian", "1.7.4", "Dynalist Inc", 398, 150),
   app("Safari", "18.2", "Apple", 14, 400, "system"),
   app("Calculator", "11.0", "Apple", 6, 400, "system"),
-  app("Microsoft Edge", "131.0.2903.86", "Microsoft Corporation", 1310, 30),
+  // 预览里假装 Edge 是 Windows 上用卸载程序卸的那种，好看到“等待卸载程序”和注册表残留
+  { ...app("Microsoft Edge", "131.0.2903.86", "Microsoft Corporation", 1310, 30), source: "registry", location: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application" },
   app("DataGrip", "2024.3", "JetBrains s.r.o", 2260, 45),
   app("VLC", "3.0.21", "VideoLAN", 148, 320),
 ];
@@ -621,8 +652,34 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       }
       return links;
     }
-    case "uninstall_installed":
+    case "uninstall_installed": {
+      const target = installedApps.find((candidate) => candidate.id === args.id);
+      uninstalling = { windows: target?.source === "registry", name: target?.name ?? "", startedAt: Date.now() };
       installedApps = installedApps.filter((candidate) => candidate.id !== args.id);
+      return null;
+    }
+    case "uninstall_status":
+      // Windows 那种要等卸载程序跑完，预览里等 3 秒
+      return uninstalling.windows && Date.now() - uninstalling.startedAt < 3000;
+    case "scan_leftovers": {
+      await sleep(800);
+      lastLeftovers = mockLeftovers(uninstalling.name, uninstalling.windows);
+      return { items: lastLeftovers, stillInstalled: uninstalling.windows && Date.now() - uninstalling.startedAt < 3000 };
+    }
+    case "remove_leftovers": {
+      await sleep(700);
+      const chosen = (args.indices as number[]).map((i) => lastLeftovers[i]).filter(Boolean);
+      // 普通权限删不掉 Program Files 和 HKLM 下的；以管理员身份重试就都删掉
+      const denied = args.elevated ? [] : chosen.filter((item) => item.path.startsWith("C:\\Program Files") || item.path.startsWith("HKLM"));
+      const registry = chosen.some((item) => item.kind.startsWith("registry"));
+      return {
+        removed: chosen.length - denied.length,
+        failed: denied.map((item) => ({ item, reason: "access_denied" })),
+        needsAdmin: denied.length > 0,
+        backup: registry ? "C:\\Users\\demo\\AppData\\Local\\ShibaPack\\uninstall-backups\\20261120-101500" : null,
+      };
+    }
+    case "open_uninstall_backup":
       return null;
     case "fill_icons":
       return { library: null, more: false };

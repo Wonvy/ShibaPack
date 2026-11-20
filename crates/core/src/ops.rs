@@ -800,6 +800,8 @@ mod tests {
             icon: Some(local.to_string_lossy().to_string()),
             icon_source: None,
             uninstall_command: None,
+            install_dir: None,
+            bundle_id: None,
         };
         let (changed, _) = repo.fill_icons(8, &mut HashSet::new(), &[app]).unwrap();
         assert!(changed);

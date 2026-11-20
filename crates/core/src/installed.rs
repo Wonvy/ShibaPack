@@ -7,6 +7,7 @@
 use crate::icons;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize)]
@@ -19,7 +20,7 @@ pub struct InstalledApp {
     pub publisher: String,
     /// 安装时间，ISO 8601；不知道时为空。
     pub installed_at: String,
-    /// 占用空间。macOS 上要另外统计（见 `measure`），列出来时先是 `None`。
+    /// 安装程序登记的占用空间（Windows 注册表的 EstimatedSize）。实际占用另外统计，见 `size_sources`。
     pub size: Option<u64>,
     /// applications / user / system / registry / desktop / flatpak / snap
     pub source: String,
@@ -33,6 +34,12 @@ pub struct InstalledApp {
     /// Windows 上系统登记的卸载命令。
     #[serde(skip)]
     pub uninstall_command: Option<String>,
+    /// 这个软件自己的文件夹，可以走一遍统计实际占用：macOS 是 .app，Windows 是登记的 InstallLocation。
+    #[serde(skip)]
+    pub install_dir: Option<PathBuf>,
+    /// macOS 的 bundle id（com.tencent.xinWeChat），卸载后按它找残留。
+    #[serde(skip)]
+    pub bundle_id: Option<String>,
 }
 
 /// 列出已安装的软件，按名称排序。图标取出来放在 `icon_cache` 里，下次直接用。
@@ -56,22 +63,132 @@ fn icon_for(source: &Path, cache: &Path) -> Option<String> {
     Some(path.to_string_lossy().to_string())
 }
 
-/// 统计一个软件占用的空间。只对 macOS 的 .app 有意义，别的系统直接用登记的大小。
-pub fn measure(app: &InstalledApp) -> Option<u64> {
-    if app.size.is_some() {
-        return app.size;
+/// 统计大小时，一个文件夹里最多走这么多个文件。再多就不像是一个软件自己的文件夹了，改用登记的大小。
+const MAX_FILES: usize = 300_000;
+
+/// 一个软件的大小从哪来。
+#[derive(Debug, Clone, PartialEq)]
+pub enum SizeSource {
+    /// 把这个文件夹走一遍，加起来。
+    Scan(PathBuf),
+    /// 用安装程序登记的大小。
+    Registered(u64),
+    Unknown,
+}
+
+/// 决定每个软件的大小怎么统计：有自己的文件夹就走一遍（实际占用），否则用登记的大小。
+///
+/// Windows 上登记的安装位置有时是公共文件夹（整个盘、Program Files、用户文件夹……），或者几个软件共用、
+/// 互相套着，走一遍会把别的东西算进来，这些都改用登记的大小。
+pub fn size_sources(apps: &[InstalledApp]) -> Vec<(String, SizeSource)> {
+    size_sources_with(apps, &Protected::from_env(), cfg!(windows))
+}
+
+fn size_sources_with(apps: &[InstalledApp], protected: &Protected, fold_case: bool) -> Vec<(String, SizeSource)> {
+    let keys: Vec<Option<String>> = apps.iter().map(|app| app.install_dir.as_deref().map(|dir| path_key(dir, fold_case))).collect();
+    let mut users: HashMap<&str, usize> = HashMap::new();
+    for key in keys.iter().flatten() {
+        *users.entry(key.as_str()).or_default() += 1;
     }
-    let path = Path::new(&app.location);
-    if !path.is_dir() || path.extension().is_none_or(|ext| ext != "app") {
+    apps.iter()
+        .zip(&keys)
+        .map(|(app, key)| {
+            let own = key.as_deref().filter(|key| {
+                !protected.covers(key)
+                    // 只有这一个软件登记在这里
+                    && users.get(key) == Some(&1)
+                    // 里面没有套着别的软件的文件夹
+                    && !users.keys().any(|other| other.len() > key.len() && other.starts_with(key) && other[key.len()..].starts_with('/'))
+            });
+            let source = match (own, &app.install_dir, app.size) {
+                (Some(_), Some(dir), _) => SizeSource::Scan(dir.clone()),
+                (_, _, Some(size)) => SizeSource::Registered(size),
+                _ => SizeSource::Unknown,
+            };
+            (app.id.clone(), source)
+        })
+        .collect()
+}
+
+/// 比较路径用的样子：统一用 `/`，去掉末尾的分隔符；Windows 上不分大小写。
+pub(crate) fn path_key(path: &Path, fold_case: bool) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let text = text.trim_end_matches('/');
+    let text = if text.is_empty() { "/" } else { text };
+    if fold_case { text.to_lowercase() } else { text.to_string() }
+}
+
+/// 不拿来统计大小的公共文件夹。
+pub(crate) struct Protected {
+    /// 这些文件夹本身（它们下面的子文件夹可以）。
+    pub(crate) exact: Vec<String>,
+    /// 这些文件夹和它们下面的一切。
+    pub(crate) under: Vec<String>,
+}
+
+impl Protected {
+    pub(crate) fn from_env() -> Protected {
+        let fold_case = cfg!(windows);
+        let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+        let mut exact: Vec<PathBuf> = [
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramW6432",
+            "CommonProgramFiles",
+            "CommonProgramFiles(x86)",
+            "CommonProgramW6432",
+            "ProgramData",
+            "ALLUSERSPROFILE",
+            "PUBLIC",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "HOME",
+        ]
+        .iter()
+        .filter_map(|name| var(name))
+        .collect();
+        if let Some(local) = var("LOCALAPPDATA") {
+            exact.push(local.join("Programs"));
+        }
+        if let Some(drive) = var("SystemDrive") {
+            exact.push(PathBuf::from(format!("{}\\Users", drive.to_string_lossy())));
+        }
+        let mut under: Vec<PathBuf> = ["SystemRoot", "windir"].iter().filter_map(|name| var(name)).collect();
+        if let Some(data) = var("ProgramData") {
+            under.push(data.join("Package Cache"));
+        }
+        Protected {
+            exact: exact.iter().map(|p| path_key(p, fold_case)).collect(),
+            under: under.iter().map(|p| path_key(p, fold_case)).collect(),
+        }
+    }
+
+    pub(crate) fn covers(&self, key: &str) -> bool {
+        // 整个盘（“c:”“/”）
+        let depth = key.split('/').filter(|part| !part.is_empty()).count();
+        depth <= 1
+            || self.exact.iter().any(|p| p == key)
+            || self.under.iter().any(|p| key == p || (key.starts_with(p.as_str()) && key[p.len()..].starts_with('/')))
+    }
+}
+
+/// 一个文件夹里所有文件的大小加起来。不跟着符号链接走；文件太多（见 `MAX_FILES`）或者打不开时返回 `None`。
+pub fn folder_size(path: &Path) -> Option<u64> {
+    if !path.is_dir() {
         return None;
     }
-    let total = walkdir::WalkDir::new(path)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| entry.metadata().ok())
-        .filter(|meta| meta.is_file())
-        .map(|meta| meta.len())
-        .sum();
+    let (mut total, mut files) = (0u64, 0usize);
+    for entry in walkdir::WalkDir::new(path).follow_links(false).into_iter().flatten() {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        files += 1;
+        if files > MAX_FILES {
+            return None;
+        }
+        total += entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+    }
     Some(total)
 }
 
@@ -234,6 +351,8 @@ mod platform {
             icon: None,
             icon_source,
             uninstall_command: None,
+            install_dir: Some(bundle.to_path_buf()),
+            bundle_id: text("CFBundleIdentifier").map(str::to_string),
         })
     }
 }
@@ -325,6 +444,9 @@ mod platform {
             icon: None,
             icon_source,
             uninstall_command,
+            // 只认登记的安装位置；从图标路径推出来的文件夹可能是安装程序的缓存，不拿来统计
+            install_dir: install_dir.filter(|dir| dir.is_dir()),
+            bundle_id: None,
         })
     }
 
@@ -397,6 +519,8 @@ pub fn desktop_apps(roots: &[(PathBuf, &str)], icon_dirs: &[PathBuf]) -> Vec<Ins
                 icon: None,
                 icon_source: find_desktop_icon(&desktop.icon, icon_dirs),
                 uninstall_command: None,
+                install_dir: None,
+                bundle_id: None,
             });
         }
     }
@@ -457,6 +581,104 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn app(id: &str, dir: Option<&str>, size: Option<u64>) -> InstalledApp {
+        InstalledApp {
+            id: id.into(),
+            name: id.into(),
+            version: String::new(),
+            publisher: String::new(),
+            installed_at: String::new(),
+            size,
+            source: "registry".into(),
+            location: dir.unwrap_or_default().into(),
+            uninstallable: true,
+            icon: None,
+            icon_source: None,
+            uninstall_command: None,
+            install_dir: dir.map(PathBuf::from),
+            bundle_id: None,
+        }
+    }
+
+    fn windows_like() -> Protected {
+        let keys = |list: &[&str]| list.iter().map(|p| path_key(Path::new(p), true)).collect();
+        Protected {
+            exact: keys(&[r"C:\Program Files", r"C:\Program Files (x86)", r"C:\ProgramData", r"C:\Users\me", r"C:\Users\me\AppData\Local\Programs"]),
+            under: keys(&[r"C:\Windows", r"C:\ProgramData\Package Cache"]),
+        }
+    }
+
+    #[test]
+    fn only_own_folders_are_scanned() {
+        let apps = vec![
+            app("edge", Some(r"C:\Program Files (x86)\Microsoft\Edge\Application\"), Some(3_500)),
+            app("root", Some("C:\\"), Some(10)),
+            app("pf", Some(r"c:\program files"), Some(20)),
+            app("win", Some(r"C:\Windows\System32\Foo"), Some(30)),
+            app("cache", Some(r"C:\ProgramData\Package Cache\{abc}"), Some(40)),
+            app("twin-a", Some(r"D:\Tools\Shared"), Some(50)),
+            app("twin-b", Some(r"d:\tools\shared\"), Some(60)),
+            app("vendor", Some(r"C:\Program Files\Adobe"), Some(70)),
+            app("photoshop", Some(r"C:\Program Files\Adobe\Photoshop"), None),
+            app("user", Some(r"C:\Users\me\AppData\Local\Programs\Code"), None),
+            app("no-dir", None, Some(80)),
+            app("nothing", None, None),
+        ];
+        let got: HashMap<String, SizeSource> = size_sources_with(&apps, &windows_like(), true).into_iter().collect();
+        let scanned = |id: &str| matches!(got[id], SizeSource::Scan(_));
+        assert!(scanned("edge") && scanned("photoshop") && scanned("user"));
+        assert_eq!(got["root"], SizeSource::Registered(10), "整个盘");
+        assert_eq!(got["pf"], SizeSource::Registered(20), "Program Files 本身，大小写不同也认得");
+        assert_eq!(got["win"], SizeSource::Registered(30), "Windows 文件夹下面的一切");
+        assert_eq!(got["cache"], SizeSource::Registered(40), "安装程序缓存");
+        assert_eq!(got["twin-a"], SizeSource::Registered(50), "两个软件登记在同一个文件夹");
+        assert_eq!(got["twin-b"], SizeSource::Registered(60));
+        assert_eq!(got["vendor"], SizeSource::Registered(70), "里面套着别的软件的文件夹");
+        assert_eq!(got["no-dir"], SizeSource::Registered(80));
+        assert_eq!(got["nothing"], SizeSource::Unknown);
+    }
+
+    /// 在这台电脑上实际统计一遍，和登记的大小对照：
+    /// `cargo test -p shibapack-core measures_real_applications -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn measures_real_applications() {
+        let dir = tempfile::tempdir().unwrap();
+        let apps = list_installed(dir.path());
+        let mut scanned = 0;
+        for (id, source) in size_sources(&apps) {
+            let app = apps.iter().find(|a| a.id == id).unwrap();
+            let registered = app.size.map(|s| format!("{:.1} MB", s as f64 / 1e6)).unwrap_or_else(|| "-".into());
+            match source {
+                SizeSource::Scan(path) => {
+                    scanned += 1;
+                    let real = folder_size(&path).map(|s| format!("{:.1} MB", s as f64 / 1e6)).unwrap_or_else(|| "（文件太多）".into());
+                    eprintln!("{:<40} 登记 {registered:>12}  实际 {real:>12}  {}", app.name, path.display());
+                }
+                other => eprintln!("{:<40} 登记 {registered:>12}  （不统计：{other:?}）", app.name),
+            }
+        }
+        eprintln!("共 {} 个软件，{scanned} 个按文件夹统计", apps.len());
+    }
+
+    #[test]
+    fn folder_size_adds_up_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("a/b")).unwrap();
+        std::fs::write(dir.path().join("x.bin"), vec![0u8; 1000]).unwrap();
+        std::fs::write(dir.path().join("a/b/y.bin"), vec![0u8; 234]).unwrap();
+        assert_eq!(folder_size(dir.path()), Some(1234));
+        assert_eq!(folder_size(&dir.path().join("missing")), None);
+        #[cfg(unix)]
+        {
+            // 符号链接指向的东西不算进来
+            let outside = tempfile::tempdir().unwrap();
+            std::fs::write(outside.path().join("big.bin"), vec![0u8; 5000]).unwrap();
+            std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).unwrap();
+            assert_eq!(folder_size(dir.path()), Some(1234));
+        }
+    }
 
     #[test]
     fn publisher_guessing() {

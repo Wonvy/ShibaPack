@@ -4,6 +4,8 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export const SIDEBAR = { min: 140, max: 360, initial: 180 };
+/** 顶栏的高度：拖动顶栏下沿可以调，双击回到默认。 */
+export const TOPBAR = { min: 40, max: 72, initial: 52 };
 /** 侧栏收起后只剩一列图标时的宽度。 */
 export const RAIL_WIDTH = 52;
 export const DETAIL = { min: 280, max: 560, initial: 380 };
@@ -24,6 +26,7 @@ export interface TableColumns {
 const NO_COLUMNS: TableColumns = { hidden: [], widths: {} };
 
 interface Prefs {
+  topBarHeight: number;
   sidebarWidth: number;
   /** 侧栏收起成一列图标。展开时回到原来的宽度。 */
   sidebarCollapsed: boolean;
@@ -61,6 +64,7 @@ const clamp = (value: number, range: { min: number; max: number }) => Math.min(r
 export const usePrefs = create<Prefs>()(
   persist(
     (set) => ({
+      topBarHeight: TOPBAR.initial,
       sidebarWidth: SIDEBAR.initial,
       sidebarCollapsed: false,
       detailWidth: DETAIL.initial,
@@ -78,6 +82,7 @@ export const usePrefs = create<Prefs>()(
       set: (patch) =>
         set((state) => ({
           ...patch,
+          topBarHeight: Math.round(clamp(patch.topBarHeight ?? state.topBarHeight, TOPBAR)),
           sidebarWidth: clamp(patch.sidebarWidth ?? state.sidebarWidth, SIDEBAR),
           detailWidth: clamp(patch.detailWidth ?? state.detailWidth, DETAIL),
         })),

@@ -19,9 +19,11 @@ import type {
   ImportResult,
   InstalledApp,
   LangPack,
+  LeftoverScan,
   Library,
   Progress,
   Release,
+  RemoveReport,
   Settings,
   SoftwareEdit,
   SourceKind,
@@ -96,6 +98,14 @@ export const api = {
   measureInstalled: () => call<Record<string, number>>("measure_installed"),
   matchInstalled: () => call<Record<string, string>>("match_installed"),
   uninstallInstalled: (id: string) => call<void>("uninstall_installed", { id }),
+  /** 卸载程序还没跑完（软件还在）。 */
+  uninstallStatus: (id: string) => call<boolean>("uninstall_status", { id }),
+  /** 找刚卸载的软件的残留。 */
+  scanLeftovers: (id: string) => call<LeftoverScan>("scan_leftovers", { id }),
+  /** 清理残留：`indices` 是上次找到的列表里的序号；`elevated` 为真时以管理员身份（Windows）。 */
+  removeLeftovers: (id: string, indices: number[], elevated = false) => call<RemoveReport>("remove_leftovers", { id, indices, elevated }),
+  /** 打开清理时备份注册表的文件夹。 */
+  openUninstallBackup: (path: string) => call<void>("open_uninstall_backup", { path }),
   revealInstalled: (id: string) => call<void>("reveal_installed", { id }),
   fillIcons: () => call<FillResult>("fill_icons"),
   /** 联网找图标（主页的网站图标或 GitHub 头像）。返回图标的相对路径，没找到时是 null。 */

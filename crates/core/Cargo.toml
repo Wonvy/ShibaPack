@@ -22,6 +22,8 @@ thiserror = "2"
 plist = "1"
 pelite = "0.10"
 memmap2 = "0.9"
+# 卸载残留清理：文件和文件夹移到回收站（废纸篓），不直接删
+trash = "5"
 ureq = { version = "3", features = ["json"], optional = true }
 
 [target.'cfg(windows)'.dependencies]

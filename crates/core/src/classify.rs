@@ -287,7 +287,8 @@ fn guess(software: &Software, summary: &str) -> Option<(&'static Kind, bool, Vec
     best.filter(|(_, score, known, _)| *known || *score >= MIN_SCORE).map(|(kind, _, known, evidence)| (kind, known, evidence))
 }
 
-/// 给一个新分类挑图标：名字对得上某一类就用那一类的图标，否则用文件夹。
+/// 给一个新分类挑图标：名字对得上某一类就用那一类的图标，否则用文件夹。AI 分类用。
+#[cfg_attr(not(feature = "network"), allow(dead_code))]
 pub(crate) fn icon_for(name: &str) -> &'static str {
     let probe = Category { id: String::new(), name: name.to_string(), parent_id: None, color: None, icon: None };
     KINDS.iter().find(|kind| category_matches(&probe, kind)).map_or("folder", |kind| kind.icon)

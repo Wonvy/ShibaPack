@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use shibapack_core::{
     ai, download,
+    leftovers::{self, Leftover, RemoveReport, Target},
     import::{self, BatchSaver, Outcome, Plan},
     identify::same_software,
     installed,
@@ -52,6 +53,26 @@ struct AppState {
     version: String,
     /// 正在进行的 AI 分类的“取消”开关。开始新的一次时把上一次的也关掉。
     ai_cancel: Mutex<Arc<AtomicBool>>,
+    /// 统计过的已安装软件大小：“文件夹|版本”→（统计的时间，字节数）。窗口来回切换时不用每次重走一遍。
+    measured: Mutex<HashMap<String, (Instant, u64)>>,
+    /// 统计大小同时只跑一轮，后来的等前一轮跑完、直接用记下的结果。
+    measure_turn: Mutex<()>,
+    /// 正在卸载的软件：卸载前记下的样子，和找到的残留。清理时只认这里面的项，不接受界面随便给一个路径。
+    uninstall: Mutex<Option<UninstallSession>>,
+}
+
+struct UninstallSession {
+    id: String,
+    target: Target,
+    found: Vec<Leftover>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LeftoverScan {
+    items: Vec<Leftover>,
+    /// 软件看起来还在（卸载程序可能被取消了）：找到的都没有默认勾选。
+    still_installed: bool,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -588,12 +609,76 @@ async fn list_installed(app: AppHandle) -> Vec<InstalledApp> {
     .await
 }
 
-/// 统计各软件占用的空间。macOS 上要把每个 .app 走一遍，比较慢，所以和列表分开。
+/// 统计过的大小记多久。软件升级（版本号变了）会马上重新统计。
+const MEASURE_TTL: Duration = Duration::from_secs(30 * 60);
+/// 同时走几个文件夹。
+const MEASURE_WORKERS: usize = 4;
+
+/// 统计各软件实际占用的空间：有自己文件夹的（macOS 的 .app、Windows 登记的安装文件夹）走一遍加起来，
+/// 其余用安装程序登记的大小（见 `installed::size_sources`）。要走很多文件，比较慢，所以和列表分开。
 #[tauri::command]
 async fn measure_installed(app: AppHandle) -> HashMap<String, u64> {
     blocking(app, move |_app, state| {
+        let _turn = state.measure_turn.lock();
         let apps = state.installed.lock().map(|list| list.clone()).unwrap_or_default();
-        apps.iter().filter_map(|app| installed::measure(app).map(|size| (app.id.clone(), size))).collect()
+        let by_id: HashMap<&str, &InstalledApp> = apps.iter().map(|app| (app.id.as_str(), app)).collect();
+        let mut sizes = HashMap::new();
+        // 要走一遍的：（软件 id，记录用的键，文件夹，走不了时用的登记大小）
+        let mut todo: Vec<(String, String, PathBuf, Option<u64>)> = Vec::new();
+        {
+            let cache = state.measured.lock().unwrap_or_else(|e| e.into_inner());
+            for (id, source) in installed::size_sources(&apps) {
+                match source {
+                    installed::SizeSource::Registered(size) => {
+                        sizes.insert(id, size);
+                    }
+                    installed::SizeSource::Unknown => {}
+                    installed::SizeSource::Scan(dir) => {
+                        let app = by_id[id.as_str()];
+                        let key = format!("{}|{}", dir.display(), app.version);
+                        match cache.get(&key).filter(|(at, _)| at.elapsed() < MEASURE_TTL) {
+                            Some((_, size)) => {
+                                sizes.insert(id, *size);
+                            }
+                            None => todo.push((id, key, dir, app.size)),
+                        }
+                    }
+                }
+            }
+        }
+
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let found: Mutex<Vec<(usize, Option<u64>)>> = Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            for _ in 0..MEASURE_WORKERS.min(todo.len()) {
+                scope.spawn(|| loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some((_, _, dir, _)) = todo.get(i) else { break };
+                    let size = installed::folder_size(dir);
+                    if let Ok(mut found) = found.lock() {
+                        found.push((i, size));
+                    }
+                });
+            }
+        });
+
+        let mut cache = state.measured.lock().unwrap_or_else(|e| e.into_inner());
+        for (i, size) in found.into_inner().unwrap_or_else(|e| e.into_inner()) {
+            let (id, key, _, registered) = &todo[i];
+            match size {
+                Some(size) => {
+                    cache.insert(key.clone(), (Instant::now(), size));
+                    sizes.insert(id.clone(), size);
+                }
+                // 走不了（文件太多、打不开）：用登记的大小
+                None => {
+                    if let Some(size) = registered {
+                        sizes.insert(id.clone(), *size);
+                    }
+                }
+            }
+        }
+        sizes
     })
     .await
 }
@@ -622,6 +707,10 @@ async fn uninstall_installed(app: AppHandle, id: String) -> CmdResult<()> {
         if !app.uninstallable {
             return Err("not_uninstallable".into());
         }
+        // 卸载以后就查不到它的安装位置、发布者了，先记下来，找残留时用
+        if let Ok(mut session) = state.uninstall.lock() {
+            *session = Some(UninstallSession { id: id.clone(), target: Target::of(&app), found: Vec::new() });
+        }
         if installed::run_uninstaller(&app).map_err(|e| e.to_string())? {
             return Ok(());
         }
@@ -629,6 +718,73 @@ async fn uninstall_installed(app: AppHandle, id: String) -> CmdResult<()> {
             return trash::delete(&app.location).map_err(|e| e.to_string());
         }
         Err("not_uninstallable".into())
+    })
+    .await
+}
+
+/// 卸载程序还没跑完（软件还在）。Windows 看卸载信息还在不在；macOS 是直接移到废纸篓，不用等。
+#[tauri::command]
+async fn uninstall_status(app: AppHandle, id: String) -> bool {
+    blocking(app, move |_app, state| {
+        let target = state.uninstall.lock().ok().and_then(|s| s.as_ref().filter(|s| s.id == id).map(|s| s.target.clone()));
+        target.is_some_and(|target| leftovers::still_installed(&target))
+    })
+    .await
+}
+
+/// 找刚卸载的软件留下的文件夹、文件和注册表项。只读。
+#[tauri::command]
+async fn scan_leftovers(app: AppHandle, id: String) -> CmdResult<LeftoverScan> {
+    blocking(app, move |_app, state| {
+        let target = state
+            .uninstall
+            .lock()
+            .ok()
+            .and_then(|s| s.as_ref().filter(|s| s.id == id).map(|s| s.target.clone()))
+            .ok_or_else(|| "not_found".to_string())?;
+        let others: Vec<InstalledApp> = state.installed.lock().map(|list| list.iter().filter(|app| app.id != id).cloned().collect()).unwrap_or_default();
+        let still_installed = leftovers::still_installed(&target);
+        let items = leftovers::scan(&target, &others, still_installed);
+        if let Ok(mut session) = state.uninstall.lock() {
+            if let Some(session) = session.as_mut().filter(|s| s.id == id) {
+                session.found = items.clone();
+            }
+        }
+        Ok(LeftoverScan { items, still_installed })
+    })
+    .await
+}
+
+/// 清理勾选的残留（按上次找到的列表里的序号）：文件和文件夹移到回收站，注册表项先备份再删。
+/// `elevated` 为真时以管理员身份做（Windows 会弹 UAC 提示），用在普通权限删不掉的那些上。
+#[tauri::command]
+async fn remove_leftovers(app: AppHandle, id: String, indices: Vec<usize>, elevated: bool) -> CmdResult<RemoveReport> {
+    blocking(app, move |app, state| {
+        let items: Vec<Leftover> = {
+            let session = state.uninstall.lock().map_err(|_| "internal".to_string())?;
+            let session = session.as_ref().filter(|s| s.id == id).ok_or_else(|| "not_found".to_string())?;
+            indices.iter().filter_map(|i| session.found.get(*i).cloned()).collect()
+        };
+        let backups = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("uninstall-backups");
+        if elevated {
+            leftovers::remove_elevated(&items, &backups)
+        } else {
+            Ok(leftovers::remove(&items, &backups))
+        }
+    })
+    .await
+}
+
+/// 打开清理时备份注册表的文件夹。只接受备份文件夹里面的路径。
+#[tauri::command]
+async fn open_uninstall_backup(app: AppHandle, path: String) -> CmdResult<()> {
+    blocking(app, move |app, _state| {
+        let backups = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("uninstall-backups");
+        let path = PathBuf::from(path);
+        if !path.starts_with(&backups) || !path.is_dir() {
+            return Err("file_missing".into());
+        }
+        app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
     })
     .await
 }
@@ -1039,6 +1195,10 @@ fn cancel_ai(state: State<AppState>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 以管理员身份清理卸载残留时，会带着特别的参数再启动一次自己：只做清理，不开窗口（见 leftovers::remove_elevated）
+    if let Some(code) = leftovers::elevated_entry() {
+        std::process::exit(code);
+    }
     let mut builder = tauri::Builder::default();
     // 同一台电脑上只开一个 ShibaPack：两个窗口各存各的索引，会互相盖掉对方的改动。
     // 再打开一次时只把已有的窗口叫到前面。用 SHIBAPACK_CONFIG 换了引导文件（开发、自检）时不限制
@@ -1101,6 +1261,9 @@ pub fn run() {
                 cancels: Mutex::new(HashMap::new()),
                 version: app.package_info().version.to_string(),
                 ai_cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
+                measured: Mutex::new(HashMap::new()),
+                measure_turn: Mutex::new(()),
+                uninstall: Mutex::new(None),
             });
             Ok(())
         })
@@ -1140,6 +1303,10 @@ pub fn run() {
             measure_installed,
             match_installed,
             uninstall_installed,
+            uninstall_status,
+            scan_leftovers,
+            remove_leftovers,
+            open_uninstall_backup,
             reveal_installed,
             fill_icons,
             fetch_icon,

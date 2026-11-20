@@ -261,8 +261,9 @@ export function Sidebar() {
       </div>
 
       <ContextMenu items={sectionMenu}>
-        <div className="mt-3 flex h-7 shrink-0 items-center justify-between pr-2 pl-4">
-          <span className="text-[12px] font-medium text-fg-3">{t("nav.categories")}</span>
+        {/* 不写“分类”两个字：一条细线把上面的入口和分类树隔开，右端是新建分类 */}
+        <div role="group" aria-label={t("nav.categories")} className="mt-2 flex h-7 shrink-0 items-center gap-2 pr-2 pl-4">
+          <span className="h-px flex-1 bg-line" />
           <IconButton label={t("cat.new")} className="size-6" onClick={() => setEditing({ mode: "new", parentId: null })}>
             <Plus size={14} strokeWidth={1.75} />
           </IconButton>

@@ -64,7 +64,8 @@ export function InstalledView() {
   const columns = useTableColumns("installed", INSTALLED_COLUMNS, frameWidth - ROW_CHROME);
   const [sort, setSort] = useState<{ column: Column; asc: boolean }>({ column: "name", asc: true });
 
-  const sizeOf = (app: InstalledApp) => app.size ?? sizes[app.id] ?? null;
+  // 统计出来的实际占用优先；还没统计完、或者统计不了时用安装程序登记的大小
+  const sizeOf = (app: InstalledApp) => sizes[app.id] ?? app.size ?? null;
 
   // 已安装软件 id → 仓库里对应的软件
   const stored = useMemo(() => {
@@ -88,7 +89,7 @@ export function InstalledView() {
       name: byName,
       version: (a, b) => compareVersions(a.version, b.version) || byName(a, b),
       date: (a, b) => a.installedAt.localeCompare(b.installedAt) || byName(a, b),
-      size: (a, b) => (a.size ?? sizes[a.id] ?? -1) - (b.size ?? sizes[b.id] ?? -1) || byName(a, b),
+      size: (a, b) => (sizes[a.id] ?? a.size ?? -1) - (sizes[b.id] ?? b.size ?? -1) || byName(a, b),
     };
     return items.sort((a, b) => compare[sort.column](a, b) * (sort.asc ? 1 : -1));
   }, [installed, search, sort, sizes, stored, repoFilter]);
@@ -379,7 +380,7 @@ export function InstalledDetail() {
 
   if (!app) return <EmptyState icon={MousePointerClick} title={t("installed.select")} />;
 
-  const size = app.size ?? measured ?? null;
+  const size = measured ?? app.size ?? null;
   const showInLibrary = () => linked && reveal(linked.id);
 
   return (

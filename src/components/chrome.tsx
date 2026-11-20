@@ -19,7 +19,7 @@ import {
 import { type PointerEvent, useEffect, useRef, useState } from "react";
 import { api, isMac, isTauri, pickFiles, pickFolder, windowControls } from "../lib/api";
 import { fileCount, formatSize, softwareSize } from "../lib/library";
-import { usePrefs } from "../lib/prefs";
+import { TOPBAR, usePrefs } from "../lib/prefs";
 import { useApp, useT } from "../lib/store";
 import { dismissUpdate, finishUpdate, showUpdate, startUpdate } from "../lib/updater";
 import { Button, Dropdown, ICON, IconButton, cx } from "./ui";
@@ -38,12 +38,14 @@ export function Logo({ size = 18 }: { size?: number }) {
 
 /**
  * 顶栏：左边是名字，中间是搜索，右边是“添加”。空白处可以拖动窗口。`bare` 用在引导页。
- * 检查在线更新在侧栏“有更新”那一行上，整理散落文件在“存储与备份”里。
+ * 检查在线更新在侧栏“有更新”那一行上，整理散落文件在设置的“存储”页里。
+ * 高度可以拖下沿来调（40–72px，默认 52px）。macOS 的红黄绿按钮由系统摆放，不跟着高度动。
  */
 export function TopBar({ bare = false }: { bare?: boolean }) {
   const t = useT();
   const importPaths = useApp((state) => state.importPaths);
   const patch = useApp((state) => state.patch);
+  const height = usePrefs((state) => state.topBarHeight);
   // macOS 的红黄绿按钮在左上角，给它们让出位置；其他系统的窗口按钮自己画在右边
   const nativeLights = isTauri && isMac;
   const ownControls = isTauri && !isMac;
@@ -57,8 +59,8 @@ export function TopBar({ bare = false }: { bare?: boolean }) {
   return (
     <header
       data-tauri-drag-region
-      className="flex h-11 shrink-0 items-center gap-1 border-b border-line bg-side pr-2"
-      style={{ paddingLeft: nativeLights ? 80 : 12 }}
+      className="relative flex shrink-0 items-center gap-1 border-b border-line bg-side pr-2"
+      style={{ height, paddingLeft: nativeLights ? 80 : 12 }}
     >
       <Logo />
       <span className="pointer-events-none ml-1 text-[13px] font-semibold">ShibaPack</span>
@@ -82,7 +84,43 @@ export function TopBar({ bare = false }: { bare?: boolean }) {
         </Dropdown>
       )}
       {ownControls && <WindowControls />}
+      <HeightHandle />
     </header>
+  );
+}
+
+/** 顶栏下沿的拖拽条：上下拖改顶栏高度，双击回到默认高度。 */
+function HeightHandle() {
+  const t = useT();
+  const height = usePrefs((state) => state.topBarHeight);
+  const set = usePrefs((state) => state.set);
+  const start = useRef<{ y: number; height: number } | null>(null);
+  const stop = () => {
+    start.current = null;
+  };
+  return (
+    <div
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label={t("layout.resizeTopBar")}
+      title={t("layout.resizeTopBar")}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        start.current = { y: event.clientY, height };
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={(event) => {
+        if (start.current) set({ topBarHeight: start.current.height + event.clientY - start.current.y });
+      }}
+      onPointerUp={stop}
+      onPointerCancel={stop}
+      onDoubleClick={() => set({ topBarHeight: TOPBAR.initial })}
+      // 骑在顶栏的下边线上，上下各占几个像素，好按住
+      className="group absolute inset-x-0 -bottom-[3px] z-20 h-1.5 cursor-row-resize"
+    >
+      <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 transition-colors group-hover:h-0.5 group-hover:bg-accent group-active:h-0.5 group-active:bg-accent" />
+    </div>
   );
 }
 

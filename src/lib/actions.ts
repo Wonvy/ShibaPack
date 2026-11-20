@@ -146,22 +146,9 @@ export async function setDefaultVersion(software: Software, versionId: string | 
 }
 
 /** 卸载一个已安装的软件（先确认）。 */
+/** 卸载这台电脑上的一个软件：打开卸载窗口（先确认，卸载后可以查找并清理残留，见 components/UninstallDialog）。 */
 export async function uninstallApp(target: InstalledApp) {
-  const lang = language();
-  const app = useApp.getState();
-  // Windows 上是启动卸载程序，别的系统上是移到废纸篓
-  const viaUninstaller = target.source === "registry";
-  const { ok } = await confirm({
-    title: translate(lang, "installed.uninstall"),
-    body: translate(lang, viaUninstaller ? "installed.uninstallConfirm.run" : "installed.uninstallConfirm.trash", { name: target.name }),
-    confirmLabel: translate(lang, "installed.uninstall"),
-    danger: true,
-  });
-  if (!ok) return;
-  const done = await app.attempt(() => api.uninstallInstalled(target.id).then(() => true));
-  if (!done) return;
-  app.notify(translate(lang, viaUninstaller ? "installed.uninstallStarted" : "installed.uninstalled"));
-  await app.loadInstalled();
+  useApp.getState().patch({ uninstallTarget: target });
 }
 
 /** 在线源上最新版本里，最适合这台电脑的安装包：系统对得上，架构一致或通用的优先。 */

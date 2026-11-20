@@ -108,6 +108,8 @@ interface AppState {
   checking: CheckProgress | null;
   /** 打开着的智能分类预览：要分类的软件。 */
   classifyIds: string[] | null;
+  /** 打开着的卸载窗口：要卸载的软件。 */
+  uninstallTarget: InstalledApp | null;
   /** 打开着的“关联在线源”对话框：给哪个软件关联；null 表示从在线源新添一个软件。 */
   sourceDialog: { softwareId: string | null } | null;
   /** 语言包变了就加一，让界面重新取文字。 */
@@ -136,6 +138,7 @@ interface AppState {
         | "settingsOpen"
         | "selectedInstalledId"
         | "classifyIds"
+        | "uninstallTarget"
         | "sourceDialog"
       >
     >,
@@ -403,6 +406,7 @@ export const useApp = create<AppState>()((set, get) => {
     downloads: {},
     checking: null,
     classifyIds: null,
+    uninstallTarget: null,
     sourceDialog: null,
     langRevision: 0,
     appUpdate: NO_UPDATE,

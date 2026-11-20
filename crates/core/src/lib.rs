@@ -9,6 +9,7 @@ pub mod icons;
 pub mod identify;
 pub mod import;
 pub mod installed;
+pub mod leftovers;
 pub mod model;
 pub mod ops;
 pub mod sources;

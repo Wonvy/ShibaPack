@@ -166,12 +166,41 @@ export interface InstalledApp {
   version: string;
   publisher: string;
   installedAt: string;
+  /** 安装程序登记的大小（Windows 注册表）。实际占用另外统计，在 store 的 `sizes` 里，优先用它。 */
   size: number | null;
   source: "applications" | "user" | "system" | "registry" | "desktop" | "flatpak" | "snap";
   location: string;
   uninstallable: boolean;
   /** 图标文件的绝对路径。 */
   icon: string | null;
+}
+
+/** 卸载后找到的一项残留。 */
+export interface Leftover {
+  kind: "folder" | "file" | "registryKey" | "registryValue";
+  /** 文件或文件夹的完整路径；注册表项是 `HKCU\Software\Foo` 这样的键；注册表值是它所在的键。 */
+  path: string;
+  /** 注册表值的名字。 */
+  value?: string;
+  confidence: "high" | "medium" | "low";
+  /** installDir、bundleId、publisherName、name、nameContains、shortcut、uninstallKey、appPath、startup */
+  reason: string;
+  size: number | null;
+}
+
+export interface LeftoverScan {
+  items: Leftover[];
+  /** 软件看起来还在（卸载程序可能被取消了）。 */
+  stillInstalled: boolean;
+}
+
+export interface RemoveReport {
+  removed: number;
+  failed: { item: Leftover; reason: string }[];
+  /** 有的项要管理员权限才删得掉。 */
+  needsAdmin: boolean;
+  /** 注册表备份所在的文件夹。 */
+  backup: string | null;
 }
 
 export interface FillResult {

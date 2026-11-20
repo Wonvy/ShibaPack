@@ -10,6 +10,10 @@
 //!
 //! 记录存成 JSON，放在仓库的 `.shibapack/traces/<软件 id>/<记录 id>.json`，不用数据库。
 
+pub mod live;
+pub mod persist;
+pub mod products;
+
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -31,14 +35,14 @@ pub enum Depth {
 }
 
 /// 一个要扫的文件夹。`depth` 是往下走几层（1 表示只看里面直接的文件和文件夹）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Root {
     pub path: PathBuf,
     pub depth: usize,
 }
 
 /// 要拍快照的范围。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Scope {
     pub roots: Vec<Root>,
     /// 注册表：`HKLM\SOFTWARE` 这样的键和往下走几层（只有 Windows 有）。
@@ -48,20 +52,21 @@ pub struct Scope {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FileMeta {
-    dir: bool,
+pub(crate) struct FileMeta {
+    pub(crate) dir: bool,
     /// 当成整体的包（`.app` 等），不往里走。
-    bundle: bool,
-    size: u64,
-    mtime: i128,
+    pub(crate) bundle: bool,
+    pub(crate) size: u64,
+    /// 修改时间，从 1970 年起的纳秒。
+    pub(crate) mtime: i64,
 }
 
-/// 一次快照。只在内存里。
+/// 一次快照。平常只在内存里；开始监控时另存一份到磁盘（见 `persist`），重启电脑后还能接着对比。
 #[derive(Debug, Default)]
 pub struct Snapshot {
-    files: HashMap<PathBuf, FileMeta>,
+    pub(crate) files: HashMap<PathBuf, FileMeta>,
     /// 注册表：键 → 值名 → 数据摘要。
-    keys: HashMap<String, HashMap<String, u64>>,
+    pub(crate) keys: HashMap<String, HashMap<String, u64>>,
     /// 一共记了多少项。
     pub entries: u64,
     pub elapsed_ms: u64,
@@ -135,6 +140,9 @@ pub struct Change {
     pub category: Category,
     /// 多半不是安装程序改的（缓存、日志、浏览器资料……）。
     pub noise: bool,
+    /// 安装程序自己登记过这一项（.pkg 的安装收据、MSI 的组件清单），确定是它装的。
+    #[serde(default)]
+    pub confirmed: bool,
 }
 
 /// 一次安装监控的记录。
@@ -160,6 +168,20 @@ pub struct Trace {
     /// 改动太多，只留了前 `MAX_CHANGES` 项。
     #[serde(default)]
     pub truncated: bool,
+    /// 安装程序自己登记的产品：.pkg 的安装收据、MSI 的产品码。
+    #[serde(default)]
+    pub products: Vec<products::Product>,
+    /// 安装期间出现过、装完已经不在的文件（解压出来又删掉的临时文件）。只留前 `MAX_TRANSIENT` 个。
+    #[serde(default)]
+    pub transient: Vec<live::Transient>,
+    #[serde(default)]
+    pub transient_count: u64,
+    /// 安装程序要求重启电脑才能装完（Windows 的“重启后替换文件”）。
+    #[serde(default)]
+    pub reboot_required: bool,
+    /// 重启电脑后接着完成的监控。
+    #[serde(default)]
+    pub resumed: bool,
 }
 
 /// 列表里显示的一条记录（不带改动明细）。
@@ -439,11 +461,11 @@ pub fn snapshot(scope: &Scope, cancel: &AtomicBool, progress: &dyn Fn(u64)) -> O
     Some(snap)
 }
 
-fn mtime(meta: &fs::Metadata) -> i128 {
+fn mtime(meta: &fs::Metadata) -> i64 {
     meta.modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_nanos() as i128)
+        .map(|d| d.as_nanos() as i64)
         .unwrap_or(0)
 }
 
@@ -521,13 +543,18 @@ pub fn diff(before: &Snapshot, after: &Snapshot) -> (Vec<Change>, bool) {
     // 注册表
     diff_registry(before, after, &mut changes);
 
-    changes.sort_by(|a, b| a.noise.cmp(&b.noise).then(rank(a.category).cmp(&rank(b.category))).then_with(|| a.path.cmp(&b.path)));
+    sort_changes(&mut changes);
     let truncated = changes.len() > MAX_CHANGES;
     changes.truncate(MAX_CHANGES);
     (changes, truncated)
 }
 
-fn file_change(op: Op, path: &Path, meta: &FileMeta, size: Option<u64>) -> Change {
+/// 排序：不是噪音的在前，再按类别、路径。
+pub fn sort_changes(changes: &mut [Change]) {
+    changes.sort_by(|a, b| a.noise.cmp(&b.noise).then(rank(a.category).cmp(&rank(b.category))).then_with(|| a.path.cmp(&b.path)));
+}
+
+pub(crate) fn file_change(op: Op, path: &Path, meta: &FileMeta, size: Option<u64>) -> Change {
     let text = path.to_string_lossy().to_string();
     let kind = if meta.dir { ItemKind::Folder } else { ItemKind::File };
     Change {
@@ -540,6 +567,7 @@ fn file_change(op: Op, path: &Path, meta: &FileMeta, size: Option<u64>) -> Chang
         data: None,
         size: size.or(if meta.dir { None } else { Some(meta.size) }),
         count: None,
+        confirmed: false,
     }
 }
 
@@ -556,6 +584,7 @@ fn diff_registry(before: &Snapshot, after: &Snapshot, changes: &mut Vec<Change>)
             count,
             category,
             noise: is_noise(key),
+            confirmed: false,
         }
     };
     for (op, from, to) in [(Op::Added, &after.keys, &before.keys), (Op::Removed, &before.keys, &after.keys)] {
@@ -704,8 +733,9 @@ pub fn categorize(path: &str, kind: ItemKind, bundle: bool) -> Category {
     Category::Other
 }
 
-/// 多半不是安装程序改的：缓存、日志、浏览器资料、系统自己一直在写的地方。
-pub fn is_noise(path: &str) -> bool {
+/// 在多半和安装无关的地方（缓存、日志、浏览器资料、系统自己一直在写的地方）。不看文件名，
+/// 所以安装程序自己的 .tmp、.log 不算——实时监听记临时文件时用它。
+pub fn noise_place(path: &str) -> bool {
     let p = path.to_ascii_lowercase().replace('\\', "/");
     const PARTS: &[&str] = &[
         "/caches/",
@@ -715,6 +745,13 @@ pub fn is_noise(path: &str) -> bool {
         "/logs/",
         "/log/",
         "/crashpad/",
+        "/sentry/",
+        // Electron 应用（VS Code、Claude、Slack……）一直在写的显卡缓存
+        "/dawngraphitecache/",
+        "/dawnwebgpucache/",
+        "/shadercache/",
+        "/grshadercache/",
+        "/preferences/contextstoreagent",
         "/crashreporter/",
         "/diagnosticreports/",
         "/saved application state/",
@@ -753,8 +790,14 @@ pub fn is_noise(path: &str) -> bool {
         "/.shibapack/",
         "/shibapack/",
     ];
+    PARTS.iter().any(|s| p.contains(s))
+}
+
+/// 多半不是安装程序改的：在无关的地方（`noise_place`），或者是日志、锁、数据库日志这类文件。
+pub fn is_noise(path: &str) -> bool {
+    let p = path.to_ascii_lowercase().replace('\\', "/");
     const ENDS: &[&str] = &[".ds_store", ".log", "-journal", "-wal", "-shm", ".tmp", ".lock", "lockfile", ".etl", "ntuser.dat"];
-    PARTS.iter().any(|s| p.contains(s)) || ENDS.iter().any(|s| p.ends_with(s))
+    noise_place(path) || ENDS.iter().any(|s| p.ends_with(s))
 }
 
 // ───────────────────────────── 存储 ─────────────────────────────
@@ -1021,7 +1064,11 @@ mod tests {
         assert!(is_noise("/Users/me/Library/Caches/com.foo/x"));
         assert!(is_noise(r"C:\Users\me\AppData\Local\Google\Chrome\User Data\Default\History"));
         assert!(is_noise("/Users/me/Library/Application Support/Foo/.DS_Store"));
+        assert!(is_noise("/Users/me/Library/Application Support/Code/DawnGraphiteCache/data_1"));
         assert!(!is_noise("/Applications/Foo.app"));
+        // 安装程序自己的临时文件：按位置不算噪音（实时监听记临时文件时用），按文件名算
+        assert!(!noise_place("/Users/me/Library/Application Support/Foo/setup.tmp"));
+        assert!(is_noise("/Users/me/Library/Application Support/Foo/setup.tmp"));
     }
 
     /// 在本机真实范围上拍两次快照，看用时和两次之间的噪音：`cargo test -p shibapack-core real_scope -- --ignored --nocapture`
@@ -1074,8 +1121,14 @@ mod tests {
                 count: Some(1),
                 category: Category::App,
                 noise: false,
+                confirmed: false,
             }],
             truncated: false,
+            products: vec![],
+            transient: vec![],
+            transient_count: 0,
+            reboot_required: false,
+            resumed: false,
         };
         save(dir.path(), &trace).unwrap();
         let listed = list(dir.path(), Some("s1"));

@@ -1125,21 +1125,31 @@ struct DiskLocation {
 
 // ───────────────────────────── 安装监控 ─────────────────────────────
 
-/// 一次安装监控：开始时拍的基线和要装的是什么。
+/// 一次安装监控。`pending` 同时存在磁盘上（见 `trace::persist`），重启电脑后从那里接着来。
 struct TraceSession {
-    baseline: trace::Snapshot,
-    scope: trace::Scope,
-    depth: trace::Depth,
-    software_id: String,
-    version_id: String,
-    software_name: String,
-    version: String,
-    file_name: String,
-    installer: PathBuf,
-    /// 用来存记录的仓库（监控途中换了仓库也存回原来那个）。
-    data_dir: PathBuf,
-    started_at: String,
-    started: Instant,
+    pending: trace::persist::Pending,
+    /// 基线快照。重启后是 None，完成时再从磁盘读。
+    baseline: Option<trace::Snapshot>,
+    /// 实时监听文件改动（开不了时是 None）。
+    live: Option<trace::live::LiveWatch>,
+    /// 这是 ShibaPack 重新打开后接着的监控（多半是安装程序要求重启了电脑）。
+    resumed: bool,
+}
+
+/// 没完成的监控存在哪：应用自己的数据文件夹（只和这台电脑有关）。
+fn trace_pending_dir(app: &AppHandle) -> PathBuf {
+    app.path().app_local_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("ShibaPack")).join("trace")
+}
+
+/// 启动时：上次有没完成的监控（比如重启了电脑）就接着监听。
+fn resume_trace(app: &AppHandle) -> Option<TraceSession> {
+    let pending = trace::persist::load(&trace_pending_dir(app))?;
+    let live = trace::live::LiveWatch::start(&pending.scope);
+    Some(TraceSession { pending, baseline: None, live, resumed: true })
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
 #[derive(Clone, Serialize)]
@@ -1156,10 +1166,17 @@ struct TraceStatus {
     software_id: String,
     version_id: String,
     software_name: String,
+    version: String,
     file_name: String,
     elapsed_ms: u64,
     /// 安装程序还在不在跑；看不出来时（.dmg 这种）是 null。
     installer_running: Option<bool>,
+    /// 到现在为止看到的文件改动；监听不了时是 null。
+    live: Option<trace::live::LiveSummary>,
+    /// 安装程序要求重启电脑（Windows）。
+    reboot_required: bool,
+    /// ShibaPack 重新打开后接着的监控。
+    resumed: bool,
 }
 
 /// 拍快照时一直占着“正在拍”的开关，离开时放下。
@@ -1178,7 +1195,8 @@ fn trace_busy<'a>(state: &'a State<AppState>) -> CmdResult<BusyGuard<'a>> {
     Ok(BusyGuard(&state.trace_busy))
 }
 
-/// 开始监控安装：先拍基线（发 `trace://progress`），拍完运行安装包。`deep` 时范围大一些。
+/// 开始监控安装：先拍基线（发 `trace://progress`），拍完开始实时监听、把这次监控存到磁盘，再运行安装包。
+/// `deep` 时范围大一些。
 #[tauri::command]
 async fn trace_start(app: AppHandle, software_id: String, version_id: String, file_id: String, deep: bool) -> CmdResult<()> {
     blocking(app, move |app, state| {
@@ -1209,97 +1227,211 @@ async fn trace_start(app: AppHandle, software_id: String, version_id: String, fi
         .ok_or_else(|| "cancelled".to_string())?;
 
         let target = import::launch_target(&installer);
-        app.opener().open_path(target.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())?;
-        *state.trace.lock().map_err(|_| "internal".to_string())? = Some(TraceSession {
-            baseline,
-            scope,
-            depth,
+        let pending = trace::persist::Pending {
             software_id,
             version_id,
             software_name,
             version,
             file_name,
-            installer: target,
+            depth,
+            msi: trace::products::msi_info(&target),
+            reboot_marker: trace::persist::reboot_marker(),
+            scope,
+            installer: target.clone(),
             data_dir,
             started_at: shibapack_core::now(),
-            started: Instant::now(),
-        });
+            started_ms: now_ms(),
+            baseline_ms: baseline.elapsed_ms,
+        };
+        // 存不下来也照样监控，只是重启电脑后就接不上了
+        if let Err(err) = trace::persist::save(&trace_pending_dir(app), &pending, &baseline) {
+            log_failure_to(&state, "trace", "save pending", &err.to_string());
+        }
+        let live = trace::live::LiveWatch::start(&pending.scope);
+        if let Err(err) = app.opener().open_path(target.to_string_lossy(), None::<&str>) {
+            trace::persist::clear(&trace_pending_dir(app));
+            return Err(err.to_string());
+        }
+        *state.trace.lock().map_err(|_| "internal".to_string())? = Some(TraceSession { pending, baseline: Some(baseline), live, resumed: false });
+        open_trace_mini(app);
         Ok(())
     })
     .await
 }
 
-/// 正在监控的安装（没有时是 null）：装的是什么、过了多久、安装程序还在不在跑。
+/// 正在监控的安装（没有时是 null）：装的是什么、过了多久、安装程序还在不在跑、实时看到的改动。
 #[tauri::command]
 async fn trace_status(app: AppHandle) -> Option<TraceStatus> {
     blocking(app, move |_app, state| {
-        let (status, installer) = {
+        let (status, installer, marker) = {
             let slot = state.trace.lock().ok()?;
             let session = slot.as_ref()?;
+            let p = &session.pending;
             (
                 TraceStatus {
-                    software_id: session.software_id.clone(),
-                    version_id: session.version_id.clone(),
-                    software_name: session.software_name.clone(),
-                    file_name: session.file_name.clone(),
-                    elapsed_ms: session.started.elapsed().as_millis() as u64,
+                    software_id: p.software_id.clone(),
+                    version_id: p.version_id.clone(),
+                    software_name: p.software_name.clone(),
+                    version: p.version.clone(),
+                    file_name: p.file_name.clone(),
+                    elapsed_ms: (now_ms() - p.started_ms).max(0) as u64,
                     installer_running: None,
+                    live: session.live.as_ref().map(|live| live.summary()),
+                    reboot_required: false,
+                    resumed: session.resumed,
                 },
-                session.installer.clone(),
+                p.installer.clone(),
+                p.reboot_marker,
             )
         };
-        Some(TraceStatus { installer_running: trace::installer_running(&installer), ..status })
+        Some(TraceStatus {
+            installer_running: trace::installer_running(&installer),
+            reboot_required: trace::persist::reboot_required(marker),
+            ..status
+        })
     })
     .await
 }
 
-/// 装完了：再拍一次（发 `trace://progress`），对比、存下记录并返回。取消了时监控还在，可以再点完成。
+/// 装完了：再拍一次（发 `trace://progress`），对比，用安装程序自己登记的清单确认，存下记录并返回。
+/// 取消了时监控还在，可以再点完成。
 #[tauri::command]
 async fn trace_finish(app: AppHandle) -> CmdResult<trace::Trace> {
     blocking(app, move |app, state| {
         let _busy = trace_busy(&state)?;
-        let session = state.trace.lock().map_err(|_| "internal".to_string())?.take().ok_or_else(|| "not_found".to_string())?;
+        let mut session = state.trace.lock().map_err(|_| "internal".to_string())?.take().ok_or_else(|| "not_found".to_string())?;
+        let put_back = |session: TraceSession| {
+            if let Ok(mut slot) = state.trace.lock() {
+                *slot = Some(session);
+            }
+        };
+        let pending_dir = trace_pending_dir(app);
+        let baseline = match session.baseline.take() {
+            Some(baseline) => baseline,
+            None => match trace::persist::load_baseline(&pending_dir) {
+                Ok(baseline) => baseline,
+                Err(err) => {
+                    put_back(session);
+                    return Err(err.to_string());
+                }
+            },
+        };
         let started = Instant::now();
-        let Some(after) = trace::snapshot(&session.scope, &state.trace_cancel, &|entries| {
+        let Some(after) = trace::snapshot(&session.pending.scope, &state.trace_cancel, &|entries| {
             let _ = app.emit("trace://progress", TraceProgress { stage: "compare", entries });
         }) else {
-            *state.trace.lock().map_err(|_| "internal".to_string())? = Some(session);
+            session.baseline = Some(baseline);
+            put_back(session);
             return Err("cancelled".into());
         };
-        let (mut changes, truncated) = trace::diff(&session.baseline, &after);
+        let p = &session.pending;
+        let (mut changes, truncated) = trace::diff(&baseline, &after);
+        let products = trace::products::apply(&mut changes, &baseline, p.msi.as_ref(), p.started_ms);
         trace::fill_details(&mut changes);
+        let (transient, transient_count) = session.live.as_ref().map(|live| live.transient()).unwrap_or_default();
         let record = trace::Trace {
             id: shibapack_core::new_id(),
-            software_id: session.software_id,
-            version_id: session.version_id,
-            software_name: session.software_name,
-            version: session.version,
-            file_name: session.file_name,
+            software_id: p.software_id.clone(),
+            version_id: p.version_id.clone(),
+            software_name: p.software_name.clone(),
+            version: p.version.clone(),
+            file_name: p.file_name.clone(),
             platform: std::env::consts::OS.to_string(),
-            depth: session.depth,
-            started_at: session.started_at,
+            depth: p.depth,
+            started_at: p.started_at.clone(),
             finished_at: shibapack_core::now(),
-            baseline_ms: session.baseline.elapsed_ms,
+            baseline_ms: p.baseline_ms,
             compare_ms: started.elapsed().as_millis() as u64,
             entries: after.entries,
             changes,
             truncated,
+            products,
+            transient,
+            transient_count,
+            reboot_required: trace::persist::reboot_required(p.reboot_marker),
+            resumed: session.resumed,
         };
-        trace::save(&session.data_dir, &record).map_err(|e| e.to_string())?;
+        if let Err(err) = trace::save(&p.data_dir, &record) {
+            session.baseline = Some(baseline);
+            put_back(session);
+            return Err(err.to_string());
+        }
+        trace::persist::clear(&pending_dir);
+        close_trace_mini(app);
         Ok(record)
     })
     .await
 }
 
-/// 不监控了：正在拍快照就停下；已经在等安装时直接丢掉基线。
+/// 不监控了：正在拍快照就停下；已经在等安装时直接丢掉基线（磁盘上存的也删掉）。
 #[tauri::command]
-fn trace_cancel(state: State<AppState>) {
+fn trace_cancel(app: AppHandle, state: State<AppState>) {
     state.trace_cancel.store(true, Ordering::SeqCst);
     if !state.trace_busy.load(Ordering::SeqCst) {
         if let Ok(mut slot) = state.trace.lock() {
             *slot = None;
         }
+        trace::persist::clear(&trace_pending_dir(&app));
+        close_trace_mini(&app);
     }
+}
+
+/// 浮动小窗上点了按钮：把主窗口叫到前面，告诉它点的是什么（`finish` 或 `open`）。
+#[tauri::command]
+fn trace_mini_action(app: AppHandle, action: String) -> CmdResult<()> {
+    if action != "finish" && action != "open" {
+        return Err("not_supported".into());
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    app.emit_to("main", "trace://mini-action", action).map_err(|e| e.to_string())
+}
+
+/// 打开安装时的浮动小窗：总在最前面，放在屏幕右上角，显示实时改动，可以直接点“完成”。已经开着就不动。
+/// 监控开始（或启动时接着上次的监控）时打开，完成或放弃时关掉（`close_trace_mini`），都由这边管，界面不用操心。
+fn open_trace_mini(app: &AppHandle) {
+    if app.get_webview_window("trace-mini").is_some() {
+        return;
+    }
+    const SIZE: (f64, f64) = (320.0, 184.0);
+    let mut builder = tauri::WebviewWindowBuilder::new(app, "trace-mini", tauri::WebviewUrl::App("index.html?mini=trace".into()))
+        .title("ShibaPack")
+        .inner_size(SIZE.0, SIZE.1)
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .focused(false);
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let scale = monitor.scale_factor();
+        let size = monitor.size().to_logical::<f64>(scale);
+        let origin = monitor.position().to_logical::<f64>(scale);
+        builder = builder.position(origin.x + size.width - SIZE.0 - 24.0, origin.y + 48.0);
+    }
+    if let Err(err) = builder.build() {
+        eprintln!("trace mini window: {err}");
+    }
+}
+
+fn close_trace_mini(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("trace-mini") {
+        let _ = window.close();
+    }
+}
+
+/// 重新打开浮动小窗（关掉以后从监控窗口里再叫出来）。没有正在进行的监控时不开。
+#[tauri::command]
+async fn trace_mini(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+    if state.trace.lock().map_err(|_| "internal".to_string())?.is_some() {
+        open_trace_mini(&app);
+    }
+    Ok(())
 }
 
 fn traces_dir(state: &State<AppState>) -> CmdResult<PathBuf> {
@@ -2683,6 +2815,8 @@ pub fn run() {
             if let Some(repo) = &repo {
                 allow_repo_icons(app.handle(), repo);
             }
+            let trace = resume_trace(app.handle());
+            let resuming = trace.is_some();
             app.manage(AppState {
                 repo: Mutex::new(repo),
                 open_failure: Mutex::new(open_failure),
@@ -2711,10 +2845,14 @@ pub fn run() {
                 cleanup_turn: Mutex::new(()),
                 cleanup_cancel: AtomicBool::new(false),
                 log_dir: app.path().app_log_dir().unwrap_or_else(|_| std::env::temp_dir().join("ShibaPack-logs")),
-                trace: Mutex::new(None),
+                trace: Mutex::new(trace),
                 trace_cancel: AtomicBool::new(false),
                 trace_busy: AtomicBool::new(false),
             });
+            // 接着上次没完成的监控：小窗也开出来
+            if resuming {
+                open_trace_mini(app.handle());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2763,6 +2901,8 @@ pub fn run() {
             trace_status,
             trace_finish,
             trace_cancel,
+            trace_mini,
+            trace_mini_action,
             list_traces,
             get_trace,
             delete_trace,

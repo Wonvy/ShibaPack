@@ -156,6 +156,10 @@ export const api = {
   /** 装完了：再拍一次、对比、存下记录。 */
   traceFinish: () => call<Trace>("trace_finish"),
   traceCancel: () => call<void>("trace_cancel"),
+  /** 重新打开安装时的浮动小窗（开始监控时后端自己会开，结束时自己会关）。 */
+  traceMini: () => call<void>("trace_mini"),
+  /** 小窗上点了按钮：`finish` 完成监控，`open` 回到主窗口。主窗口会收到 `onTraceMiniAction`。 */
+  traceMiniAction: (action: "finish" | "open") => call<void>("trace_mini_action", { action }),
   listTraces: (softwareId: string | null) => call<TraceSummary[]>("list_traces", { softwareId }),
   getTrace: (softwareId: string, id: string) => call<Trace>("get_trace", { softwareId, id }),
   deleteTrace: (softwareId: string, id: string) => call<void>("delete_trace", { softwareId, id }),
@@ -319,6 +323,13 @@ export async function onTraceProgress(handler: (progress: TraceProgress) => void
   if (!isTauri) return (await import("./mockTrace")).mockOnTrace(handler);
   const { listen } = await import("@tauri-apps/api/event");
   return listen<TraceProgress>("trace://progress", (event) => handler(event.payload));
+}
+
+/** 浮动小窗上点了“完成”或“打开”。 */
+export async function onTraceMiniAction(handler: (action: "finish" | "open") => void): Promise<() => void> {
+  if (!isTauri) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<"finish" | "open">("trace://mini-action", (event) => handler(event.payload));
 }
 
 /** 导入进度。返回取消监听的函数。 */

@@ -6,12 +6,16 @@
 // 4. 对比：再拍一次，和基线比，存下记录。
 // 5. 报告：按类别列出安装程序做的改动，开机启动、服务、驱动这类标出来；缓存、日志这类多半无关的默认藏起来。
 //
-// 也用来打开已有的记录（直接到第 5 步）。
+// 也用来打开已有的记录（直接到第 5 步），和接着上次没完成的监控（安装程序要求重启了电脑，直接到第 3 步）。
+//
+// 安装中屏幕右上角另开一个总在最前面的小窗（TraceMini），装的时候不用切回 ShibaPack 也能看到进度、点“完成”。
 
 import {
   AppWindow,
+  BadgeCheck,
   CircleCheck,
   FileText,
+  RotateCcw,
   Folder,
   FolderOpen,
   KeyRound,
@@ -20,14 +24,14 @@ import {
   ShieldAlert,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import { api, onTraceProgress } from "../lib/api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { api, onTraceMiniAction, onTraceProgress } from "../lib/api";
 import { errorText, type Key } from "../lib/i18n";
 import { formatDate, formatSize } from "../lib/library";
 import { usePrefs } from "../lib/prefs";
 import { useApp, useLanguage, useT } from "../lib/store";
 import { RISKY, TRACE_CATEGORIES, bumpTraces, closeTraceDialog, traceTotals, useTrace, type TraceTarget } from "../lib/trace";
-import type { Trace, TraceCategory, TraceChange, TraceProgress, TraceStatus } from "../lib/types";
+import type { LiveSummary, Trace, TraceCategory, TraceChange, TraceProgress, TraceStatus } from "../lib/types";
 import { confirm } from "./dialogs";
 import { Button, Checkbox, MiddleTruncate, Modal, Segmented, cx } from "./ui";
 
@@ -36,7 +40,7 @@ type Stage = "prepare" | "baseline" | "installing" | "compare" | "report" | "loa
 export function TraceDialog() {
   const target = useTrace((state) => state.target);
   if (!target) return null;
-  return <Dialog key={target.mode === "view" ? target.traceId : target.fileId} target={target} />;
+  return <Dialog key={target.mode === "view" ? target.traceId : target.mode === "start" ? target.fileId : "resume"} target={target} />;
 }
 
 function Dialog({ target }: { target: TraceTarget }) {
@@ -44,7 +48,7 @@ function Dialog({ target }: { target: TraceTarget }) {
   const language = useLanguage();
   const deep = usePrefs((state) => state.traceDeep);
   const setPrefs = usePrefs((state) => state.set);
-  const [stage, setStage] = useState<Stage>(target.mode === "view" ? "loading" : "prepare");
+  const [stage, setStage] = useState<Stage>(target.mode === "view" ? "loading" : target.mode === "resume" ? "installing" : "prepare");
   const [progress, setProgress] = useState<TraceProgress | null>(null);
   const [status, setStatus] = useState<TraceStatus | null>(null);
   const [trace, setTrace] = useState<Trace | null>(null);
@@ -78,7 +82,7 @@ function Dialog({ target }: { target: TraceTarget }) {
     };
   }, [stage]);
 
-  // 安装中每 2 秒看一次安装程序还在不在跑
+  // 安装中每秒看一次：安装程序还在不在跑、实时改动
   useEffect(() => {
     if (stage !== "installing") return;
     let alive = true;
@@ -87,10 +91,23 @@ function Dialog({ target }: { target: TraceTarget }) {
         if (alive && next) setStatus(next);
       });
     poll();
-    const timer = setInterval(poll, 2000);
+    const timer = setInterval(poll, 1000);
     return () => {
       alive = false;
       clearInterval(timer);
+    };
+  }, [stage]);
+
+  // 浮动小窗由后端开关（开始监控时开，完成或放弃时关）；小窗上点“完成”时这里接着做
+  const finishRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    if (stage !== "installing") return;
+    let stop: (() => void) | undefined;
+    let gone = false;
+    void onTraceMiniAction((action) => action === "finish" && finishRef.current()).then((unlisten) => (gone ? unlisten() : (stop = unlisten)));
+    return () => {
+      gone = true;
+      stop?.();
     };
   }, [stage]);
 
@@ -129,6 +146,8 @@ function Dialog({ target }: { target: TraceTarget }) {
     }
   };
 
+  finishRef.current = () => void finish();
+
   const abandon = async () => {
     if (stage === "installing") {
       const { ok } = await confirm({ title: t("trace.abandonTitle"), body: t("trace.abandonBody"), confirmLabel: t("trace.abandon"), danger: true });
@@ -157,7 +176,14 @@ function Dialog({ target }: { target: TraceTarget }) {
     }
   };
 
-  const name = target.mode === "start" ? `${target.softwareName} ${target.version}`.trim() : trace ? `${trace.softwareName} ${trace.version}`.trim() : "";
+  const name =
+    target.mode === "start"
+      ? `${target.softwareName} ${target.version}`.trim()
+      : trace
+        ? `${trace.softwareName} ${trace.version}`.trim()
+        : status
+          ? `${status.softwareName} ${status.version}`.trim()
+          : "";
   const title = stage === "report" || stage === "loading" ? t("trace.reportTitle", { name }) : t("trace.title", { name });
 
   let footer;
@@ -270,6 +296,12 @@ function Installing({ status }: { status: TraceStatus | null }) {
   const running = status?.installerRunning;
   return (
     <div className="flex flex-col gap-3">
+      {status?.resumed && (
+        <p className="m-0 flex items-start gap-1.5 rounded-md bg-accent-soft px-2.5 py-2 text-[12px] leading-relaxed text-accent">
+          <RotateCcw size={13} strokeWidth={1.75} aria-hidden className="mt-0.5 shrink-0" />
+          {t("trace.resumed")}
+        </p>
+      )}
       <div className="flex items-center gap-3 rounded-lg border border-line px-3 py-3">
         <span className="relative flex size-8 shrink-0 items-center justify-center rounded-full bg-accent-soft text-accent">
           <Radar size={16} strokeWidth={1.75} aria-hidden />
@@ -281,7 +313,13 @@ function Installing({ status }: { status: TraceStatus | null }) {
         </div>
         <span className="tabular shrink-0 text-[13px] text-fg-2">{clock}</span>
       </div>
-      {running === false ? (
+      {status?.live && <LiveView live={status.live} />}
+      {status?.rebootRequired ? (
+        <p className="m-0 flex items-start gap-1.5 text-[13px] leading-relaxed text-warning">
+          <RotateCcw size={14} strokeWidth={1.75} aria-hidden className="mt-0.5 shrink-0" />
+          {t("trace.rebootRequired")}
+        </p>
+      ) : running === false ? (
         <p className="m-0 flex items-start gap-1.5 text-[13px] leading-relaxed text-success">
           <CircleCheck size={14} strokeWidth={1.75} aria-hidden className="mt-0.5 shrink-0" />
           {t("trace.installerExited")}
@@ -290,6 +328,35 @@ function Installing({ status }: { status: TraceStatus | null }) {
         <p className="m-0 text-[13px] leading-relaxed text-fg-2">{t(running ? "trace.installerRunning" : "trace.installerUnknown")}</p>
       )}
       <p className="m-0 text-[12px] leading-relaxed text-fg-3">{t("trace.firstRunHint")}</p>
+    </div>
+  );
+}
+
+/** 实时改动：各类别动了几个文件，和最近的几次改动。 */
+export function LiveView({ live, compact = false }: { live: LiveSummary; compact?: boolean }) {
+  const t = useT();
+  const present = TRACE_CATEGORIES.filter((cat) => (live.counts[cat] ?? 0) > 0);
+  const recent = compact ? live.recent.slice(0, 2) : live.recent;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
+        <span className="font-medium">{t("trace.liveFiles", { n: live.files })}</span>
+        {present.map((cat) => (
+          <span key={cat} className={cx(RISKY.includes(cat) ? "text-warning" : "text-fg-3")}>
+            {t(`trace.cat.${cat}` as Key)} <span className="tabular">{live.counts[cat]}</span>
+          </span>
+        ))}
+      </div>
+      {recent.length > 0 && (
+        <div className={cx("flex flex-col", !compact && "rounded-lg border border-line px-2 py-1")}>
+          {recent.map((event, i) => (
+            <div key={`${event.atMs}-${i}`} className="flex h-6 items-center gap-1.5">
+              <span className={cx("shrink-0 rounded px-1 text-[12px] leading-[18px]", OP_STYLE[event.op])}>{t(`trace.op.${event.op}` as Key)}</span>
+              <MiddleTruncate text={event.path} tail={compact ? 18 : 28} className="text-[12px] text-fg-2" />
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -331,6 +398,13 @@ function Report({ trace }: { trace: Trace }) {
           t(trace.depth === "deep" ? "trace.depth.deep" : "trace.depth.standard"),
         ].join(" · ")}
       </div>
+
+      {(trace.resumed || trace.rebootRequired) && (
+        <p className="m-0 flex items-start gap-1.5 text-[12px] leading-relaxed text-fg-2">
+          <RotateCcw size={13} strokeWidth={1.75} aria-hidden className="mt-0.5 shrink-0 text-fg-3" />
+          {t(trace.resumed ? "trace.reportResumed" : "trace.reportReboot")}
+        </p>
+      )}
 
       <div className="grid grid-cols-4 gap-2">
         <Stat label={t("trace.stat.added")} value={formatSize(totals.addedBytes)} />
@@ -404,8 +478,61 @@ function Report({ trace }: { trace: Trace }) {
           })}
         </div>
       )}
+      {(trace.products?.length ?? 0) > 0 && (
+        <section>
+          <h3 className="m-0 mb-1 flex items-center gap-1.5 text-[12px] font-semibold text-fg-2">
+            <BadgeCheck size={13} strokeWidth={1.75} aria-hidden className="text-accent" />
+            {t("trace.products")}
+          </h3>
+          <p className="m-0 mb-1.5 text-[12px] leading-relaxed text-fg-3">{t("trace.productsHint")}</p>
+          <div className="rounded-lg border border-line">
+            {trace.products!.map((product) => (
+              <div key={product.id} className="flex min-h-8 items-center gap-2 border-b border-line px-2.5 py-1 last:border-b-0">
+                <span className="shrink-0 rounded bg-hover px-1.5 text-[12px] leading-5 text-fg-2 uppercase">{product.kind}</span>
+                <span className="selectable min-w-0 flex-1 truncate text-[12px]">
+                  {product.name !== product.id ? `${product.name} ` : ""}
+                  <span className="text-fg-3">{product.id}</span>
+                </span>
+                {product.version && <span className="shrink-0 text-[12px] text-fg-3">{product.version}</span>}
+                <span className="tabular shrink-0 text-[12px] text-fg-3">{t("trace.items", { n: product.files })}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+      {(trace.transientCount ?? 0) > 0 && <TransientList trace={trace} />}
       {trace.truncated && <p className="m-0 text-[12px] text-fg-3">{t("trace.truncated")}</p>}
     </div>
+  );
+}
+
+/** 安装期间出现过、装完已经不在的文件（默认收起）。 */
+function TransientList({ trace }: { trace: Trace }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const list = trace.transient ?? [];
+  const count = trace.transientCount ?? list.length;
+  return (
+    <section>
+      <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className="flex h-7 items-center gap-1 text-[12px] font-semibold text-fg-2 hover:text-fg">
+        {t("trace.transient", { n: count })}
+        <span className={cx("text-fg-3 transition-transform", open && "rotate-90")}>›</span>
+      </button>
+      {open && (
+        <>
+          <p className="m-0 mb-1.5 text-[12px] leading-relaxed text-fg-3">{t("trace.transientHint")}</p>
+          <div className="rounded-lg border border-line">
+            {list.map((item) => (
+              <div key={item.path} className="flex h-7 items-center gap-2 border-b border-line px-2.5 last:border-b-0">
+                <FileText size={13} strokeWidth={1.75} aria-hidden className="shrink-0 text-fg-3" />
+                <MiddleTruncate text={item.path} tail={28} className={cx("selectable text-[12px]", item.noise && "text-fg-3")} />
+              </div>
+            ))}
+            {count > list.length && <p className="m-0 px-2.5 py-1.5 text-[12px] text-fg-3">{t("trace.transientMore", { n: count - list.length })}</p>}
+          </div>
+        </>
+      )}
+    </section>
   );
 }
 
@@ -456,6 +583,11 @@ function Row({ change, onReveal }: { change: TraceChange; onReveal: () => void }
           </div>
         )}
       </div>
+      {change.confirmed && (
+        <span title={t("trace.confirmedHint")} className="flex shrink-0 text-accent">
+          <BadgeCheck size={13} strokeWidth={1.75} aria-label={t("trace.confirmed")} />
+        </span>
+      )}
       {change.size !== undefined && change.op !== "removed" && <span className="tabular shrink-0 text-[12px] text-fg-3">{formatSize(change.size)}</span>}
       {isFile && change.op !== "removed" && (
         <button

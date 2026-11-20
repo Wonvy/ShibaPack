@@ -745,6 +745,40 @@ export interface TraceChange {
   category: TraceCategory;
   /** 多半不是安装程序改的（缓存、日志、浏览器资料……）。 */
   noise: boolean;
+  /** 安装程序自己登记过这一项（.pkg 安装收据、MSI 组件清单）。 */
+  confirmed?: boolean;
+}
+
+/** 安装程序自己登记的产品。 */
+export interface TraceProduct {
+  kind: "pkg" | "msi";
+  id: string;
+  name: string;
+  version: string;
+  files: number;
+}
+
+/** 安装期间出现过、装完已经不在的文件。 */
+export interface TraceTransient {
+  path: string;
+  category: TraceCategory;
+  noise: boolean;
+}
+
+export interface LiveEvent {
+  op: TraceOp;
+  path: string;
+  category: TraceCategory;
+  atMs: number;
+}
+
+/** 安装时实时看到的文件改动。 */
+export interface LiveSummary {
+  files: number;
+  counts: Partial<Record<TraceCategory, number>>;
+  noise: number;
+  /** 最近的几次改动，新的在前。 */
+  recent: LiveEvent[];
 }
 
 /** 一次安装监控的记录。 */
@@ -764,6 +798,13 @@ export interface Trace {
   entries: number;
   changes: TraceChange[];
   truncated: boolean;
+  products?: TraceProduct[];
+  transient?: TraceTransient[];
+  transientCount?: number;
+  /** 安装程序要求重启电脑。 */
+  rebootRequired?: boolean;
+  /** 重启电脑后接着完成的监控。 */
+  resumed?: boolean;
 }
 
 export interface TraceSummary {
@@ -785,10 +826,16 @@ export interface TraceStatus {
   softwareId: string;
   versionId: string;
   softwareName: string;
+  version: string;
   fileName: string;
   elapsedMs: number;
   /** 安装程序还在不在跑；看不出来时是 null。 */
   installerRunning: boolean | null;
+  /** 实时看到的文件改动；监听不了时是 null。 */
+  live: LiveSummary | null;
+  rebootRequired: boolean;
+  /** ShibaPack 重新打开后接着的监控。 */
+  resumed: boolean;
 }
 
 export interface TraceProgress {

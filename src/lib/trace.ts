@@ -5,7 +5,9 @@ import type { TraceCategory, TraceChange } from "./types";
 
 export type TraceTarget =
   | { mode: "start"; softwareId: string; versionId: string; fileId: string; fileName: string; softwareName: string; version: string }
-  | { mode: "view"; softwareId: string; traceId: string };
+  | { mode: "view"; softwareId: string; traceId: string }
+  /** 上次没完成的监控（比如安装程序要求重启了电脑），ShibaPack 打开时接着来。 */
+  | { mode: "resume" };
 
 export const useTrace = create<{
   target: TraceTarget | null;

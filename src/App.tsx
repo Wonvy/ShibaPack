@@ -6,6 +6,7 @@ import { flushSync } from "react-dom";
 import { ClassifyDialog } from "./components/ClassifyDialog";
 import { UninstallDialog } from "./components/UninstallDialog";
 import { TraceDialog } from "./components/TraceDialog";
+import { openTraceDialog, useTrace } from "./lib/trace";
 import { AddMenuButton, DetailToggle, ResizeHandle, StatusBar, ToastView, TopBar, UpdateCard } from "./components/chrome";
 import { DialogHost } from "./components/dialogs";
 import { ImportDialog } from "./components/ImportDialog";
@@ -82,6 +83,11 @@ export default function App() {
       if (useApp.getState().status?.selftest) (await import("./lib/selftest")).runSelftest();
       // 自检时不查更新，免得两边互相干扰
       else scheduleUpdateChecks();
+      // 上次没完成的安装监控（安装程序要求重启了电脑）：接着来
+      void api.traceStatus().then(
+        (pending) => pending && !useTrace.getState().target && openTraceDialog({ mode: "resume" }),
+        () => {},
+      );
     });
     // 从系统拖文件进窗口：
     // - 落在侧栏的某个分类上：直接导入进这个分类（带着文件夹时先打开导入窗口，问文件夹是整个导入还是导入里面的安装包）

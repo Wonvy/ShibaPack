@@ -1,9 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "主窗口可以用的能力：窗口拖动与控制、文件选择对话框、检查并安装更新、重启",
+  "description": "主窗口和安装监控小窗可以用的能力：窗口拖动与控制、文件选择对话框、检查并安装更新、重启",
   "windows": [
-    "main"
+    "main",
+    "trace-mini"
   ],
   "permissions": [
     "core:default",

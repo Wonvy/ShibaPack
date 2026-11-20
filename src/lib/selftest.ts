@@ -39,6 +39,14 @@ export async function runSelftest() {
     const status = await api.getStatus();
     await check("仓库已打开", status.configured, status.repoRoot ?? "");
 
+    // 自检文件名里带 trace-selftest 时只检查安装监控（见 selftestTrace.ts）
+    if (status.selftest?.includes("trace-selftest")) {
+      const { runTraceSelftest } = await import("./selftestTrace");
+      await runTraceSelftest(report, check, status.selftest);
+      await api.selftestReport(failures === 0 ? "全部通过" : `${failures} 项失败`, true);
+      return;
+    }
+
     // 打开时默认是主页，下面的检查从软件库开始
     useApp.getState().setRoute("library");
     await new Promise((resolve) => setTimeout(resolve, 300));

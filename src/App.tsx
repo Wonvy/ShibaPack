@@ -125,7 +125,7 @@ export default function App() {
   if (!status.configured || !ready) {
     return (
       <div className="flex h-full flex-col">
-        <TopBar bare />
+        <TopBar />
         <SetupGuide />
         <ToastView />
       </div>
@@ -136,7 +136,7 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <TopBar />
+      <TopBar listBounds={{ left: sidebarWidth, right: docked ? detailWidth : 0, windowWidth }} />
       <div className="relative flex min-h-0 flex-1">
         <Sidebar onAutoWidthChange={setAutoSidebarWidth} />
         <ResizeHandle

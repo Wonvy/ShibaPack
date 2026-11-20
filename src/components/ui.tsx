@@ -200,16 +200,17 @@ export function Checkbox({ checked, onChange, children }: { checked: boolean; on
   );
 }
 
-export function Switch({ checked, onChange, label }: { checked: boolean; onChange: (checked: boolean) => void; label: string }) {
+export function Switch({ checked, onChange, label, disabled }: { checked: boolean; onChange: (checked: boolean) => void; label: string; disabled?: boolean }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cx(
-        "relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full transition-colors",
+        "relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full transition-colors disabled:opacity-50",
         checked ? "bg-accent-strong" : "bg-active ring-1 ring-line-strong ring-inset",
       )}
     >

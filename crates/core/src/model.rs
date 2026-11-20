@@ -222,9 +222,15 @@ pub struct Settings {
     /// 存储模式是“托管”时，导入后删掉原文件（移动进仓库），而不是复制一份。
     #[serde(default)]
     pub move_on_import: bool,
+    /// 导入后自动给尚未分类的软件归类。
+    #[serde(default)]
+    pub auto_classify_on_import: bool,
     /// 是否联网取软件简介（会把软件名发给维基百科和 GitHub）。
     #[serde(default = "default_true")]
     pub fetch_summaries: bool,
+    /// 官网没有合适的图标时，从 theSVG 查找品牌图标。
+    #[serde(default)]
+    pub the_svg_icons: bool,
     /// 简介不是界面语言时，是否联网翻译成界面语言（会把简介原文发给翻译服务）。
     #[serde(default = "default_true")]
     pub translate_summaries: bool,
@@ -275,7 +281,9 @@ impl Default for Settings {
             language: default_language(),
             default_storage: Storage::Managed,
             move_on_import: false,
+            auto_classify_on_import: false,
             fetch_summaries: true,
+            the_svg_icons: false,
             translate_summaries: true,
             offline_catalog: true,
             auto_update: true,

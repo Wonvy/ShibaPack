@@ -160,7 +160,7 @@ function useOnline<T>(enabled: boolean, query: string, cache: Map<string, T[]>, 
   return state;
 }
 
-export function SearchBox() {
+export function SearchBox({ resultsMaxWidth }: { resultsMaxWidth: number }) {
   const t = useT();
   const search = useApp((state) => state.search);
   const patch = useApp((state) => state.patch);
@@ -244,7 +244,7 @@ export function SearchBox() {
             ? t("startup.search")
             : t(`search.placeholder.${scope}` as Key);
   return (
-    <div ref={box} className="@container relative w-full max-w-[400px] min-w-[180px]">
+    <div ref={box} className="@container relative w-full max-w-[400px] min-w-0">
       <ContextMenu items={SEARCH_SCOPES.map((value) => ({
         label: t(`search.scope.${value}`),
         checked: shortcuts.includes(value),
@@ -321,6 +321,7 @@ export function SearchBox() {
           // 按着结果时不要让输入框失去焦点，键盘还能接着用
           onPointerDown={(event) => event.preventDefault()}
           className="absolute top-full left-1/2 z-50 mt-1.5 flex max-h-[min(520px,70vh)] w-[max(100%,440px)] -translate-x-1/2 animate-pop flex-col overflow-hidden rounded-lg bg-panel shadow-pop"
+          style={{ maxWidth: resultsMaxWidth }}
         >
           <div className="min-h-0 flex-1 overflow-y-auto p-1">
             {sections.map((section) => (

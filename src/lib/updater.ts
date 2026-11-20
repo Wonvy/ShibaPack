@@ -31,7 +31,7 @@ const autoUpdate = () => useApp.getState().library?.settings.autoUpdate ?? true;
 async function lookUp(): Promise<Pending | null> {
   if (!isTauri) return previewUpdate();
   const { check } = await import("@tauri-apps/plugin-updater");
-  // Windows 上按当初怎么装的取对应的更新包：用 -setup.exe 装的不要管理员权限，不能拿 MSI 去更新它
+  // Windows 上沿用安装时的打包类型，NSIS 安装器在遇到受保护目录时自行请求授权。
   const target = await api.updaterTarget().catch(() => null);
   return check(target ? { target } : undefined);
 }

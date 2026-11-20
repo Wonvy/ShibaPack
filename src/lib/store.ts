@@ -72,6 +72,8 @@ export interface ImportDialogState {
   entries?: DropEntry[];
   /** 预先选好的分类（拖到侧栏的某个分类上；`null` 是拖到了“未分类”上）。 */
   categoryId?: string | null;
+  storage?: Storage;
+  softwareName?: string;
   /** 不是从这个窗口开始的导入有失败：直接显示结果和失败原因。 */
   report?: ImportReport;
 }
@@ -254,9 +256,9 @@ let fillingIcons = false;
 let fillingInfo = false;
 /** 本机的图标（安装包里、已安装软件那边）至少补过一轮，之后才联网找，免得网站图标抢在真图标前面。 */
 let localIconsDone = false;
-/** 软件 id → 这次运行里已经拿去联网找图标的“主页 + GitHub 仓库”。改了主页会再找一次。 */
+/** 软件 id → 这次运行里已经用于联网查找图标的来源和信息。 */
 const askedIcons = new Map<string, string>();
-const iconQueue: string[] = [];
+const iconQueue = new Set<string>();
 let iconWorkers = 0;
 /** 连续几次连不上就当作没有网，这次运行不再找。 */
 let iconFailures = 0;
@@ -320,28 +322,36 @@ export const useApp = create<AppState>()((set, get) => {
     }
   };
 
-  /** 还没有图标、但填了主页或关联了 GitHub 的软件，联网找网站图标或仓库主人的头像。同时最多 3 个。 */
+  /** 给还没有图标的软件用已启用的来源联网找图标，同时最多 3 个。 */
   const queueWebIcons = () => {
     const library = get().library;
     if (!library?.settings.fetchSummaries || !localIconsDone || fillingIcons || iconFailures >= 3) return;
     for (const software of library.software) {
       if (software.iconData) continue;
-      const github = software.subscription?.source === "github" ? software.subscription.reference : "";
-      const key = `${software.homepage.trim()}\n${github}`;
-      if (key === "\n" || askedIcons.get(software.id) === key) continue;
+      const homepage = software.homepage.trim();
+      const github = software.subscription?.source === "github" ? software.subscription.reference.trim() : "";
+      const theSvgName = library.settings.theSvgIcons ? software.name.trim() : "";
+      if (!homepage && !github && !theSvgName) continue;
+      const key = JSON.stringify([homepage, github, theSvgName]);
+      if (askedIcons.get(software.id) === key) continue;
       askedIcons.set(software.id, key);
-      iconQueue.push(software.id);
+      iconQueue.add(software.id);
     }
     pumpIcons();
   };
 
   const pumpIcons = () => {
-    while (iconWorkers < ICON_WORKERS && iconQueue.length > 0 && iconFailures < 3) {
-      const id = iconQueue.shift()!;
+    const root = get().status?.repoRoot;
+    const settings = get().library?.settings;
+    if (!settings?.fetchSummaries) return;
+    for (const id of iconQueue) {
+      if (iconWorkers >= ICON_WORKERS || iconFailures >= 3) break;
+      iconQueue.delete(id);
       iconWorkers++;
       api
         .fetchIcon(id)
         .then((update) => {
+          if (get().status?.repoRoot !== root) return;
           iconFailures = 0;
           const current = get().library;
           // 只改这一个软件的图标，免得用旧的快照盖掉这期间的其他改动
@@ -351,7 +361,11 @@ export const useApp = create<AppState>()((set, get) => {
         })
         .catch((error) => {
           // 一个网站打不开不代表没网；连续几个都失败才停。没找到的下次启动再试
-          if (String(error).startsWith("offline")) iconFailures++;
+          const current = get();
+          if (current.status?.repoRoot === root && current.library?.settings.fetchSummaries
+              && current.library.settings.theSvgIcons === settings.theSvgIcons && String(error).startsWith("offline")) {
+            iconFailures++;
+          }
         })
         .finally(() => {
           iconWorkers--;
@@ -580,6 +594,8 @@ export const useApp = create<AppState>()((set, get) => {
       if (!status) return;
       askedSummaries.clear();
       askedIcons.clear();
+      iconQueue.clear();
+      iconFailures = 0;
       set({ status, selectedId: null, selectedIds: [], scope: { kind: "all" }, links: {} });
       await get().apply(() => api.getLibrary());
       void get().loadInstalled();
@@ -736,7 +752,14 @@ export const useApp = create<AppState>()((set, get) => {
       // 先改界面再存盘，切主题不用等磁盘
       applyTheme(settings.theme, settings.accent);
       set({ library: { ...library, settings } });
-      if (await get().apply(() => api.setSettings(settings))) return;
+      if (await get().apply(() => api.setSettings(settings))) {
+        if (settings.fetchSummaries && (!before.fetchSummaries || before.theSvgIcons !== settings.theSvgIcons)) {
+          if (iconFailures >= 3) askedIcons.clear();
+          iconFailures = 0;
+          queueWebIcons();
+        }
+        return;
+      }
       // 没存上（比如 NAS 断了）：界面退回原来的设置，免得看着改了、下次打开又变回去
       const current = get().library;
       if (current) {

@@ -52,6 +52,12 @@ export function aiConfigured(ai: AiSettings | undefined): ai is AiSettings {
   return Boolean(ai?.baseUrl.trim() && ai.model.trim());
 }
 
+/** 编辑结束后只显示末尾 6 个字符。短密钥整串遮蔽。 */
+export function maskAiKey(key: string): string {
+  const characters = Array.from(key.trim());
+  return characters.length > 6 ? `••••••${characters.slice(-6).join("")}` : "••••••";
+}
+
 /** 这台电脑上能用 AI：地址、模型都有，不是本机服务时钥匙串里还存着密钥。 */
 export function aiUsable(ai: AiSettings | undefined, keySaved: boolean): boolean {
   return aiConfigured(ai) && (keySaved || isLocalUrl(ai.baseUrl));

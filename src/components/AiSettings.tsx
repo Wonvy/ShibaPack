@@ -4,7 +4,7 @@
 
 import { CircleCheck, ExternalLink, TriangleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
-import { AI_PRESETS, isLocalUrl, presetName, presetOf } from "../lib/ai";
+import { AI_PRESETS, isLocalUrl, maskAiKey, presetName, presetOf } from "../lib/ai";
 import { api } from "../lib/api";
 import { errorText } from "../lib/i18n";
 import { useApp, useLanguage, useT } from "../lib/store";
@@ -32,33 +32,34 @@ export function AiSettingsForm() {
   const [baseUrl, setBaseUrl] = useState(configured ? saved.baseUrl : first.baseUrl);
   const [model, setModel] = useState(configured ? saved.model : first.model);
   const [key, setKey] = useState("");
-  /** 这台电脑的钥匙串里有没有表单里这个地址的密钥；还没查完时是 null。 */
-  const [keySaved, setKeySaved] = useState<boolean | null>(null);
+  const [editingKey, setEditingKey] = useState(false);
+  const [savedKey, setSavedKey] = useState<{ url: string; preview: string | null } | null>(null);
+  const [keyRevision, setKeyRevision] = useState(0);
   const [models, setModels] = useState<string[]>([]);
   const [busy, setBusy] = useState<"models" | "test" | "save" | null>(null);
   const [outcome, setOutcome] = useState<Outcome>(null);
 
   const local = isLocalUrl(baseUrl);
   const info = presetOf(preset);
-  const form: AiSettings = { preset, baseUrl: baseUrl.trim(), model: model.trim() };
+  const url = baseUrl.trim();
+  const form: AiSettings = { preset, baseUrl: url, model: model.trim() };
+  const savedPreview = savedKey?.url === url ? savedKey.preview : undefined;
 
   // 地址变了就重新看钥匙串里有没有它的密钥（打字时等停下来再查）
   useEffect(() => {
-    setKeySaved(null);
-    const url = baseUrl.trim();
-    if (!url) return setKeySaved(false);
+    if (!url || local) return;
     let alive = true;
     const timer = setTimeout(() => {
-      api.aiKeySaved(url).then(
-        (found) => alive && setKeySaved(found),
-        () => alive && setKeySaved(false),
+      api.aiKeyPreview(url).then(
+        (preview) => alive && setSavedKey({ url, preview }),
+        () => alive && setSavedKey({ url, preview: null }),
       );
     }, 300);
     return () => {
       alive = false;
       clearTimeout(timer);
     };
-  }, [baseUrl]);
+  }, [url, local, keyRevision]);
 
   const choosePreset = (id: string) => {
     setPreset(id);
@@ -105,10 +106,13 @@ export function AiSettingsForm() {
   const save = async () => {
     setBusy("save");
     try {
-      if (key.trim() && !local && (await attempt(() => api.aiSetKey(form.baseUrl, key).then(() => true))) !== true) return;
+      if (key.trim() && !local) {
+        if ((await attempt(() => api.aiSetKey(url, key).then(() => true))) !== true) return;
+        setSavedKey({ url, preview: maskAiKey(key) });
+        setKeyRevision((revision) => revision + 1);
+      }
       await saveSettings({ ai: form });
       await refreshAiKey();
-      if (key.trim() && !local) setKeySaved(true);
       setKey("");
       notify(t("ai.saved"));
     } finally {
@@ -117,8 +121,9 @@ export function AiSettingsForm() {
   };
 
   const removeKey = async () => {
-    if ((await attempt(() => api.aiSetKey(form.baseUrl, "").then(() => true))) !== true) return;
-    setKeySaved(false);
+    if ((await attempt(() => api.aiSetKey(url, "").then(() => true))) !== true) return;
+    setSavedKey({ url, preview: null });
+    setKeyRevision((revision) => revision + 1);
     setKey("");
     await refreshAiKey();
   };
@@ -131,7 +136,9 @@ export function AiSettingsForm() {
 
   // 和存着的设置一样、又没填新密钥时不用保存
   const dirty = key.trim() !== "" || form.preset !== saved.preset || form.baseUrl !== saved.baseUrl.trim() || form.model !== saved.model.trim();
-  const canSave = dirty && Boolean(form.baseUrl && form.model) && (local || key.trim() !== "" || keySaved === true);
+  const canSave = dirty && Boolean(form.baseUrl && form.model) && (local || key.trim() !== "" || Boolean(savedPreview));
+  const savedPlaceholder = savedPreview ? t("ai.keySaved", { preview: savedPreview }) : savedPreview === undefined && url ? "" : t("ai.keyPlaceholder");
+  const keyPlaceholder = !editingKey && key.trim() ? maskAiKey(key) : savedPlaceholder;
   const link = (url: string, label: string) => (
     <button type="button" onClick={() => void attempt(() => api.openUrl(url))} className="inline-flex items-center gap-1 text-accent hover:underline">
       {label}
@@ -184,16 +191,20 @@ export function AiSettingsForm() {
           <div className="flex gap-2">
             <TextInput
               type="password"
-              value={key}
-              // 还没查完钥匙串时先空着，免得一闪而过“粘贴 API Key”
-              placeholder={keySaved === null ? "" : keySaved ? t("ai.keySaved") : t("ai.keyPlaceholder")}
+              aria-label={t("ai.key")}
+              className="[&::-ms-reveal]:hidden"
+              disabled={busy === "save"}
+              value={editingKey ? key : ""}
+              placeholder={keyPlaceholder}
+              onFocus={() => setEditingKey(true)}
+              onBlur={() => setEditingKey(false)}
               onChange={(event) => {
                 setKey(event.target.value);
                 setOutcome(null);
               }}
             />
-            {keySaved && (
-              <Button variant="ghost" className="shrink-0 text-danger" onClick={() => void removeKey()}>
+            {savedPreview && (
+              <Button variant="ghost" className="shrink-0 text-danger" disabled={busy !== null} onClick={() => void removeKey()}>
                 {t("ai.removeKey")}
               </Button>
             )}

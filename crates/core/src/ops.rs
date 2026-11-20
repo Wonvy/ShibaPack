@@ -37,18 +37,24 @@ pub(crate) fn needs_local_icon(software: &Software) -> bool {
     software.icon.as_deref().is_some_and(is_web_icon) || (software.icon.is_none() && software.icon_data.is_none())
 }
 
-/// 联网找图标时用的主页和 GitHub 仓库。
+/// 联网找图标时用的软件信息。
 #[derive(Debug, Clone, PartialEq)]
 pub struct WebIconQuery {
     pub homepage: String,
     /// `owner/repo`
     pub github: Option<String>,
+    pub the_svg_name: Option<String>,
 }
 
 impl WebIconQuery {
-    /// 记在“没找到”标记文件里的内容。主页或仓库改了就和它对不上，会重新去找。
+    /// 保留旧的标记格式。打开 theSVG 或改名后，旧的未命中记录不再适用。
     fn key(&self) -> String {
-        format!("{}\n{}", self.homepage, self.github.as_deref().unwrap_or(""))
+        let mut key = format!("{}\n{}", self.homepage, self.github.as_deref().unwrap_or(""));
+        if let Some(name) = &self.the_svg_name {
+            key.push('\n');
+            key.push_str(name);
+        }
+        key
     }
 }
 
@@ -517,36 +523,44 @@ impl Repo {
         true
     }
 
-    /// 联网找图标要用的信息。软件已经有图标、没有主页也没有 GitHub 仓库、
-    /// 或者上次用同样的信息找过没找到时，返回 None。
+    /// 联网找图标要用的信息。已有图标、没有启用的来源或有近期的未命中记录时跳过。
     pub fn web_icon_query(&self, software_id: &str) -> Result<Option<WebIconQuery>> {
         let software = &self.lib.software[self.software_at(software_id)?];
-        if software.icon_data.is_some() {
+        if !self.lib.settings.fetch_summaries || software.icon_data.is_some()
+            || software.icon.as_deref().is_some_and(|path| self.root_join(path).is_file())
+        {
             return Ok(None);
         }
         let github = software
             .subscription
             .as_ref()
             .filter(|sub| sub.source == SourceKind::Github)
-            .map(|sub| sub.reference.trim().to_string());
-        let query = WebIconQuery { homepage: software.homepage.trim().to_string(), github };
-        if query.homepage.is_empty() && query.github.is_none() {
+            .map(|sub| sub.reference.trim())
+            .filter(|reference| !reference.is_empty())
+            .map(str::to_owned);
+        let name = software.name.trim();
+        let the_svg_name = (self.lib.settings.the_svg_icons && !name.is_empty()).then(|| name.to_owned());
+        let query = WebIconQuery { homepage: software.homepage.trim().to_string(), github, the_svg_name };
+        if query.homepage.is_empty() && query.github.is_none() && query.the_svg_name.is_none() {
             return Ok(None);
         }
         let marker = self.icons_dir().join(format!("{}.none", id_stem(software_id)));
-        if fs::read_to_string(marker).is_ok_and(|asked| asked == query.key()) {
+        if fs::read_to_string(&marker).is_ok_and(|asked| asked == query.key())
+            && (query.the_svg_name.is_none() || fs::metadata(&marker)
+                .and_then(|meta| meta.modified())
+                .is_ok_and(|time| time.elapsed().is_ok_and(|age| age < std::time::Duration::from_secs(86_400))))
+        {
             return Ok(None);
         }
         Ok(Some(query))
     }
 
-    /// 存下联网找到的图标，返回写进 `Software.icon` 的相对路径。没找到时记下这次问过什么，
-    /// 主页或仓库没变就不再重复去问。这期间软件已经有了图标（比如刚从安装包里取到），就不换。
+    /// 存下联网找到的图标。查询信息变了或软件已经有图标时，忽略旧结果。
     pub fn set_web_icon(&mut self, software_id: &str, query: &WebIconQuery, found: Option<WebIcon>) -> Result<Option<String>> {
-        let s = self.software_at(software_id)?;
-        if self.lib.software[s].icon_data.is_some() {
-            return Ok(self.lib.software[s].icon.clone());
+        if self.web_icon_query(software_id)?.as_ref() != Some(query) {
+            return Ok(None);
         }
+        let s = self.software_at(software_id)?;
         let dir = self.icons_dir();
         fs::create_dir_all(&dir)?;
         let marker = dir.join(format!("{}.none", id_stem(software_id)));
@@ -560,6 +574,7 @@ impl Repo {
         let _ = fs::remove_file(marker);
         let icon = format!("{DATA_DIR}/icons/{name}");
         self.lib.software[s].icon = Some(icon.clone());
+        self.lib.software[s].icon_data = icons::portable_icon(&path);
         self.save()?;
         Ok(Some(icon))
     }
@@ -953,6 +968,40 @@ mod tests {
         assert_eq!(fs::read(repo.root_join(&now)).unwrap(), b"\x89PNG\r\n\x1a\nlocal");
         assert_eq!(repo.lib.software[0].icon_data.as_ref(), Some(&cached));
         assert!(!web_file.exists(), "联网取的旧图标文件要删掉");
+    }
+
+    #[test]
+    fn the_svg_setting_rechecks_missing_icons() {
+        let root = tempfile::tempdir().unwrap();
+        let mut repo = Repo::open(root.path()).unwrap();
+        let with_homepage = repo.ensure_software("Tool A", "https://example.com").unwrap();
+        let without_homepage = repo.ensure_software("Tool B", "").unwrap();
+        let old_query = repo.web_icon_query(&with_homepage).unwrap().unwrap();
+        assert!(repo.web_icon_query(&without_homepage).unwrap().is_none());
+        repo.set_web_icon(&with_homepage, &old_query, None).unwrap();
+
+        let mut settings = repo.lib.settings.clone();
+        settings.the_svg_icons = true;
+        repo.set_settings(settings.clone()).unwrap();
+        let query = repo.web_icon_query(&with_homepage).unwrap().unwrap();
+        assert_eq!(query.the_svg_name.as_deref(), Some("Tool A"));
+        let query = repo.web_icon_query(&without_homepage).unwrap().unwrap();
+        assert_eq!(query.the_svg_name.as_deref(), Some("Tool B"));
+        repo.set_web_icon(&without_homepage, &query, None).unwrap();
+        assert!(repo.web_icon_query(&without_homepage).unwrap().is_none());
+
+        let mut edit = edit_of(&repo.lib.software[1]);
+        edit.name = "Tool C".into();
+        repo.update_software(&without_homepage, edit).unwrap();
+        let query = repo.web_icon_query(&without_homepage).unwrap().unwrap();
+        assert_eq!(query.the_svg_name.as_deref(), Some("Tool C"));
+        assert!(Repo::open(root.path()).unwrap().lib.settings.the_svg_icons);
+
+        settings.fetch_summaries = false;
+        repo.set_settings(settings).unwrap();
+        let svg = WebIcon { bytes: b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>".to_vec(), ext: "svg" };
+        assert!(repo.set_web_icon(&without_homepage, &query, Some(svg)).unwrap().is_none());
+        assert!(repo.lib.software[1].icon.is_none());
     }
 
     #[test]

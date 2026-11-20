@@ -20,6 +20,8 @@ import type {
   FailureEntry,
   FillResult,
   DropEntry,
+  ImportCategoryPreview,
+  ImportCategoryTarget,
   ImportHint,
   ImportResult,
   InstalledApp,
@@ -144,8 +146,9 @@ export const api = {
   aiDescribeMany: (items: { name: string; publisher?: string }[]) => call<DescribeResult>("ai_describe_many", { items }),
   fillIcons: () => call<FillResult>("fill_icons"),
   fillFileInfo: () => call<FillResult>("fill_file_info"),
-  inspectDrop: (paths: string[]) => call<DropEntry[]>("inspect_drop", { paths }),
-  /** 联网找图标（主页的网站图标或 GitHub 头像）。返回图标的相对路径，没找到时是 null。 */
+  inspectDrop: (paths: string[], includeChildren = false) => call<DropEntry[]>("inspect_drop", { paths, includeChildren }),
+  previewImportCategories: (targets: ImportCategoryTarget[]) => call<ImportCategoryPreview[]>("preview_import_categories", { targets }),
+  /** 联网找图标。返回图标的相对路径和缓存内容，没找到时是 null。 */
   fetchIcon: (id: string) => call<{ icon: string; iconData: string | null } | null>("fetch_icon", { id }),
   /** 按名字取简介（需要时顺带翻译）。`refresh` 为真时不管有没有都重新取。 */
   fetchSummary: (name: string, refresh = false) => call<Library>("fetch_summary", { name, refresh }),
@@ -173,6 +176,8 @@ export const api = {
   // AI 模型。`key` 是设置对话框里刚填、还没存的密钥；不给时用这台电脑钥匙串里存的
   /** 这台电脑的钥匙串里有没有这个地址的 API Key。 */
   aiKeySaved: (baseUrl: string) => call<boolean>("ai_key_saved", { baseUrl }),
+  /** 已存密钥的遮蔽预览。前端只收到可显示的部分。 */
+  aiKeyPreview: (baseUrl: string) => call<string | null>("ai_key_preview", { baseUrl }),
   /** 存 API Key（只存在这台电脑的系统钥匙串里）；`key` 为空时删掉。 */
   aiSetKey: (baseUrl: string, key: string) => call<void>("ai_set_key", { baseUrl, key }),
   aiModels: (settings: AiSettings, key?: string) => call<string[]>("ai_models", { settings, key: key || null }),

@@ -117,6 +117,9 @@ impl Repo {
                 }
             }
         } else {
+            if fresh {
+                repo.lib.categories = crate::classify::default_categories(&repo.lib.settings.language);
+            }
             repo.write_index()?;
         }
         // 旧仓库仍然可以打开；临时不能写入时，下次保存会再补一次。
@@ -678,21 +681,31 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut repo = Repo::open(dir.path()).unwrap();
         assert!(repo.index_path().exists());
+        let names: Vec<_> = repo.lib.categories.iter().map(|category| category.name.as_str()).collect();
+        assert_eq!(names, ["开发工具", "设计创作", "办公效率", "影音媒体", "网络工具", "聊天社交", "系统工具", "游戏娱乐"]);
+        assert!(repo.lib.categories.iter().all(|category| category.parent_id.is_none() && category.icon.is_some()));
+        let preview = repo.preview_import_categories(&[crate::classify::ImportCategoryTarget { name: "Git".into(), publisher: String::new() }]);
+        assert_eq!(preview[0].category_id.as_deref(), Some(repo.lib.categories[0].id.as_str()));
+        assert!(preview[0].new_category.is_none());
         repo.lib.categories.push(Category { id: "t1".into(), name: "常用".into(), parent_id: None, color: None, icon: None });
         repo.save().unwrap();
 
         let again = Repo::open(dir.path()).unwrap();
-        assert_eq!(again.lib.categories.len(), 1);
+        assert_eq!(again.lib.categories, repo.lib.categories);
         assert!(again.recovered.is_none());
         let leftovers = fs::read_dir(dir.path()).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).count();
         assert_eq!(leftovers, 0, "不应留下临时文件");
+
+        repo.lib.categories.clear();
+        repo.save().unwrap();
+        assert!(Repo::open(dir.path()).unwrap().lib.categories.is_empty(), "清空分类后不应重新添加默认分类");
     }
 
     #[test]
     fn corrupt_index_is_restored_from_backup() {
         let dir = tempfile::tempdir().unwrap();
         let mut repo = Repo::open(dir.path()).unwrap();
-        repo.lib.categories.push(Category { id: "t1".into(), name: "保留".into(), parent_id: None, color: None, icon: None });
+        repo.lib.categories = vec![category("保留")];
         repo.create_backup().unwrap();
         fs::write(repo.index_path(), b"{ not json").unwrap();
 
@@ -739,6 +752,7 @@ mod tests {
         assert!(repo.recovered.is_none(), "旧格式不应被当成损坏");
         assert_eq!(repo.lib.software[0].name, "Git");
         assert!(!repo.lib.software[0].starred);
+        assert!(repo.lib.categories.is_empty(), "已有仓库不会被补上默认分类");
         repo.save().unwrap();
         let saved = fs::read_to_string(repo.index_path()).unwrap();
         assert!(!saved.contains("tagIds") && !saved.contains("\"tags\""));
@@ -777,7 +791,7 @@ mod tests {
     fn export_onto_the_index_itself_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let mut repo = Repo::open(dir.path()).unwrap();
-        repo.lib.categories.push(category("保留"));
+        repo.lib.categories = vec![category("保留")];
         repo.save().unwrap();
         let index = repo.index_path();
         assert!(matches!(repo.export_to(&index), Err(Error::Code("export_onto_index"))));
@@ -819,7 +833,7 @@ mod tests {
     fn import_accepts_only_real_indexes() {
         let dir = tempfile::tempdir().unwrap();
         let mut repo = Repo::open(dir.path()).unwrap();
-        repo.lib.categories.push(category("保留"));
+        repo.lib.categories = vec![category("保留")];
         repo.save().unwrap();
         let other = tempfile::tempdir().unwrap();
         let try_import = |repo: &mut Repo, body: &str| {
@@ -859,7 +873,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut here = Repo::open(dir.path()).unwrap();
         let mut there = Repo::open(dir.path()).unwrap();
-        there.lib.categories.push(category("别处加的"));
+        there.lib.categories = vec![category("别处加的")];
         there.save().unwrap();
 
         here.transact(|repo| {
@@ -876,15 +890,16 @@ mod tests {
     fn failed_transaction_leaves_memory_untouched() {
         let dir = tempfile::tempdir().unwrap();
         let mut repo = Repo::open(dir.path()).unwrap();
+        let before = repo.lib.categories.clone();
         let result: Result<()> = repo.transact(|repo| {
             repo.lib.categories.push(category("改了一半"));
             Err(Error::Code("boom"))
         });
         assert!(result.is_err());
-        assert!(repo.lib.categories.is_empty());
+        assert_eq!(repo.lib.categories, before);
         // 下一次无关的保存也不会把那半截改动写进去
         repo.transact(|repo| repo.save()).unwrap();
-        assert!(Repo::open(dir.path()).unwrap().lib.categories.is_empty());
+        assert_eq!(Repo::open(dir.path()).unwrap().lib.categories, before);
     }
 
     /// 最近 8 份全留；更早的每天留一份，最多 14 天。

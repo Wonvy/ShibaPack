@@ -183,8 +183,11 @@ export interface Settings {
   defaultStorage: Storage;
   /** 托管时导入后删掉原文件（移动进仓库）。 */
   moveOnImport: boolean;
+  autoClassifyOnImport: boolean;
   /** 是否联网取软件简介（会把软件名发给维基百科和 GitHub）。 */
   fetchSummaries: boolean;
+  /** 官网没有合适的图标时，从 theSVG 查找品牌图标。 */
+  theSvgIcons: boolean;
   /** 简介不是界面语言时，联网翻译成界面语言。 */
   translateSummaries: boolean;
   /** 是否在仓库根目录生成离线目录 index.html。 */
@@ -381,9 +384,23 @@ export interface ImportHint {
   platform?: Platform;
   /** 放进哪个分类：新建的软件放进去，已有的软件还没分类时也放进去。 */
   categoryId?: string;
+  autoClassify?: boolean;
   /** 整个当作一个安装包导入的文件夹（绿色版软件等）。其余文件夹展开成里面的安装包。 */
   packages?: string[];
+  entries?: Record<string, ImportEntryEdit>;
 }
+
+export interface ImportEntryEdit {
+  name: string;
+  version: string;
+}
+
+export interface ImportCategoryTarget {
+  name: string;
+  publisher: string;
+}
+
+export type ImportCategoryPreview = Pick<Suggestion, "categoryId" | "newCategory">;
 
 /** 拖进来的一项，导入前在确认窗口里显示。 */
 export interface DropEntry {
@@ -399,10 +416,16 @@ export interface DropEntry {
   installer: boolean;
   guessName: string;
   guessVersion: string;
+  filenameVersion: string;
+  metadataVersion: string;
+  matchedSoftwareId: string | null;
+  publisher: string;
+  iconData: string | null;
+  children: DropEntry[];
 }
 
 export interface Progress {
-  phase: "collect" | "import" | "done";
+  phase: "collect" | "import" | "classify" | "done";
   current: number;
   total: number;
   file: string;
@@ -421,6 +444,8 @@ export interface ImportItem {
 }
 
 export interface ImportReport {
+  classified?: number;
+  classificationError?: string | null;
   imported: number;
   duplicates: number;
   failed: number;

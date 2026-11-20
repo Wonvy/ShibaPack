@@ -3,6 +3,8 @@
 // 加 ?offline 预览上次的仓库没打开时的引导页。
 
 import { newId } from "./library";
+import { maskAiKey } from "./ai";
+import { siNotion, siPostman } from "simple-icons";
 import type {
   AiProgress,
   ImportHint,
@@ -11,6 +13,8 @@ import type {
   Category,
   CheckProgress,
   DownloadProgress,
+  DropEntry,
+  ImportCategoryTarget,
   ImportItem,
   InstalledApp,
   LangPack,
@@ -120,19 +124,24 @@ function software(
   };
 }
 
-const categories: Category[] = [
-  { id: "dev", name: "开发工具", parentId: null, color: null, icon: "code" },
-  { id: "editor", name: "编辑器", parentId: "dev", color: null, icon: null },
-  { id: "runtime", name: "运行环境", parentId: "dev", color: null, icon: "terminal" },
-  { id: "design", name: "设计创作", parentId: null, color: null, icon: "palette" },
-  { id: "office", name: "办公效率", parentId: null, color: null, icon: "briefcase" },
-  { id: "media", name: "影音媒体", parentId: null, color: null, icon: "film" },
-  { id: "system", name: "系统工具", parentId: null, color: null, icon: "wrench" },
+const defaultCategories: Category[] = [
+  { id: "dev", name: tr("开发工具", "Development"), parentId: null, color: null, icon: "code" },
+  { id: "design", name: tr("设计创作", "Design"), parentId: null, color: null, icon: "palette" },
+  { id: "office", name: tr("办公效率", "Productivity"), parentId: null, color: null, icon: "briefcase" },
+  { id: "media", name: tr("影音媒体", "Media"), parentId: null, color: null, icon: "film" },
+  { id: "internet", name: tr("网络工具", "Internet"), parentId: null, color: null, icon: "globe" },
+  { id: "chat", name: tr("聊天社交", "Communication"), parentId: null, color: null, icon: "message" },
+  { id: "system", name: tr("系统工具", "Utilities"), parentId: null, color: null, icon: "wrench" },
+  { id: "games", name: tr("游戏娱乐", "Games"), parentId: null, color: null, icon: "gamepad" },
 ];
 
 const lib: Library = {
   format: 1,
-  categories,
+  categories: [
+    ...defaultCategories,
+    { id: "editor", name: tr("编辑器", "Editors"), parentId: "dev", color: null, icon: null },
+    { id: "runtime", name: tr("运行环境", "Runtimes"), parentId: "dev", color: null, icon: "terminal" },
+  ],
   software: [
     software("Visual Studio Code", "Microsoft", "editor", true, [
       ["1.96.2", [["VSCodeUserSetup-x64-1.96.2.exe", 104], ["VSCodeUserSetup-arm64-1.96.2.exe", 101], ["VSCode-darwin-universal.dmg", 221], ["code_1.96.2_amd64.deb", 98]]],
@@ -173,23 +182,13 @@ const lib: Library = {
       fetchedAt: stamp(2),
     },
   },
-  settings: { theme: "system", accent: "blue", language: "zh-CN", defaultStorage: "managed", moveOnImport: false, fetchSummaries: true, translateSummaries: true, offlineCatalog: true, autoUpdate: true,
+  settings: { theme: "system", accent: "blue", language: "zh-CN", defaultStorage: "managed", moveOnImport: false, autoClassifyOnImport: false, fetchSummaries: true, theSvgIcons: false, translateSummaries: true, offlineCatalog: true, autoUpdate: true,
     // 预览里假装已经设好了 AI，界面上的 AI 按钮才会出来
     ai: { preset: "deepseek", baseUrl: "https://api.deepseek.com", model: "deepseek-chat" },
   },
 };
 
 if (english) {
-  const names: Record<string, string> = {
-    dev: "Developer tools",
-    editor: "Editors",
-    runtime: "Runtimes",
-    design: "Design",
-    office: "Productivity",
-    media: "Media",
-    system: "Utilities",
-  };
-  for (const category of categories) category.name = names[category.id] ?? category.name;
   const wechat = lib.software.find((s) => s.name === "微信");
   if (wechat) Object.assign(wechat, { name: "WeChat", publisher: "Tencent" });
   lib.summaries = {
@@ -252,7 +251,11 @@ const GUESSES: [RegExp, string, string, string][] = [
 ];
 
 function suggest(id: string): Suggestion {
-  const item = lib.software.find((s) => s.id === id)!;
+  return suggestFor(lib.software.find((s) => s.id === id)!);
+}
+
+function suggestFor(item: Pick<Software, "id" | "name" | "categoryId">): Suggestion {
+  const id = item.id;
   const hit = GUESSES.find(([pattern]) => pattern.test(item.name));
   if (!hit) return { softwareId: id, categoryId: null, newCategory: null, unchanged: false, known: false, evidence: [] };
   const [, key, name, icon] = hit;
@@ -291,7 +294,7 @@ function aiSuggest(id: string): Suggestion {
   return { ...guess, known: false, reason: tr(reason[0], reason[1]) };
 }
 
-let aiKeys = new Set<string>(["https://api.deepseek.com"]);
+const aiKeys = new Map([["https://api.deepseek.com", "••••••demo01"]]);
 let aiCancelled = false;
 const aiListeners = new Set<(progress: AiProgress) => void>();
 
@@ -478,10 +481,11 @@ function mockStartupAction(id: string, action: string) {
 }
 
 let configured = !location.search.includes("setup") && !location.search.includes("offline");
-// 地址后加 ?empty：仓库是空的，用来看欢迎页
-if (location.search.includes("empty")) {
+// 新仓库有默认分类，软件和简介从空白开始。
+if (location.search.includes("empty") || location.search.includes("setup")) {
   lib.software = [];
-  lib.categories = [];
+  lib.summaries = {};
+  lib.categories = structuredClone(defaultCategories);
 }
 let backups: BackupInfo[] = [3, 26, 50].map((hours) => {
   const date = new Date(Date.now() - hours * 3600000);
@@ -523,15 +527,43 @@ function stats(): Stats {
   };
 }
 
+function sampleFolderFiles(path: string): string[] {
+  return ["Postman-win64-11.23.0-Setup.exe", "Postman-11.23.0-arm64.dmg", "Postman-11.23.0-x64.deb"].map((name) => `${path}/${name}`);
+}
+
+function inspectEntry(path: string, includeChildren: boolean): DropEntry {
+  const name = path.split(/[\\/]/).pop()!;
+  const isDir = !/\.\w{2,8}$/.test(name) || /\.app$/i.test(name);
+  const portable = /portable|\.app$/i.test(name);
+  const match = name.match(/^(.*?)[-_ ](?:win64[-_ ])?v?(\d+(?:\.\d+)+)/);
+  const guessName = (match?.[1] ?? name.replace(/\.\w+$/, "")).replace(/[-_]/g, " ").trim();
+  const filenameVersion = match?.[2] ?? "";
+  const metadataVersion = /Notion-4\.2\.0-x64\.exe/i.test(name) ? "4.2.1" : portable ? "2.4.1" : "";
+  const installers = isDir && !/\.app$/i.test(name) ? sampleFolderFiles(path) : [];
+  const logo = [siNotion, siPostman].find((icon) => icon.title.toLowerCase() === guessName.toLowerCase());
+  const iconData = logo ? `data:image/svg+xml,${encodeURIComponent(logo.svg.replace("<svg ", `<svg fill="#${logo.hex === "000000" ? "93959A" : logo.hex}" `))}` : null;
+  return {
+    path, name, isDir, size: isDir ? null : 48 * MB,
+    package: isDir && portable,
+    installers: installers.length,
+    installer: !isDir && /\.(exe|msi|appinstaller|dmg|pkg|deb|rpm|zip|appimage)$/i.test(name),
+    guessName, guessVersion: filenameVersion || metadataVersion, filenameVersion, metadataVersion,
+    matchedSoftwareId: lib.software.find((software) => software.name.toLowerCase() === guessName.toLowerCase())?.id ?? null,
+    publisher: "",
+    iconData,
+    children: includeChildren ? installers.map((file) => inspectEntry(file, false)) : [],
+  };
+}
+
 async function importPaths(paths: string[], mode: Storage, hint?: ImportHint) {
   const emit = (progress: Progress) => listeners.forEach((handler) => handler(progress));
   // 选的是文件夹时，假装在里面找到了几个安装包；标成“整个导入”的文件夹和 .app 当作一个安装包
   const packages = new Set(hint?.packages ?? []);
-  const files = paths.flatMap((path) =>
+  const files = [...new Set(paths.flatMap((path) =>
     /\.\w{2,8}$/.test(path) || packages.has(path)
       ? [path]
-      : ["Postman-win64-11.23.0-Setup.exe", "Postman-11.23.0-arm64.dmg", "Postman-11.23.0-x64.deb"].map((n) => `${path}/${n}`),
-  );
+      : sampleFolderFiles(path),
+  ))];
   emit({ phase: "collect", current: 0, total: 0, file: "" });
   await sleep(350);
   const items: ImportItem[] = [];
@@ -548,10 +580,11 @@ async function importPaths(paths: string[], mode: Storage, hint?: ImportHint) {
       items.push({ path, status: "failed", softwareId: null, message: "Resource busy (os error 16)", step: "read", reason: "in_use" });
       continue;
     }
-    const match = base.match(/^(.*?)[-_ ](?:win64[-_ ])?v?(\d+(?:\.\d+)+)/);
+    const entry = inspectEntry(path, false);
+    const edit = hint?.entries?.[path];
     // 在详情栏里给某个软件添加版本时，名字以那个软件为准
-    const name = hint?.name ?? (match?.[1] ?? base.replace(/\.\w+$/, "")).replace(/[-_]/g, " ").trim();
-    const version = match?.[2] ?? "";
+    const name = edit?.name.trim() || hint?.name || entry.guessName;
+    const version = edit?.version.trim() ?? hint?.version ?? entry.guessVersion;
     let target = lib.software.find((s) => s.name.toLowerCase() === name.toLowerCase());
     if (target?.versions.some((v) => v.version === version && v.files.some((f) => f.name === base))) {
       items.push({ path, status: "duplicate" as const, softwareId: target.id, message: null });
@@ -571,10 +604,20 @@ async function importPaths(paths: string[], mode: Storage, hint?: ImportHint) {
     slot.files.push(file(base, 80 + Math.random() * 120, `${name}/${version || "unknown"}`, mode, 0));
     items.push({ path, status: "imported" as const, softwareId: target.id, message: null });
   }
+  let classified = 0;
+  if (!hint?.categoryId && (hint?.autoClassify ?? lib.settings.autoClassifyOnImport)) {
+    const ids = [...new Set(items.flatMap((item) => item.status === "imported" && item.softwareId ? [item.softwareId] : []))];
+    const assignments = ids.filter((id) => !find(id).categoryId).map(suggest).filter((s) => s.categoryId || s.newCategory);
+    if (assignments.length) {
+      emit({ phase: "classify", current: 0, total: 0, file: "" });
+      await mockCall("apply_classification", { assignments });
+      classified = assignments.length;
+    }
+  }
   emit({ phase: "done", current: files.length, total: files.length, file: "" });
   const count = (status: string) => items.filter((item) => item.status === status).length;
   return {
-    report: { imported: count("imported"), duplicates: count("duplicate"), failed: count("failed"), items },
+    report: { imported: count("imported"), duplicates: count("duplicate"), failed: count("failed"), items, classified },
     library: snapshot(),
   };
 }
@@ -930,22 +973,13 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
     case "fill_file_info":
       return { library: null, more: false };
     case "inspect_drop":
-      return (args.paths as string[]).map((path) => {
-        const name = path.split(/[\\/]/).pop()!;
-        const isDir = !/\.\w{2,8}$/.test(name) || /\.app$/i.test(name);
-        const portable = /portable|\.app$/i.test(name);
-        const match = name.match(/^(.*?)[-_ ]v?(\d+(?:\.\d+)+)/);
-        return {
-          path,
-          name,
-          isDir,
-          size: isDir ? null : 48 * MB,
-          package: isDir && portable,
-          installers: isDir && !/\.app$/i.test(name) ? (portable ? 1 : 3) : 0,
-          installer: !isDir && /\.(exe|msi|appinstaller|dmg|pkg|deb|rpm|zip|appimage)$/i.test(name),
-          guessName: (match?.[1] ?? name.replace(/\.\w+$/, "")).replace(/[-_]/g, " ").trim(),
-          guessVersion: match?.[2] ?? (portable ? "2.4.1" : ""),
-        };
+      return (args.paths as string[]).map((path) => inspectEntry(path, Boolean(args.includeChildren)));
+    case "preview_import_categories":
+      return (args.targets as ImportCategoryTarget[]).map(({ name }) => {
+        const existing = lib.software.find((item) => item.name.toLowerCase() === name.toLowerCase());
+        if (existing?.categoryId) return { categoryId: existing.categoryId, newCategory: null };
+        const { categoryId, newCategory } = suggestFor(existing ?? { id: "", name, categoryId: null });
+        return { categoryId, newCategory };
       });
     case "fetch_icon":
       // 预览里不联网，图标都用首字方块
@@ -965,10 +999,13 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
     }
     case "ai_key_saved":
       return aiKeys.has(String(args.baseUrl).replace(/\/+$/, "").toLowerCase());
+    case "ai_key_preview":
+      return aiKeys.get(String(args.baseUrl).replace(/\/+$/, "").toLowerCase()) ?? null;
     case "ai_set_key": {
       const url = String(args.baseUrl).replace(/\/+$/, "").toLowerCase();
-      if (String(args.key).trim()) aiKeys.add(url);
-      else aiKeys = new Set([...aiKeys].filter((key) => key !== url));
+      const key = String(args.key).trim();
+      if (key) aiKeys.set(url, maskAiKey(key));
+      else aiKeys.delete(url);
       return null;
     }
     case "ai_models":

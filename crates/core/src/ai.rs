@@ -104,6 +104,15 @@ pub fn key_account(base_url: &str) -> String {
     base_url.trim().trim_end_matches('/').to_ascii_lowercase()
 }
 
+/// 只返回设置页可以显示的内容。短密钥整串遮蔽。
+pub fn key_preview(key: &str) -> String {
+    let key = key.trim();
+    let suffix = key.char_indices().rev().nth(5)
+        .and_then(|(start, _)| (start > 0).then_some(&key[start..]))
+        .unwrap_or_default();
+    format!("••••••{suffix}")
+}
+
 /// 这次运行里发现不认可选参数（温度、JSON 输出、关掉思考）的“地址|模型”。之后直接不带，省一次失败的请求。
 fn plain_models() -> &'static Mutex<HashSet<String>> {
     static PLAIN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -960,6 +969,14 @@ mod tests {
         assert!(!is_local("https://api.deepseek.com"));
         assert!(!is_local("https://localhost.example.com/v1"));
         assert_eq!(key_account(" https://API.deepseek.com/ "), "https://api.deepseek.com");
+    }
+
+    #[test]
+    fn key_preview_keeps_only_the_last_six_characters() {
+        assert_eq!(key_preview("  test-only-abc123  "), "••••••abc123");
+        assert_eq!(key_preview("test-only-甲乙丙丁戊己"), "••••••甲乙丙丁戊己");
+        assert_eq!(key_preview("abc123"), "••••••");
+        assert_eq!(key_preview("abcd"), "••••••");
     }
 
     #[test]

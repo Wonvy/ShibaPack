@@ -103,13 +103,25 @@ fn attached_re() -> &'static Regex {
 /// 从文件名识别。识别不出的字段留空（平台回落为跨平台）。
 pub fn identify(file_name: &str) -> Identity {
     let (stem, ext) = split_ext(file_name);
+    identify_parts(&stem, &ext)
+}
 
+pub(crate) fn identify_folder(name: &str) -> Identity {
+    let (stem, ext) = split_ext(name);
+    if ext == "app" {
+        identify_parts(&stem, &ext)
+    } else {
+        identify_parts(name, "")
+    }
+}
+
+fn identify_parts(stem: &str, ext: &str) -> Identity {
     // 先把 x64、win32 这类词涂掉再找版本号，免得把 "x64.5.9.0" 认成 64.5.9.0。
     // 涂掉的长度不变，所以位置和原来的主干对得上。
-    let blanked = arch_re().replace_all(&stem, |caps: &regex::Captures| "_".repeat(caps[0].len())).to_string();
+    let blanked = arch_re().replace_all(stem, |caps: &regex::Captures| "_".repeat(caps[0].len())).to_string();
 
     let mut version = String::new();
-    let mut candidate = stem.clone();
+    let mut candidate = stem.to_owned();
     if let Some(caps) = version_re().captures(&blanked) {
         let whole = caps.get(0).unwrap();
         let digits = caps.get(1).unwrap();
@@ -130,13 +142,13 @@ pub fn identify(file_name: &str) -> Identity {
 
     let mut name = clean_name(&candidate);
     if name.is_empty() {
-        name = clean_name(&stem);
+        name = clean_name(stem);
     }
     if name.is_empty() {
         name = stem.trim().to_string();
     }
 
-    let tokens = tokens_of(&stem);
+    let tokens = tokens_of(stem);
     let has = |words: &[&str]| tokens.iter().any(|t| words.contains(&t.as_str()));
     let arch = if has(&["arm64", "aarch64"]) {
         "arm64"
@@ -150,7 +162,7 @@ pub fn identify(file_name: &str) -> Identity {
         ""
     };
 
-    let platform = platform_from_ext(&ext).unwrap_or_else(|| {
+    let platform = platform_from_ext(ext).unwrap_or_else(|| {
         if has(&["windows", "win", "win64", "win32"]) {
             Platform::Windows
         } else if has(&["macos", "mac", "osx", "darwin"]) {

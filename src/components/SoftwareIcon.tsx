@@ -9,7 +9,7 @@ type PackageIconKind = ReturnType<typeof packageIconKind>;
 
 /**
  * 软件图标。`icon` 可以是内嵌图片或文件的绝对路径；没有图标或图标加载失败时，
- * 用名字的首字加一块灰色底，不抢真实图标的视线。
+ * 显示安装包占位图标或软件名字的首字。
  * `stack` 是版本数：多于一个版本时，图标后面露出一两层，像一叠卡片。
  */
 export function SoftwareIcon({ name, icon, size = 32, stack = 1, packageKind }: { name: string; icon?: string | null; size?: number; stack?: number; packageKind?: PackageIconKind }) {
@@ -43,7 +43,7 @@ export function SoftwareIcon({ name, icon, size = 32, stack = 1, packageKind }: 
 
 function IconFace({ name, icon, size, packageKind }: { name: string; icon?: string | null; size: number; packageKind?: PackageIconKind }) {
   const [broken, setBroken] = useState<string | null>(null);
-  if (!packageKind && icon && broken !== icon) {
+  if (icon && broken !== icon) {
     return (
       <img
         src={assetUrl(icon)}

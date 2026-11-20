@@ -21,5 +21,5 @@ export async function dropOnCategory(paths: string[], categoryId: string | null)
     app.patch({ importDialog: { paths, entries: entries ?? undefined, categoryId } });
     return;
   }
-  await app.importPaths(paths, undefined, { categoryId: categoryId ?? undefined, packages: folders.map((entry) => entry.path) });
+  await app.importPaths(paths, undefined, { categoryId: categoryId ?? undefined, autoClassify: false, packages: folders.map((entry) => entry.path) });
 }

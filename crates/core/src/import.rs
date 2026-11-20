@@ -2,7 +2,8 @@
 
 use crate::{
     fileinfo::{self, FileInfo},
-    identify::{identify, is_installer, normalize_name, Identity},
+    icons,
+    identify::{identify, identify_folder, is_installer, normalize_name, same_software, Identity},
     model::*,
     new_id, now,
     store::{clean_path, sanitize, unique_path, Repo, DATA_DIR},
@@ -11,10 +12,11 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     io::Read,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -33,14 +35,27 @@ pub struct ImportHint {
     pub platform: Option<Platform>,
     /// 放进哪个分类：新建的软件放进去，已有的软件还没分类的也放进去，已经分好类的不动。
     pub category_id: Option<String>,
+    pub auto_classify: Option<bool>,
     /// 当作一个安装包整个导入的文件夹（绿色版软件、带着一堆文件的安装程序）。其余文件夹照旧展开成里面的安装包。
     pub packages: Vec<String>,
+    /// 在导入窗口确认的名称和版本，按原始路径记录。
+    pub entries: HashMap<String, ImportEntryEdit>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportEntryEdit {
+    pub name: String,
+    pub version: String,
 }
 
 impl ImportHint {
     /// 当作一个安装包的文件夹，去掉了符号链接。
     pub fn package_set(&self) -> HashSet<PathBuf> {
         self.packages.iter().map(|p| fs::canonicalize(p).map(|p| clean_path(&p)).unwrap_or_else(|_| PathBuf::from(p))).collect()
+    }
+
+    pub fn uses_auto_classification(&self, settings: &Settings) -> bool {
+        self.category_id.is_none() && self.auto_classify.unwrap_or(settings.auto_classify_on_import)
     }
 }
 
@@ -78,6 +93,8 @@ pub struct ImportReport {
     pub items: Vec<ImportItem>,
     /// 用户中途取消了：后面的文件没有处理。
     pub cancelled: bool,
+    pub classified: usize,
+    pub classification_error: Option<String>,
 }
 
 /// 一个文件导入后的结果：登记好了，或者是重复的。两种都带着对应软件的 id。
@@ -88,6 +105,8 @@ pub enum Outcome {
 
 /// 一个准备导入的文件（或当作安装包的文件夹），最慢的一步（算哈希）已经做完。这一步只读文件本身，不碰索引。
 pub struct Hashed {
+    /// 原始路径，与导入确认窗口返回的路径一致。
+    pub source: PathBuf,
     /// 文件的绝对路径（去掉了符号链接）。
     pub abs: PathBuf,
     pub file_name: String,
@@ -110,14 +129,14 @@ pub fn hash_source(src: &Path) -> Result<Hashed> {
     if meta.is_dir() {
         let (size, sha256) = hash_folder(&abs)?;
         let (info, platform) = folder_info(&abs);
-        return Ok(Hashed { abs, file_name, size, sha256, is_dir: true, info, platform });
+        return Ok(Hashed { source: src.to_path_buf(), abs, file_name, size, sha256, is_dir: true, info, platform });
     }
     if !meta.is_file() {
         return Err(Error::Code("not_a_file"));
     }
     let sha256 = sha256_file(&abs)?;
     let info = fileinfo::read(&abs);
-    Ok(Hashed { abs, file_name, size: meta.len(), sha256, is_dir: false, info, platform: None })
+    Ok(Hashed { source: src.to_path_buf(), abs, file_name, size: meta.len(), sha256, is_dir: false, info, platform: None })
 }
 
 /// 文件夹的哈希：按相对路径排好，每个文件的“相对路径 + 内容哈希”串起来再算一次。和文件放在哪无关，
@@ -249,38 +268,88 @@ pub struct DropEntry {
     /// 按文件名和文件属性认出来的软件名、版本号（当作一个安装包导入时）。
     pub guess_name: String,
     pub guess_version: String,
+    pub filename_version: String,
+    pub metadata_version: String,
+    pub matched_software_id: Option<String>,
+    pub publisher: String,
+    pub icon_data: Option<Arc<str>>,
+    /// 普通文件夹选择展开导入时的安装包。
+    pub children: Vec<DropEntry>,
 }
 
 /// 看一看拖进来的东西：每一项是文件还是文件夹、文件夹像不像一个软件、里面有几个安装包、会被认成什么软件。
-pub fn inspect(paths: &[PathBuf], data_dir: &Path) -> Vec<DropEntry> {
-    paths
-        .iter()
-        .map(|path| {
-            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-            let is_dir = path.is_dir();
-            let mut identity = identify(&name);
-            let info = if is_dir { folder_info(path).0 } else { fileinfo::read(path) };
-            if let Some(info) = &info {
-                if identity.version.is_empty() {
-                    identity.version = info.version.clone();
-                }
-                if generic_name(&identity.name) && !info.product_name.trim().is_empty() {
-                    identity.name = info.product_name.trim().to_string();
-                }
+pub fn inspect(paths: &[PathBuf], data_dir: &Path, software_names: &[(String, String)], include_children: bool) -> Vec<DropEntry> {
+    paths.iter().map(|path| {
+        let mut entry = inspect_entry(path, software_names, include_children);
+        if entry.is_dir && !is_app_bundle(path) {
+            let files = collect_files(std::slice::from_ref(path), data_dir, &HashSet::new());
+            entry.installers = files.len();
+            if include_children {
+                entry.children = files.iter().map(|file| inspect_entry(file, software_names, true)).collect();
             }
-            DropEntry {
-                path: path.to_string_lossy().to_string(),
-                is_dir,
-                size: (!is_dir).then(|| fs::metadata(path).map(|m| m.len()).unwrap_or(0)),
-                package: is_dir && looks_like_package(path),
-                installers: if is_dir && !is_app_bundle(path) { collect_files(&[path.clone()], data_dir, &HashSet::new()).len() } else { 0 },
-                installer: !is_dir && is_installer(&name),
-                guess_name: identity.name,
-                guess_version: identity.version,
-                name,
-            }
-        })
-        .collect()
+        }
+        entry
+    }).collect()
+}
+
+fn inspect_entry(path: &Path, software_names: &[(String, String)], preview: bool) -> DropEntry {
+    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let is_dir = path.is_dir();
+    let (info, platform) = if is_dir { folder_info(path) } else { (fileinfo::read(path), None) };
+    let mut identity = filename_identity(&name, is_dir);
+    let filename_version = identity.version.clone();
+    let metadata_version = info.as_ref().map_or_else(String::new, |info| info.version.clone());
+    fill_identity(&mut identity, info.as_ref(), platform);
+    DropEntry {
+        path: path.to_string_lossy().into_owned(),
+        is_dir,
+        size: (!is_dir).then(|| fs::metadata(path).ok().map(|meta| meta.len())).flatten(),
+        package: is_dir && looks_like_package(path),
+        installers: 0,
+        installer: !is_dir && is_installer(&name),
+        matched_software_id: match_import_name(&identity.name, software_names),
+        guess_name: identity.name,
+        guess_version: identity.version,
+        filename_version,
+        metadata_version,
+        publisher: info.map_or_else(String::new, |info| info.company.trim().to_owned()),
+        icon_data: preview.then(|| icon_source(path).and_then(|source| icons::preview_icon(&source))).flatten(),
+        name,
+        children: Vec::new(),
+    }
+}
+
+fn match_import_name(name: &str, software_names: &[(String, String)]) -> Option<String> {
+    let key = normalize_name(name);
+    if key.is_empty() {
+        return None;
+    }
+    if let Some((id, _)) = software_names.iter().find(|(_, existing)| normalize_name(existing) == key) {
+        return Some(id.clone());
+    }
+    let mut matches = software_names.iter().filter(|(_, existing)| same_software(name, existing));
+    let (id, _) = matches.next()?;
+    matches.next().is_none().then(|| id.clone())
+}
+
+fn filename_identity(name: &str, is_dir: bool) -> Identity {
+    if is_dir { identify_folder(name) } else { identify(name) }
+}
+
+fn fill_identity(identity: &mut Identity, info: Option<&FileInfo>, platform: Option<Platform>) {
+    if let Some(info) = info {
+        if identity.version.is_empty() {
+            identity.version = info.version.clone();
+        }
+        if generic_name(&identity.name) && !info.product_name.trim().is_empty() {
+            identity.name = info.product_name.trim().to_string();
+        }
+    }
+    if identity.platform == Platform::Cross {
+        if let Some(platform) = platform {
+            identity.platform = platform;
+        }
+    }
 }
 
 /// 安装包取图标用的文件：文件本身；文件夹当作安装包时取里面的主程序或图标文件。
@@ -424,7 +493,7 @@ pub fn place_file(root: &Path, hashed: &Hashed, placement: &Placement, move_file
     let part = dest.with_file_name(format!("{}.part", dest.file_name().unwrap_or_default().to_string_lossy()));
     let copied = (|| -> std::io::Result<()> {
         fs::copy(src, &part)?;
-        fs::File::open(&part)?.sync_all()?;
+        sync_import_copy(&part)?;
         fs::rename(&part, &dest)
     })();
     if let Err(err) = copied {
@@ -441,6 +510,27 @@ pub fn place_file(root: &Path, hashed: &Hashed, placement: &Placement, move_file
         let _ = fs::remove_file(src);
     }
     Ok(managed(dest, true))
+}
+
+#[cfg(not(windows))]
+fn sync_import_copy(path: &Path) -> std::io::Result<()> {
+    fs::File::open(path)?.sync_all()
+}
+
+#[cfg(windows)]
+fn sync_import_copy(path: &Path) -> std::io::Result<()> {
+    // FlushFileBuffers 需要可写句柄。fs::copy 会保留源文件的只读属性。
+    let permissions = fs::metadata(path)?.permissions();
+    if permissions.readonly() {
+        let mut writable = permissions.clone();
+        writable.set_readonly(false);
+        fs::set_permissions(path, writable)?;
+    }
+    fs::OpenOptions::new().write(true).open(path)?.sync_all()?;
+    if permissions.readonly() {
+        fs::set_permissions(path, permissions)?;
+    }
+    Ok(())
 }
 
 /// 文件夹当作安装包时的 `place_file`：整个复制（或移动）到 `软件名/版本号/文件夹名`。
@@ -564,28 +654,16 @@ impl Repo {
 
     /// 认软件名和版本、查重复，决定这个文件登记成什么、放在哪。只读索引。
     pub fn plan_import(&self, hashed: &Hashed, mode: Storage, hint: &ImportHint) -> Plan {
-        let mut identity = identify(&hashed.file_name);
-        // 文件名里看不出来的，用文件自带的信息补：版本号（比如 WinThumbsPreloader.exe 的产品版本 1.1.0）、
-        // 软件名（文件叫 setup.exe 这种时）
-        let mut publisher = String::new();
-        if let Some(info) = &hashed.info {
-            if identity.version.is_empty() && !info.version.is_empty() {
-                identity.version = info.version.clone();
-            }
-            if generic_name(&identity.name) && !info.product_name.trim().is_empty() {
-                identity.name = info.product_name.trim().to_string();
-            }
-            publisher = info.company.trim().to_string();
-        }
-        if identity.platform == Platform::Cross {
-            if let Some(platform) = hashed.platform {
-                identity.platform = platform;
-            }
-        }
-        if let Some(name) = hint.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        let mut identity = filename_identity(&hashed.file_name, hashed.is_dir);
+        fill_identity(&mut identity, hashed.info.as_ref(), hashed.platform);
+        let publisher = hashed.info.as_ref().map_or_else(String::new, |info| info.company.trim().to_string());
+        let edit = hint.entries.get(hashed.source.to_string_lossy().as_ref());
+        let name = edit.map(|edit| edit.name.as_str()).or(hint.name.as_deref());
+        let version = edit.map(|edit| edit.version.as_str()).or(hint.version.as_deref());
+        if let Some(name) = name.map(str::trim).filter(|n| !n.is_empty()) {
             identity.name = name.to_string();
         }
-        if let Some(version) = hint.version.as_deref().map(str::trim) {
+        if let Some(version) = version.map(str::trim) {
             identity.version = version.to_string();
         }
         if let Some(platform) = hint.platform {
@@ -794,6 +872,51 @@ mod tests {
     }
 
     #[test]
+    fn import_preview_shows_both_versions_and_honors_confirmed_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let app = source.path().join("Docker Desktop-2.4.1.app");
+        fs::create_dir_all(app.join("Contents")).unwrap();
+        let mut plist = plist::Dictionary::new();
+        plist.insert("CFBundleShortVersionString".into(), "2.5.0".into());
+        plist::Value::Dictionary(plist).to_file_xml(app.join("Contents/Info.plist")).unwrap();
+        let setup = source.path().join("Git-2.51.0.exe");
+        fs::write(&setup, b"test installer").unwrap();
+
+        let mut repo = Repo::open(root.path()).unwrap();
+        let docker_id = repo.ensure_software("Docker", "").unwrap();
+        let names = vec![(docker_id.clone(), "Docker".into())];
+        let drops = inspect(&[source.path().to_path_buf()], &repo.data_dir(), &names, true);
+        assert_eq!(drops[0].installers, 2);
+        let entry = &drops[0].children[0];
+        assert_eq!(entry.guess_name, "Docker Desktop");
+        assert_eq!(entry.matched_software_id.as_deref(), Some(docker_id.as_str()));
+        assert_eq!(entry.filename_version, "2.4.1");
+        assert_eq!(entry.metadata_version, "2.5.0");
+        let hint = ImportHint {
+            entries: HashMap::from([(entry.path.clone(), ImportEntryEdit { name: "Docker".into(), version: entry.metadata_version.clone() })]),
+            ..Default::default()
+        };
+        let report = repo.import_paths(&[app, setup], Storage::Managed, &hint, &mut |_| {}).unwrap();
+        assert_eq!(report.imported, 2, "{:?}", report.items);
+        assert_eq!(repo.lib.software.len(), 2);
+        assert_eq!(repo.lib.software[0].versions[0].version, "2.5.0");
+        assert_eq!(repo.lib.software[1].versions[0].version, "2.51.0");
+        let git_id = repo.lib.software[1].id.clone();
+        repo.lib.categories.push(Category { id: "manual".into(), name: "Manual".into(), parent_id: None, color: None, icon: None });
+        repo.lib.software[0].category_id = Some("manual".into());
+        let suggestions = repo.suggest_categories(&[docker_id.clone(), git_id]);
+        assert_eq!(repo.apply_import_classification(suggestions).unwrap(), 1);
+        assert_eq!(repo.lib.software[0].category_id.as_deref(), Some("manual"));
+        assert!(repo.lib.software[1].category_id.is_some());
+        assert_eq!(identify_folder("Tool-1.2.3").version, "1.2.3");
+        assert_eq!(match_import_name("Docker Pro", &names), None);
+        let ambiguous = [(docker_id, "Docker".into()), ("other".into(), "Docker Desktop".into())];
+        assert_eq!(match_import_name("Docker Desktop", &ambiguous).as_deref(), Some("other"));
+        assert_eq!(match_import_name("Docker Desktop Edition", &ambiguous), None);
+    }
+
+    #[test]
     fn managed_import_copies_and_groups() {
         let repo_dir = tempfile::tempdir().unwrap();
         let src_dir = tempfile::tempdir().unwrap();
@@ -824,6 +947,32 @@ mod tests {
         let again = import(&mut repo, &[win], Storage::Managed);
         assert_eq!((again.imported, again.duplicates), (0, 1));
         assert_eq!(repo.stats().files, 3);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn managed_import_can_flush_a_read_only_installer_copy() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        let src_dir = tempfile::tempdir().unwrap();
+        let source = src_dir.path().join("Everything-1.4.1.1024.x64-Setup.exe");
+        let contents = b"test installer";
+        fs::write(&source, contents).unwrap();
+        let writable = fs::metadata(&source).unwrap().permissions();
+        let mut read_only = writable.clone();
+        read_only.set_readonly(true);
+        fs::set_permissions(&source, read_only).unwrap();
+
+        let mut repo = Repo::open(repo_dir.path()).unwrap();
+        let report = import(&mut repo, std::slice::from_ref(&source), Storage::Managed);
+        assert_eq!((report.imported, report.duplicates, report.failed), (1, 0, 0), "{:?}", report.items);
+        let file = &repo.lib.software[0].versions[0].files[0];
+        let destination = repo.abs_path(file);
+        assert_eq!(fs::read(&destination).unwrap(), contents);
+        assert!(fs::metadata(&source).unwrap().permissions().readonly());
+        assert!(fs::metadata(&destination).unwrap().permissions().readonly());
+        assert_eq!(fs::read_dir(destination.parent().unwrap()).unwrap().count(), 1);
+        fs::set_permissions(&source, writable.clone()).unwrap();
+        fs::set_permissions(destination, writable).unwrap();
     }
 
     #[test]

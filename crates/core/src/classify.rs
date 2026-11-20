@@ -260,19 +260,19 @@ fn is_known(key: &str, known: &str) -> bool {
 }
 
 /// 判断一个软件是哪一类。返回 (类别, 是否认出了名字, 命中的词)。
-fn guess(software: &Software, summary: &str) -> Option<(&'static Kind, bool, Vec<String>)> {
-    let key = normalize_name(&software.name);
-    let publisher = software.publisher.to_lowercase();
-    let text = format!("{} {}", software.name, summary).to_lowercase();
+fn guess(name: &str, publisher: &str, summary: &str) -> Option<(&'static Kind, bool, Vec<String>)> {
+    let key = normalize_name(name);
+    let publisher_lower = publisher.to_lowercase();
+    let text = format!("{name} {summary}").to_lowercase();
 
     let mut best: Option<(&'static Kind, u32, bool, Vec<String>)> = None;
     for kind in KINDS {
         let known = !key.is_empty() && kind.known.iter().any(|k| is_known(&key, k));
         let mut score = if known { KNOWN_WEIGHT } else { 0 };
         let mut evidence = Vec::new();
-        if !publisher.is_empty() && kind.publishers.iter().any(|p| publisher.contains(p)) {
+        if !publisher_lower.is_empty() && kind.publishers.iter().any(|p| publisher_lower.contains(p)) {
             score += PUBLISHER_WEIGHT;
-            evidence.push(software.publisher.trim().to_string());
+            evidence.push(publisher.trim().to_string());
         }
         for (term, weight) in kind.terms {
             if mentions(&text, term) {
@@ -323,63 +323,127 @@ pub(crate) fn tree_order<'a>(categories: &'a [Category], parent: Option<&str>, d
     }
 }
 
+/// 新仓库使用和智能分类一致的一级分类。
+pub(crate) fn default_categories(language: &str) -> Vec<Category> {
+    let zh = language.to_lowercase().starts_with("zh");
+    KINDS.iter().map(|kind| Category {
+        id: crate::new_id(),
+        name: if zh { kind.zh } else { kind.en }.into(),
+        parent_id: None,
+        color: None,
+        icon: Some(kind.icon.into()),
+    }).collect()
+}
+
+#[derive(Deserialize)]
+pub struct ImportCategoryTarget {
+    pub name: String,
+    pub publisher: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportCategoryPreview {
+    pub category_id: Option<String>,
+    pub new_category: Option<NewCategory>,
+}
+
+struct CategorySubject<'a> {
+    id: &'a str,
+    name: &'a str,
+    publisher: &'a str,
+    category_id: Option<&'a str>,
+}
+
 impl Repo {
     /// 给一批软件推荐分类。只读，不改动任何东西。
     pub fn suggest_categories(&self, software_ids: &[String]) -> Vec<Suggestion> {
-        let zh = self.lib.settings.language.to_lowercase().starts_with("zh");
-        let categories = &self.lib.categories;
         let mut ordered = Vec::new();
-        tree_order(categories, None, 0, &mut ordered);
+        tree_order(&self.lib.categories, None, 0, &mut ordered);
 
         software_ids
             .iter()
             .filter_map(|id| self.lib.software.iter().find(|s| &s.id == id))
-            .map(|software| {
-                let summary = self.lib.summaries.get(&software.name).map(|s| s.text.as_str()).unwrap_or("");
-                let mut suggestion = Suggestion {
-                    software_id: software.id.clone(),
-                    category_id: None,
-                    new_category: None,
-                    unchanged: false,
-                    known: false,
-                    evidence: Vec::new(),
-                    reason: String::new(),
-                };
-                let Some((kind, known, evidence)) = guess(software, summary) else { return suggestion };
-                suggestion.known = known;
-                suggestion.evidence = evidence;
-
-                // 仓库里对应这一类的分类：层级越浅越优先
-                let mut matching: Vec<&(&Category, usize)> = ordered.iter().filter(|(c, _)| category_matches(c, kind)).collect();
-                matching.sort_by_key(|(_, depth)| *depth);
-                match matching.first() {
-                    Some((category, _)) => {
-                        let mut children = Vec::new();
-                        descendants(categories, &category.id, &mut children, 0);
-                        // 已经在这个分类或它的某个下级分类里了：保持原样，不往上挪
-                        let current = software.category_id.as_deref();
-                        let already = current == Some(category.id.as_str()) || children.iter().any(|c| Some(c.id.as_str()) == current);
-                        if already {
-                            suggestion.category_id = software.category_id.clone();
-                        } else {
-                            // 再看下级分类里，有没有名字出现在软件名或简介里的（"开发工具 / 编辑器"）
-                            let text = format!("{} {}", software.name, summary).to_lowercase();
-                            let refined = children.into_iter().rev().find(|child| {
-                                let name = child.name.trim().to_lowercase();
-                                name.chars().count() >= 2 && mentions(&text, &name)
-                            });
-                            suggestion.category_id = Some(refined.unwrap_or(category).id.clone());
-                        }
-                    }
-                    None => {
-                        let name = if zh { kind.zh } else { kind.en };
-                        suggestion.new_category = Some(NewCategory { name: name.to_string(), icon: kind.icon.to_string() });
-                    }
-                }
-                suggestion.unchanged = suggestion.category_id.is_some() && suggestion.category_id == software.category_id;
-                suggestion
-            })
+            .map(|software| self.category_suggestion(&ordered, CategorySubject {
+                id: &software.id,
+                name: &software.name,
+                publisher: &software.publisher,
+                category_id: software.category_id.as_deref(),
+            }))
             .collect()
+    }
+
+    /// 按导入预览里的名称给出分类。加入已有软件时保留它的分类。
+    pub fn preview_import_categories(&self, targets: &[ImportCategoryTarget]) -> Vec<ImportCategoryPreview> {
+        let mut ordered = Vec::new();
+        tree_order(&self.lib.categories, None, 0, &mut ordered);
+        let mut by_name = BTreeMap::new();
+        for software in &self.lib.software {
+            by_name.entry(normalize_name(&software.name)).or_insert(software);
+        }
+        targets.iter().map(|target| {
+            let existing = by_name.get(&normalize_name(&target.name)).copied();
+            if let Some(category_id) = existing.and_then(|software| software.category_id.clone()) {
+                return ImportCategoryPreview { category_id: Some(category_id), new_category: None };
+            }
+            let name = existing.map_or(target.name.trim(), |software| software.name.as_str());
+            let publisher = existing.map(|software| software.publisher.as_str())
+                .filter(|publisher| !publisher.trim().is_empty()).unwrap_or(&target.publisher);
+            let suggestion = self.category_suggestion(&ordered, CategorySubject { id: "", name, publisher, category_id: None });
+            ImportCategoryPreview { category_id: suggestion.category_id, new_category: suggestion.new_category }
+        }).collect()
+    }
+
+    fn category_suggestion(&self, ordered: &[(&Category, usize)], subject: CategorySubject<'_>) -> Suggestion {
+        let CategorySubject { id, name, publisher, category_id } = subject;
+        let summary = self.lib.summaries.get(name).map(|s| s.text.as_str()).unwrap_or("");
+        let mut suggestion = Suggestion {
+            software_id: id.to_owned(),
+            category_id: None,
+            new_category: None,
+            unchanged: false,
+            known: false,
+            evidence: Vec::new(),
+            reason: String::new(),
+        };
+        let Some((kind, known, evidence)) = guess(name, publisher, summary) else { return suggestion };
+        suggestion.known = known;
+        suggestion.evidence = evidence;
+
+        let matching = ordered.iter().filter(|(category, _)| category_matches(category, kind)).min_by_key(|(_, depth)| *depth);
+        if let Some((category, _)) = matching {
+            let mut children = Vec::new();
+            descendants(&self.lib.categories, &category.id, &mut children, 0);
+            let already = category_id == Some(category.id.as_str()) || children.iter().any(|c| Some(c.id.as_str()) == category_id);
+            suggestion.category_id = if already {
+                category_id.map(str::to_owned)
+            } else {
+                let text = format!("{name} {summary}").to_lowercase();
+                let refined = children.into_iter().rev().find(|child| {
+                    let child_name = child.name.trim().to_lowercase();
+                    child_name.chars().count() >= 2 && mentions(&text, &child_name)
+                });
+                Some(refined.unwrap_or(category).id.clone())
+            };
+        } else {
+            let label = if self.lib.settings.language.to_lowercase().starts_with("zh") { kind.zh } else { kind.en };
+            suggestion.new_category = Some(NewCategory { name: label.into(), icon: kind.icon.into() });
+        }
+        suggestion.unchanged = suggestion.category_id.is_some() && suggestion.category_id.as_deref() == category_id;
+        suggestion
+    }
+
+    /// 导入时只给未分类的软件应用建议，保留用户已有的分类。
+    pub fn apply_import_classification(&mut self, suggestions: Vec<Suggestion>) -> Result<usize> {
+        let assignments = suggestions.into_iter()
+            .filter(|suggestion| self.lib.software.iter().any(|s| s.id == suggestion.software_id && s.category_id.is_none()))
+            .map(|suggestion| Assignment {
+                software_id: suggestion.software_id,
+                category_id: suggestion.category_id,
+                new_category: suggestion.new_category,
+            })
+            .collect();
+        self.apply_classification(assignments)
     }
 
     /// 按用户确认的结果分类：需要新建的分类按名字只建一个，然后一次性保存。返回实际改动的软件数。
@@ -425,7 +489,8 @@ mod tests {
 
     fn repo() -> (tempfile::TempDir, Repo) {
         let dir = tempfile::tempdir().unwrap();
-        let repo = Repo::open(dir.path()).unwrap();
+        let mut repo = Repo::open(dir.path()).unwrap();
+        repo.lib.categories.clear();
         (dir, repo)
     }
 
@@ -530,6 +595,18 @@ mod tests {
         let kept = &repo.suggest_categories(&[python])[0];
         assert_eq!(kept.category_id.as_deref(), Some("runtime"));
         assert!(kept.unchanged);
+
+        let before = repo.lib.clone();
+        let targets = ["python", "GitHub Desktop", "Notion", "Unrecognized App"].map(|name| ImportCategoryTarget {
+            name: name.into(),
+            publisher: String::new(),
+        });
+        let previews = repo.preview_import_categories(&targets);
+        assert_eq!(previews[0].category_id.as_deref(), Some("runtime"));
+        assert_eq!(previews[1].category_id.as_deref(), Some("dev"));
+        assert_eq!(previews[2].new_category.as_ref().map(|category| category.name.as_str()), Some("办公效率"));
+        assert!(previews[3].category_id.is_none() && previews[3].new_category.is_none());
+        assert_eq!(repo.lib, before);
     }
 
     #[test]

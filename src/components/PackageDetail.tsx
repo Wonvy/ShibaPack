@@ -626,7 +626,7 @@ function Versions({ software }: { software: Software }) {
     const id = state.links[software.id];
     return id ? state.installedIndex[id]?.version : undefined;
   });
-  const importPaths = useApp((state) => state.importPaths);
+  const patch = useApp((state) => state.patch);
   const [pruning, setPruning] = useState(false);
   const versions = sortedVersions(software);
   const main = primaryVersion(software);
@@ -638,10 +638,10 @@ function Versions({ software }: { software: Software }) {
     setOpen(next);
   };
 
-  // 选的文件都归到这个软件下，版本号从文件名里认
+  // 选的文件都归到这个软件下，版本号在导入窗口确认。
   const addFiles = async () => {
     const paths = await pickFiles();
-    if (paths.length > 0) await importPaths(paths, undefined, { name: software.name });
+    if (paths.length > 0) patch({ importDialog: { paths, softwareName: software.name } });
   };
 
   return (

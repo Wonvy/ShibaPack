@@ -1,18 +1,18 @@
 // 导入窗口：把文件拖进中间栏后先在这里看一眼要导入什么、放进哪个分类、怎么存，确认后才导入。
 // 导入时窗口不关，显示进度；导完显示结果，失败的文件逐个说清楚在哪一步、为什么。
-// 不是从这里开始的导入（工具栏、拖到侧栏的分类上）有失败时，也用它显示结果。
+// 直接拖到侧栏分类的导入失败时，也用这个窗口显示结果。
 
-import { AlertCircle, AppWindow, CheckCircle2, Copy, FileBox, Folder, LoaderCircle } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { AlertCircle, AppWindow, CheckCircle2, Copy, FileBox, Folder, Link2, LoaderCircle, TriangleAlert } from "lucide-react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { errorText, importFailureText } from "../lib/i18n";
 import { categoryPath, flattenTree, formatSize } from "../lib/library";
-import { useApp, useLanguage, useT } from "../lib/store";
+import { useAiReady, useApp, useLanguage, useT } from "../lib/store";
 import type { ImportDialogState } from "../lib/store";
-import type { DropEntry, ImportItem, ImportReport, Storage } from "../lib/types";
-import { Button, MiddleTruncate, Modal, Segmented, Select, cx } from "./ui";
+import type { DropEntry, ImportCategoryPreview, ImportEntryEdit, ImportItem, ImportReport, Software, Storage } from "../lib/types";
+import { SoftwareIcon } from "./SoftwareIcon";
+import { Button, MiddleTruncate, Modal, Select, cx } from "./ui";
 
-type CategoryMode = "current" | "smart" | "pick" | "none";
 type StorageMode = "copy" | "move" | "index";
 type Phase = "confirm" | "running" | "done";
 
@@ -27,6 +27,7 @@ function Dialog({ state }: { state: ImportDialogState }) {
   const t = useT();
   const language = useLanguage();
   const library = useApp((s) => s.library);
+  const aiReady = useAiReady();
   const scope = useApp((s) => s.scope);
   const route = useApp((s) => s.route);
   const patch = useApp((s) => s.patch);
@@ -39,27 +40,30 @@ function Dialog({ state }: { state: ImportDialogState }) {
   const current = route === "library" && scope.kind === "category" && categories.some((c) => c.id === scope.id) ? scope.id : null;
   const preset = state.categoryId && categories.some((c) => c.id === state.categoryId) ? state.categoryId : null;
 
-  const [entries, setEntries] = useState<DropEntry[] | null>(state.entries ?? null);
+  const [entries, setEntries] = useState<DropEntry[] | null>(
+    state.entries?.some((entry) => entry.installers > entry.children.length) ? null : state.entries ?? null,
+  );
   const [inspectError, setInspectError] = useState<string | null>(null);
   /** 整个当作一个软件导入的文件夹。 */
   const [packages, setPackages] = useState<Set<string>>(() => defaultPackages(state.entries ?? []));
-  const [categoryMode, setCategoryMode] = useState<CategoryMode>(preset ? "pick" : state.categoryId !== null && current ? "current" : "none");
-  const [picked, setPicked] = useState<string>(preset ?? current ?? categories[0]?.id ?? "");
   const settings = library?.settings;
+  const [category, setCategory] = useState(
+    preset ? `category:${preset}` : state.categoryId === null ? "none" : settings?.autoClassifyOnImport ? "smart" : current ? "current" : "none",
+  );
   const [storage, setStorage] = useState<StorageMode>(
-    settings?.defaultStorage === "indexed" ? "index" : settings?.moveOnImport ? "move" : "copy",
+    (state.storage ?? settings?.defaultStorage) === "indexed" ? "index" : !state.storage && settings?.moveOnImport ? "move" : "copy",
   );
   const [phase, setPhase] = useState<Phase>(state.report ? "done" : "confirm");
   const [report, setReport] = useState<ImportReport | null>(state.report ?? null);
   const [runError, setRunError] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
-  /** 这次导入用了智能分类：导完给一个按钮接着分类。 */
-  const [smart, setSmart] = useState(false);
+  const [drafts, setDrafts] = useState<Record<string, Partial<ImportEntryEdit>>>({});
+  const [previews, setPreviews] = useState(new Map<string, { name: string; category: ImportCategoryPreview | null }>());
 
   useEffect(() => {
-    if (entries !== null) return;
+    if (entries !== null || state.report) return;
     let alive = true;
-    api.inspectDrop(state.paths).then(
+    api.inspectDrop(state.paths, true).then(
       (found) => {
         if (!alive) return;
         setEntries(found);
@@ -76,18 +80,75 @@ function Dialog({ state }: { state: ImportDialogState }) {
 
   const close = () => patch({ importDialog: null });
   const tree = useMemo(() => flattenTree(categories), [categories]);
+  const existingSoftware = useMemo(
+    () => new Map(library?.software.map((software) => [software.id, software])),
+    [library?.software],
+  );
+  const editOf = useCallback((entry: DropEntry): ImportEntryEdit => {
+    const matchedName = entry.matchedSoftwareId ? existingSoftware.get(entry.matchedSoftwareId)?.name : undefined;
+    return {
+      name: state.softwareName ?? drafts[entry.path]?.name ?? matchedName ?? entry.guessName,
+      version: drafts[entry.path]?.version ?? entry.guessVersion,
+    };
+  }, [drafts, existingSoftware, state.softwareName]);
+  const updateDraft = (path: string, edit: Partial<ImportEntryEdit>) =>
+    setDrafts((current) => ({ ...current, [path]: { ...current[path], ...edit } }));
+  const activeEntries = useMemo(
+    () => (entries ?? []).flatMap((entry) => entry.isDir && !packages.has(entry.path) ? entry.children : [entry]),
+    [entries, packages],
+  );
+  const smart = category === "smart";
+  const categoryTargets = useMemo(
+    () => activeEntries.map((entry) => ({ path: entry.path, name: editOf(entry).name.trim(), publisher: entry.publisher })),
+    [activeEntries, editOf],
+  );
+  useEffect(() => {
+    if (!smart || phase !== "confirm" || categoryTargets.length === 0) return;
+    let alive = true;
+    const update = (suggestions: ImportCategoryPreview[]) => {
+      if (!alive) return;
+      setPreviews(new Map(categoryTargets.map(({ path, name }, index) => [path, { name, category: suggestions[index] ?? null }])));
+    };
+    const timer = setTimeout(() => {
+      void api.previewImportCategories(categoryTargets).then(update, () => update([]));
+    }, 150);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [categoryTargets, phase, smart, library?.categories]);
+
+  const categoryOf = (entry: DropEntry, name: string): string | undefined => {
+    if (!smart) return undefined;
+    if (!name.trim()) return "—";
+    const value = previews.get(entry.path);
+    if (!value || value.name !== name.trim()) return t("importDialog.categoryLoading");
+    if (!value.category) return t("importDialog.categoryUnavailable");
+    const { categoryId, newCategory } = value.category;
+    if (categoryId) return categoryPath(categories, categoryId);
+    return newCategory?.name ?? (aiReady ? t("importDialog.categoryPendingAi") : t("nav.uncategorized"));
+  };
+  const chosenCategory = category === "current" ? current : category.startsWith("category:") ? category.slice("category:".length) : null;
+  const storageLabel = { copy: t("importDialog.copy"), move: t("importDialog.move"), index: t("importDialog.index") };
+  const storageHint = { copy: t("importDialog.copyHint"), move: t("importDialog.moveHint"), index: t("importDialog.indexHint") };
+  const categoryHint = chosenCategory
+    ? t("importDialog.cat.currentHint", { name: categoryPath(categories, chosenCategory) })
+    : category === "smart" ? t("importDialog.cat.smartHint") : t("importDialog.cat.noneHint");
 
   const start = async () => {
-    const categoryId = categoryMode === "current" ? current : categoryMode === "pick" ? picked || null : null;
     const mode: Storage = storage === "index" ? "indexed" : "managed";
-    setSmart(categoryMode === "smart");
     setPhase("running");
     setStopping(false);
     try {
       const result = await importPaths(
-        state.paths,
+        activeEntries.map((entry) => entry.path),
         mode,
-        { categoryId: categoryId ?? undefined, packages: [...packages] },
+        {
+          categoryId: chosenCategory ?? undefined,
+          autoClassify: smart,
+          packages: [...packages],
+          entries: Object.fromEntries(activeEntries.map((entry) => [entry.path, editOf(entry)])),
+        },
         { move: storage === "move", quiet: true },
       );
       const done = result ?? { imported: 0, duplicates: 0, failed: 0, items: [], cancelled: true };
@@ -95,7 +156,7 @@ function Dialog({ state }: { state: ImportDialogState }) {
       // 导入时点了“在后台继续”，窗口已经关了：有失败的重新打开显示原因，都成功就提示一句
       const app = useApp.getState();
       if (app.importDialog !== state) {
-        if (done.failed > 0 && app.importDialog === null) app.patch({ importDialog: { paths: state.paths, report: done } });
+        if ((done.failed > 0 || done.classificationError) && app.importDialog === null) app.patch({ importDialog: { paths: state.paths, report: done } });
         else app.notify(t("import.done", { imported: done.imported, duplicates: done.duplicates, failed: done.failed }), done.failed > 0 ? "error" : "info");
       }
     } catch (error) {
@@ -105,7 +166,7 @@ function Dialog({ state }: { state: ImportDialogState }) {
     setPhase("done");
   };
 
-  // 导入的软件（去掉重复的 id）：只导入了一个时“完成”顺手选中它，智能分类也只分这些
+  // 只导入了一个软件时，“完成”顺手选中它。
   const importedIds = useMemo(
     () => [...new Set((report?.items ?? []).filter((i) => i.status === "imported" && i.softwareId).map((i) => i.softwareId!))],
     [report],
@@ -118,10 +179,9 @@ function Dialog({ state }: { state: ImportDialogState }) {
       app.select(importedIds[0]);
     }
   };
-  const classify = () => patch({ importDialog: null, classifyIds: importedIds });
 
   const title =
-    phase === "confirm" ? t("importDialog.title", { n: state.paths.length }) : phase === "running" ? t("importDialog.running") : t("importDialog.doneTitle");
+    phase === "confirm" ? t("importDialog.title", { n: entries ? activeEntries.length : state.paths.length }) : phase === "running" ? t("importDialog.running") : t("importDialog.doneTitle");
 
   const footer =
     phase === "confirm" ? (
@@ -129,7 +189,7 @@ function Dialog({ state }: { state: ImportDialogState }) {
         <Button variant="ghost" onClick={close}>
           {t("common.cancel")}
         </Button>
-        <Button variant="primary" disabled={entries === null || !library} onClick={() => void start()}>
+        <Button variant="primary" disabled={!library || activeEntries.length === 0 || activeEntries.some((entry) => !editOf(entry).name.trim())} onClick={() => void start()}>
           {t("importDialog.start")}
         </Button>
       </>
@@ -150,32 +210,25 @@ function Dialog({ state }: { state: ImportDialogState }) {
         </Button>
       </>
     ) : (
-      <>
-        {smart && importedIds.length > 0 && (
-          <Button variant="ghost" onClick={finish}>
-            {t("importDialog.done")}
-          </Button>
-        )}
-        {smart && importedIds.length > 0 ? (
-          <Button variant="primary" onClick={classify}>
-            {t("importDialog.classify", { n: importedIds.length })}
-          </Button>
-        ) : (
-          <Button variant="primary" onClick={finish}>
-            {t("importDialog.done")}
-          </Button>
-        )}
-      </>
+      <Button variant="primary" onClick={finish}>
+        {t("importDialog.done")}
+      </Button>
     );
 
   return (
-    <Modal open onClose={close} title={title} width={540} footer={footer}>
+    <Modal open onClose={close} title={title} width={smart && phase === "confirm" ? 800 : 720} footer={footer}>
       {phase === "confirm" && (
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-3">
           <EntryList
             entries={entries}
             error={inspectError}
             packages={packages}
+            editOf={editOf}
+            existingSoftware={existingSoftware}
+            smart={smart}
+            categoryOf={categoryOf}
+            fixedName={Boolean(state.softwareName)}
+            onEdit={updateDraft}
             onPackage={(path, whole) => {
               const next = new Set(packages);
               if (whole) next.add(path);
@@ -183,58 +236,32 @@ function Dialog({ state }: { state: ImportDialogState }) {
               setPackages(next);
             }}
           />
-          <section>
-            <div className="mb-1.5 flex items-center justify-between gap-3">
-              <span className="text-[12px] font-medium text-fg-2">{t("importDialog.category")}</span>
-              <Segmented<CategoryMode>
-                value={categoryMode}
-                onChange={setCategoryMode}
-                options={[
-                  ...(current ? [{ value: "current" as const, label: t("importDialog.cat.current") }] : []),
-                  { value: "smart", label: t("importDialog.cat.smart") },
-                  ...(categories.length > 0 ? [{ value: "pick" as const, label: t("importDialog.cat.pick") }] : []),
-                  { value: "none", label: t("importDialog.cat.none") },
-                ]}
-              />
-            </div>
-            {categoryMode === "pick" ? (
-              <div className="flex items-center gap-2">
-                <Select value={picked} onChange={(event) => setPicked(event.target.value)} className="min-w-0 flex-1">
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+            <label className="flex min-w-0 flex-col gap-1 text-[12px] text-fg-2">
+              {t("importDialog.category")}
+              <Select value={category} onChange={(event) => setCategory(event.target.value)} title={categoryHint}>
+                <option value="none">{t("importDialog.cat.none")}</option>
+                <option value="smart">{t("importDialog.cat.smart")}</option>
+                {current && <option value="current">{t("importDialog.cat.current")}</option>}
+                {tree.length > 0 && <optgroup label={t("importDialog.cat.pick")}>
                   {tree.map(({ category, depth }) => (
-                    <option key={category.id} value={category.id}>
+                    <option key={category.id} value={`category:${category.id}`}>
                       {"　".repeat(depth) + category.name}
                     </option>
                   ))}
-                </Select>
-              </div>
-            ) : null}
-            <p className="m-0 mt-1.5 text-[12px] leading-relaxed text-fg-3">
-              {categoryMode === "current" && current
-                ? t("importDialog.cat.currentHint", { name: categoryPath(categories, current) })
-                : categoryMode === "smart"
-                  ? t("importDialog.cat.smartHint")
-                  : categoryMode === "pick"
-                    ? t("importDialog.cat.pickHint")
-                    : t("importDialog.cat.noneHint")}
-            </p>
-          </section>
-          <section>
-            <div className="mb-1.5 flex items-center justify-between gap-3">
-              <span className="text-[12px] font-medium text-fg-2">{t("importDialog.storage")}</span>
-              <Segmented<StorageMode>
-                value={storage}
-                onChange={setStorage}
-                options={[
-                  { value: "copy", label: t("importDialog.copy") },
-                  { value: "move", label: t("importDialog.move") },
-                  { value: "index", label: t("importDialog.index") },
-                ]}
-              />
-            </div>
-            <p className="m-0 text-[12px] leading-relaxed text-fg-3">
-              {storage === "copy" ? t("importDialog.copyHint") : storage === "move" ? t("importDialog.moveHint") : t("importDialog.indexHint")}
-            </p>
-          </section>
+                </optgroup>}
+              </Select>
+            </label>
+            <label className="flex min-w-0 flex-col gap-1 text-[12px] text-fg-2">
+              {t("importDialog.storage")}
+              <Select value={storage} onChange={(event) => setStorage(event.target.value as StorageMode)} title={storageHint[storage]}>
+                <option value="copy">{storageLabel.copy}</option>
+                <option value="move">{storageLabel.move}</option>
+                <option value="index">{storageLabel.index}</option>
+              </Select>
+            </label>
+            {storage === "move" && <p className="col-span-2 m-0 text-[12px] text-fg-3">{storageHint.move}</p>}
+          </div>
         </div>
       )}
 
@@ -254,11 +281,23 @@ function EntryList({
   entries,
   error,
   packages,
+  editOf,
+  existingSoftware,
+  smart,
+  categoryOf,
+  fixedName,
+  onEdit,
   onPackage,
 }: {
   entries: DropEntry[] | null;
   error: string | null;
   packages: Set<string>;
+  editOf: (entry: DropEntry) => ImportEntryEdit;
+  existingSoftware: Map<string, Software>;
+  smart: boolean;
+  categoryOf: (entry: DropEntry, name: string) => string | undefined;
+  fixedName: boolean;
+  onEdit: (path: string, edit: Partial<ImportEntryEdit>) => void;
   onPackage: (path: string, whole: boolean) => void;
 }) {
   const t = useT();
@@ -271,51 +310,154 @@ function EntryList({
       </div>
     );
   }
+  const row = (entry: DropEntry, nested = false) => {
+    const edit = editOf(entry);
+    const matched = entry.matchedSoftwareId ? existingSoftware.get(entry.matchedSoftwareId) : undefined;
+    return (
+      <EntryRow
+        key={entry.path}
+        entry={entry}
+        edit={edit}
+        existingName={fixedName ? edit.name : edit.name === matched?.name ? matched?.name : undefined}
+        icon={entry.iconData ?? (edit.name === matched?.name ? matched?.iconData : undefined)}
+        category={categoryOf(entry, edit.name)}
+        fixedName={fixedName}
+        nested={nested}
+        onEdit={(value) => onEdit(entry.path, value)}
+      />
+    );
+  };
   return (
-    <div className="max-h-[38vh] overflow-y-auto rounded-lg border border-line">
-      {entries.map((entry) => {
-        const whole = packages.has(entry.path);
-        const app = entry.isDir && entry.name.toLowerCase().endsWith(".app");
-        const Icon = app ? AppWindow : entry.isDir ? Folder : FileBox;
-        const guess = [entry.guessName, entry.guessVersion].filter(Boolean).join(" ");
-        return (
-          <div key={entry.path} className="flex items-center gap-3 border-b border-line px-3 py-2 last:border-b-0">
-            <Icon size={18} strokeWidth={1.5} aria-hidden className="shrink-0 text-fg-3" />
-            <div className="min-w-0 flex-1">
-              <MiddleTruncate text={entry.name} title={entry.path} className="text-[13px] text-fg" />
-              <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[12px] text-fg-3">
-                {entry.isDir ? (
-                  whole || app ? (
-                    <span className="truncate">{guess ? `→ ${guess}` : t("importDialog.wholeHint")}</span>
-                  ) : (
-                    <span className="truncate">{t("importDialog.insideHint", { n: entry.installers })}</span>
-                  )
-                ) : (
-                  <>
-                    {entry.size !== null && <span className="shrink-0 tabular-nums">{formatSize(entry.size)}</span>}
-                    <span className="truncate">{entry.installer ? (guess ? `→ ${guess}` : "") : t("importDialog.notInstaller")}</span>
-                  </>
-                )}
-                {entry.isDir && entry.package && !app && (
-                  <span className="shrink-0 rounded bg-hover px-1.5 py-px text-[12px] text-fg-2">{t("importDialog.looksLikeApp")}</span>
-                )}
-              </div>
-            </div>
-            {/* .app 一定整个导入；里面没有安装包的文件夹也只能整个导入 */}
-            {entry.isDir && !app && entry.installers > 0 && (
-              <Segmented<"whole" | "inside">
-                value={whole ? "whole" : "inside"}
-                onChange={(value) => onPackage(entry.path, value === "whole")}
-                options={[
-                  { value: "whole", label: t("importDialog.asPackage") },
-                  { value: "inside", label: t("importDialog.inside", { n: entry.installers }) },
-                ]}
-              />
-            )}
-          </div>
-        );
-      })}
+    <div className="max-h-[44vh] overflow-auto rounded-lg border border-line">
+      <table className={cx("w-full table-fixed border-separate border-spacing-0 text-left text-[12px]", smart ? "min-w-[480px]" : "min-w-[420px]")}>
+        <colgroup>
+          <col className={smart ? "w-[24%]" : "w-[28%]"} />
+          <col className={smart ? "w-[19%]" : "w-[23%]"} />
+          <col className={smart ? "w-[14%]" : "w-[17%]"} />
+          <col className={smart ? "w-[13%]" : "w-[16%]"} />
+          <col className={smart ? "w-[13%]" : "w-[16%]"} />
+          {smart && <col className="w-[17%]" />}
+        </colgroup>
+        <thead className="sticky top-0 z-10 bg-panel text-fg-2">
+          <tr>
+            {([
+              "importDialog.sourceFile", "importDialog.softwareName", "importDialog.softwareVersion",
+              "importDialog.metadataVersion", "importDialog.filenameVersion",
+            ] as const).map((column) => (
+              <th key={column} scope="col" className="border-b border-line px-2 py-2 font-medium leading-tight">{t(column)}</th>
+            ))}
+            {smart && <th scope="col" className="border-b border-line px-2 py-2 font-medium">{t("importDialog.category")}</th>}
+          </tr>
+        </thead>
+        <tbody className="[&>tr:not(:last-child)>td]:border-b [&>tr>td]:border-line">
+          {entries.map((entry) => {
+            if (!entry.isDir || entry.installers === 0 || entry.name.toLowerCase().endsWith(".app")) return row(entry);
+            const whole = packages.has(entry.path);
+            return (
+              <Fragment key={entry.path}>
+                <tr className="bg-hover">
+                  <td colSpan={smart ? 6 : 5} className="px-2 py-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <ImportFile entry={entry} />
+                      <Select
+                        compact
+                        value={whole ? "whole" : "inside"}
+                        onChange={(event) => onPackage(entry.path, event.target.value === "whole")}
+                        aria-label={entry.name}
+                        title={whole ? t("importDialog.wholeHint") : t("importDialog.insideHint", { n: entry.installers })}
+                      >
+                        <option value="whole">{t("importDialog.asPackage")}</option>
+                        <option value="inside">{t("importDialog.inside", { n: entry.installers })}</option>
+                      </Select>
+                    </div>
+                  </td>
+                </tr>
+                {whole ? row(entry, true) : entry.children.map((child) => row(child, true))}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
+  );
+}
+
+function ImportFile({ entry, icon }: { entry: DropEntry; icon?: string | null }) {
+  const t = useT();
+  const Icon = !entry.isDir ? FileBox : entry.name.toLowerCase().endsWith(".app") ? AppWindow : Folder;
+  const details = [
+    entry.path,
+    entry.size !== null ? formatSize(entry.size) : "",
+    !entry.isDir && !entry.installer ? t("importDialog.notInstaller") : "",
+  ].filter(Boolean).join("\n");
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      {icon ? <SoftwareIcon name={entry.guessName} icon={icon} size={18} /> : (
+        <Icon size={18} strokeWidth={1.5} aria-hidden className="shrink-0 text-fg-3" />
+      )}
+      <MiddleTruncate text={entry.name} tail={11} title={details} className="min-w-0 text-fg" />
+    </span>
+  );
+}
+
+function EntryRow({
+  entry, edit, existingName, icon, category, fixedName, nested, onEdit,
+}: {
+  entry: DropEntry;
+  edit: ImportEntryEdit;
+  existingName?: string;
+  icon?: string | null;
+  category?: string;
+  fixedName: boolean;
+  nested: boolean;
+  onEdit: (edit: Partial<ImportEntryEdit>) => void;
+}) {
+  const t = useT();
+  const inputClass = "h-7 w-full min-w-0 rounded-md border border-line bg-bg px-1.5 text-[12px] text-fg outline-none focus:border-accent";
+  const sources = [
+    { label: t("importDialog.metadataVersion"), value: entry.metadataVersion },
+    { label: t("importDialog.filenameVersion"), value: entry.filenameVersion },
+  ];
+  const conflict = entry.metadataVersion && entry.filenameVersion && entry.metadataVersion !== entry.filenameVersion
+    ? t("importDialog.versionConflict") : null;
+  const joined = existingName ? t("importDialog.joinSoftware", { name: existingName }) : null;
+  return (
+    <tr>
+      <td className={cx("px-2 py-1", nested && "pl-4")}>
+        <ImportFile entry={entry} icon={icon} />
+      </td>
+      <td className="px-2 py-1">
+        <div className="flex items-center gap-1">
+          <input aria-label={t("importDialog.softwareName")} className={inputClass} value={edit.name} title={edit.name} readOnly={fixedName} onChange={(event) => onEdit({ name: event.target.value })} />
+          {joined && <span title={joined} className="shrink-0 text-fg-3"><Link2 size={13} role="img" aria-label={joined} /></span>}
+        </div>
+      </td>
+      <td className="px-2 py-1">
+        <div className="flex items-center gap-1">
+          <input aria-label={t("importDialog.softwareVersion")} className={cx(inputClass, "tabular-nums")} value={edit.version} title={edit.version} placeholder={t("importDialog.unknownVersion")} onChange={(event) => onEdit({ version: event.target.value })} />
+          {conflict && <span title={conflict} className="shrink-0 text-warning"><TriangleAlert size={13} role="img" aria-label={conflict} /></span>}
+        </div>
+      </td>
+      {sources.map(({ label, value }) => (
+        <td key={label} className="px-2 py-1">
+          {value ? (
+            <button
+              type="button"
+              aria-label={`${label} ${value}`}
+              aria-pressed={value === edit.version}
+              title={value}
+              onClick={() => onEdit({ version: value })}
+              className="block max-w-full truncate rounded px-1.5 py-1 text-left tabular-nums text-fg-2 hover:bg-hover aria-pressed:bg-active aria-pressed:text-accent"
+            >
+              {value}
+            </button>
+          ) : <span title={t("importDialog.versionUnavailable")} className="px-1.5 text-fg-3">—</span>}
+        </td>
+      ))}
+      {category !== undefined && <td className="px-2 py-1">
+        <span className="block truncate text-fg-2" title={category}>{category}</span>
+      </td>}
+    </tr>
   );
 }
 
@@ -334,7 +476,7 @@ function Running({ progress, stopping }: { progress: ReturnType<typeof useApp.ge
               ? t("importDialog.queued")
               : known
                 ? progress.file
-                : t("importDialog.collecting")}
+                : progress?.phase === "classify" ? t("importDialog.classifying") : t("importDialog.collecting")}
         </span>
         {known && (
           <span className="shrink-0 text-[12px] text-fg-3 tabular-nums">
@@ -366,6 +508,10 @@ function Results({ report }: { report: ImportReport }) {
         <Stat label={t("importDialog.failed")} value={report.failed} tone={report.failed > 0 ? "bad" : undefined} />
       </div>
       {report.cancelled && <p className="m-0 text-[12px] text-fg-3">{t("importDialog.cancelledNote")}</p>}
+      {!!report.classified && <p className="m-0 text-[12px] text-fg-2">{t("importDialog.classified", { n: report.classified })}</p>}
+      {report.classificationError && <p className="m-0 text-[12px] text-warning">
+        {t("importDialog.classificationError", { error: errorText(language, report.classificationError) })}
+      </p>}
       {report.items.length === 0 && !report.cancelled && <p className="m-0 text-[13px] text-fg-3">{t("importDialog.nothing")}</p>}
       {failed.length > 0 && (
         <section>

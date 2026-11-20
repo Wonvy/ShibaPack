@@ -17,8 +17,20 @@ pub fn extract_icon(source: &Path, dest_dir: &Path, stem: &str) -> Option<PathBu
 }
 
 pub(crate) fn extract_icon_at(source: &Path, dest_dir: &Path, stem: &str, index: i32) -> Option<PathBuf> {
+    let (bytes, out_ext) = source_icon(source, index)?;
+    fs::create_dir_all(dest_dir).ok()?;
+    let dest = dest_dir.join(format!("{stem}.{out_ext}"));
+    let tmp = dest_dir.join(format!("{}.tmp", crate::new_id()));
+    if fs::write(&tmp, bytes).and_then(|_| fs::rename(&tmp, &dest)).is_err() {
+        let _ = fs::remove_file(&tmp);
+        return None;
+    }
+    Some(dest)
+}
+
+fn source_icon(source: &Path, index: i32) -> Option<(Vec<u8>, &'static str)> {
     let ext = source.extension()?.to_string_lossy().to_ascii_lowercase();
-    let (bytes, out_ext) = match ext.as_str() {
+    Some(match ext.as_str() {
         "icns" => (icns_png(source)?, "png"),
         "exe" | "dll" => (ico_png(&pe_icon(source, index)?)?, "png"),
         "msi" => {
@@ -31,15 +43,7 @@ pub(crate) fn extract_icon_at(source: &Path, dest_dir: &Path, stem: &str, index:
         }
         "ico" | "png" | "svg" | "jpg" | "jpeg" | "gif" | "webp" => image_bytes(read_image(source)?)?,
         _ => return None,
-    };
-    fs::create_dir_all(dest_dir).ok()?;
-    let dest = dest_dir.join(format!("{stem}.{out_ext}"));
-    let tmp = dest_dir.join(format!("{}.tmp", crate::new_id()));
-    if fs::write(&tmp, bytes).and_then(|_| fs::rename(&tmp, &dest)).is_err() {
-        let _ = fs::remove_file(&tmp);
-        return None;
-    }
-    Some(dest)
+    })
 }
 
 /// 已经取过的图标（任何一种扩展名）。
@@ -49,12 +53,22 @@ pub fn cached_icon(dest_dir: &Path, stem: &str) -> Option<PathBuf> {
 
 pub(crate) fn portable_icon(path: &Path) -> Option<Arc<str>> {
     let (bytes, ext) = image_bytes(read_image(path)?)?;
+    Some(icon_data(&bytes, ext))
+}
+
+/// 预览直接使用内嵌图标，不写入仓库。
+pub(crate) fn preview_icon(source: &Path) -> Option<Arc<str>> {
+    let (bytes, ext) = source_icon(source, 0)?;
+    (bytes.len() <= 512 * 1024).then(|| icon_data(&bytes, ext))
+}
+
+fn icon_data(bytes: &[u8], ext: &str) -> Arc<str> {
     let subtype = match ext {
         "svg" => "svg+xml",
         "jpg" => "jpeg",
         other => other,
     };
-    Some(format!("data:image/{subtype};base64,{}", STANDARD.encode(bytes)).into())
+    format!("data:image/{subtype};base64,{}", STANDARD.encode(bytes)).into()
 }
 
 fn read_image(path: &Path) -> Option<Vec<u8>> {
@@ -241,6 +255,7 @@ mod tests {
 
         let extracted = extract_icon(&source, dir.path(), "app").unwrap();
         assert_eq!(extracted.extension().unwrap(), "png");
+        assert_eq!(preview_icon(&source), portable_icon(&extracted));
         let png = ico::IconImage::read_png(std::io::BufReader::new(fs::File::open(extracted).unwrap())).unwrap();
         assert_eq!(png.rgba_data(), image.rgba_data());
     }

@@ -846,13 +846,15 @@ function VersionChoice({ software, version, installed, indicator, className }: {
 /** 仓库还是空的：一块拖放区，加上三种添加方式。 */
 function Welcome() {
   const t = useT();
-  const importPaths = useApp((state) => state.importPaths);
   const patch = useApp((state) => state.patch);
   const dropping = useApp((state) => state.dropping);
-  const importFiles = async () => importPaths(await pickFiles());
+  const importFiles = async () => {
+    const paths = await pickFiles();
+    if (paths.length) patch({ importDialog: { paths } });
+  };
   const scanFolder = async () => {
     const folder = await pickFolder();
-    if (folder) await importPaths([folder], "indexed");
+    if (folder) patch({ importDialog: { paths: [folder], storage: "indexed" } });
   };
   const ways = [
     { icon: FilePlus, title: t("welcome.files"), hint: t("welcome.filesHint"), run: () => void importFiles() },

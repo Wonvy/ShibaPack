@@ -418,7 +418,9 @@ async fn import_paths(app: AppHandle, paths: Vec<String>, mode: Storage, move_fi
 
         let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
         let (hint, move_files) = (hint.unwrap_or_default(), move_files.unwrap_or(false));
-        let (root, data_dir, mut known) = with_repo_quick(&state, None, |repo| Ok((repo.root().to_path_buf(), repo.data_dir(), repo.known_paths())))
+        let (root, data_dir, mut known, auto_classify) = with_repo_quick(&state, None, |repo| {
+            Ok((repo.root().to_path_buf(), repo.data_dir(), repo.known_paths(), hint.uses_auto_classification(&repo.lib.settings)))
+        })
             .map_err(|e| e.to_string())?;
         // 展开文件夹也不占着仓库：NAS 上的大文件夹要走一会儿
         let files = import::collect_files(&paths, &data_dir, &hint.package_set());
@@ -439,15 +441,50 @@ async fn import_paths(app: AppHandle, paths: Vec<String>, mode: Storage, move_fi
             report.add(file, outcome);
             with_repo_quick(&state, Some(&root), |repo| saver.maybe_save(repo, report.imported)).map_err(|e| e.to_string())?;
         }
-        let library = with_repo_quick(&state, Some(&root), |repo| {
+        let mut library = with_repo_quick(&state, Some(&root), |repo| {
             saver.finish(repo, report.imported)?;
             Ok(repo.lib.clone())
         })
         .map_err(|e| e.to_string())?;
+        if auto_classify && report.imported > 0 && !state.import_cancel.load(Ordering::SeqCst) {
+            progress("classify", 0, 0, String::new());
+            if let Err(error) = classify_import(&state, &root, &library, &mut report) {
+                if !state.import_cancel.load(Ordering::SeqCst) {
+                    report.classification_error = Some(error);
+                }
+            }
+            library = with_repo_quick(&state, Some(&root), |repo| Ok(repo.lib.clone())).map_err(|e| e.to_string())?;
+        }
         progress("done", total, total, String::new());
         Ok(ImportResult { report, library })
     })
     .await
+}
+
+fn classify_import(state: &State<AppState>, root: &Path, library: &Library, report: &mut ImportReport) -> CmdResult<()> {
+    let imported: HashSet<&str> = report.items.iter().filter(|item| item.status == "imported").filter_map(|item| item.software_id.as_deref()).collect();
+    let ids: Vec<String> = library.software.iter().filter(|s| s.category_id.is_none() && imported.contains(s.id.as_str())).map(|s| s.id.clone()).collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let (classified, library, remaining) = with_repo_quick(state, Some(root), |repo| repo.transact(|repo| {
+        let classified = repo.apply_import_classification(repo.suggest_categories(&ids))?;
+        let remaining: Vec<String> = ids.into_iter().filter(|id| repo.lib.software.iter().any(|s| s.id == *id && s.category_id.is_none())).collect();
+        Ok((classified, repo.lib.clone(), remaining))
+    })).map_err(|e| e.to_string())?;
+    report.classified = classified;
+    if remaining.is_empty() || state.import_cancel.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    // 没有配置可用的 AI 时，内置规则的结果已经保存。
+    let Ok(service) = ai_service(&library.settings.ai, None) else { return Ok(()) };
+    let suggestions = ai::suggest_categories(&service, &library, &remaining, &state.import_cancel, &mut |_, _| {})
+        .map_err(|e| e.code())?;
+    if !state.import_cancel.load(Ordering::SeqCst) {
+        report.classified += with_repo_quick(state, Some(root), |repo| repo.transact(|repo| repo.apply_import_classification(suggestions)))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// 导入一个文件。最慢的两步（算哈希、复制或移动）不占着仓库。
@@ -474,13 +511,24 @@ fn import_one(
 
 /// 导入前看一看拖进来的东西（给确认窗口用）：文件夹像不像一个软件、里面有几个安装包、会被认成什么。
 #[tauri::command]
-async fn inspect_drop(app: AppHandle, paths: Vec<String>) -> CmdResult<Vec<import::DropEntry>> {
+async fn inspect_drop(app: AppHandle, paths: Vec<String>, include_children: Option<bool>) -> CmdResult<Vec<import::DropEntry>> {
     blocking(app, move |_app, state| {
-        let data_dir = with_repo(&state, |repo| Ok(repo.data_dir()))?;
+        let (data_dir, software_names) = with_repo(&state, |repo| {
+            let names: Vec<_> = repo.lib.software.iter().map(|s| (s.id.clone(), s.name.clone())).collect();
+            Ok((repo.data_dir(), names))
+        })?;
         let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-        Ok(import::inspect(&paths, &data_dir))
+        Ok(import::inspect(&paths, &data_dir, &software_names, include_children.unwrap_or(false)))
     })
     .await
+}
+
+#[tauri::command]
+async fn preview_import_categories(
+    app: AppHandle,
+    targets: Vec<shibapack_core::classify::ImportCategoryTarget>,
+) -> CmdResult<Vec<shibapack_core::classify::ImportCategoryPreview>> {
+    blocking(app, move |_app, state| with_repo(&state, |repo| Ok(repo.preview_import_categories(&targets)))).await
 }
 
 /// 在两个文件之间停下正在进行的导入。已经导入的保留。
@@ -1140,8 +1188,8 @@ async fn open_log_folder(app: AppHandle) -> CmdResult<()> {
 }
 
 /// 自己更新时用 latest.json 里的哪一项。Windows 上按当初怎么装的来：用 `-setup.exe` 装的（当前用户，
-/// 文件夹里有 uninstall.exe）用 NSIS 的更新包，不需要管理员权限；用 MSI 装的（所有用户，在 Program Files 里）用 MSI 的。
-/// 原来一律用 MSI，用 `-setup.exe` 装的人更新时要管理员权限，没有就装不上。别的系统用默认的。
+/// 文件夹里有 uninstall.exe）用 NSIS 更新包，受保护目录由安装器请求管理员授权；用 MSI 装的仍用 MSI。
+/// 别的系统用默认的。
 #[tauri::command]
 fn updater_target() -> Option<String> {
     if !cfg!(windows) {
@@ -1217,7 +1265,7 @@ async fn fill_file_info(app: AppHandle) -> CmdResult<FillResult> {
     .await
 }
 
-/// 联网给一个软件找图标：软件主页的网站图标，或者 GitHub 仓库主人的头像。
+/// 联网给一个软件找图标。
 /// 返回图标的相对路径和缓存内容，没找到返回 null。网络不通时返回 `offline`。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1229,11 +1277,15 @@ struct IconUpdate {
 #[tauri::command]
 async fn fetch_icon(app: AppHandle, id: String) -> CmdResult<Option<IconUpdate>> {
     blocking(app, move |_app, state| {
-        let query = with_repo(&state, |repo| if repo.lib.settings.fetch_summaries { repo.web_icon_query(&id) } else { Ok(None) })?;
+        let (root, query) = with_repo(&state, |repo| Ok((repo.root().to_path_buf(), repo.web_icon_query(&id)?)))?;
         let Some(query) = query else { return Ok(None) };
         // 联网期间不占着仓库的锁
-        let found = webicon::fetch_web_icon(&query.homepage, query.github.as_deref()).map_err(|_| "offline".to_string())?;
+        let found = webicon::fetch_web_icon(&query.homepage, query.github.as_deref(), query.the_svg_name.as_deref())
+            .map_err(|_| "offline".to_string())?;
         with_repo(&state, |repo| {
+            if repo.root() != root {
+                return Ok(None);
+            }
             let Some(icon) = repo.set_web_icon(&id, &query, found)? else { return Ok(None) };
             let icon_data = repo.lib.software.iter().find(|software| software.id == id).and_then(|software| software.icon_data.clone());
             Ok(Some(IconUpdate { icon, icon_data }))
@@ -1545,6 +1597,11 @@ async fn ai_key_saved(app: AppHandle, base_url: String) -> bool {
     blocking(app, move |_app, _state| saved_key(&base_url).is_some()).await
 }
 
+#[tauri::command]
+async fn ai_key_preview(app: AppHandle, base_url: String) -> Option<String> {
+    blocking(app, move |_app, _state| saved_key(&base_url).map(|key| ai::key_preview(&key))).await
+}
+
 /// 存这个地址的 API Key；`key` 为空时删掉。只存在这台电脑的系统钥匙串里，不写进仓库。
 #[tauri::command]
 async fn ai_set_key(app: AppHandle, base_url: String, key: String) -> CmdResult<()> {
@@ -1844,6 +1901,7 @@ pub fn run() {
             fill_icons,
             fill_file_info,
             inspect_drop,
+            preview_import_categories,
             fetch_icon,
             fetch_summary,
             selftest_report,
@@ -1869,6 +1927,7 @@ pub fn run() {
             export_lang_pack,
             open_url,
             ai_key_saved,
+            ai_key_preview,
             ai_set_key,
             ai_models,
             ai_test,

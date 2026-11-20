@@ -51,6 +51,7 @@
         ],
         "displayLanguageSelector": false,
         "installerIcon": "icons/icon.ico",
+        "installerHooks": "installer/update-permissions.nsh",
         "headerImage": "installer/nsis-header.bmp",
         "sidebarImage": "installer/nsis-sidebar.bmp"
       },

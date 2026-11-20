@@ -40,28 +40,47 @@ export function Logo({ size = 18 }: { size?: number }) {
 }
 
 /**
- * 顶栏：左边是名字，中间是搜索框，空白处可以拖动窗口。`bare` 用在引导页。
+ * 顶栏：搜索框与列表栏居中对齐，空白处可以拖动窗口。引导页没有列表栏。
  * 检查在线更新在侧栏“有更新”那一行上，整理散落文件在设置的“存储”页里。
  * 高度可以拖下沿来调（40–72px，默认 52px）。macOS 的红黄绿按钮由系统摆放，不跟着高度动。
  */
-export function TopBar({ bare = false }: { bare?: boolean }) {
+export function TopBar({ listBounds }: { listBounds?: { left: number; right: number; windowWidth: number } }) {
   const height = usePrefs((state) => state.topBarHeight);
   // macOS 的红黄绿按钮在左上角，给它们让出位置；其他系统的窗口按钮自己画在右边
   const nativeLights = isTauri && isMac;
   const ownControls = isTauri && !isMac;
 
+  const { left = 0, right = 0, windowWidth = 0 } = listBounds ?? {};
+  const listWidth = windowWidth - left - right;
+  // 在列表两侧对称留空，避免搜索框碰到标题或窗口按钮。
+  const searchPadding = Math.max(8, nativeLights ? 184 - left : 0, ownControls ? 144 - right : 0);
+  const separateSearchRow = Boolean(listBounds && searchPadding > 8 && listWidth - searchPadding * 2 < 180);
+  const resultsMaxWidth = Math.max(0, windowWidth - Math.abs(left - right) - 16);
+
   return (
     <header
       data-tauri-drag-region
-      className="relative flex shrink-0 items-center gap-1 border-b border-line bg-side pr-2"
-      style={{ height, paddingLeft: nativeLights ? 80 : 12 }}
+      className="relative shrink-0 border-b border-line bg-side"
+      style={{ height: height + (separateSearchRow ? 36 : 0) }}
     >
-      <Logo />
-      <span className="pointer-events-none ml-1 text-[13px] font-semibold">ShibaPack</span>
-      <div data-tauri-drag-region className="h-full min-w-4 flex-1" />
-      {!bare && <SearchBox />}
-      <div data-tauri-drag-region className="h-full min-w-4 flex-1" />
-      {ownControls && <WindowControls />}
+      <div
+        data-tauri-drag-region
+        className="flex items-center gap-1 pr-2"
+        style={{ height: height - 1, paddingLeft: nativeLights ? 80 : 12 }}
+      >
+        <Logo />
+        <span className="pointer-events-none ml-1 text-[13px] font-semibold">ShibaPack</span>
+        <div data-tauri-drag-region className="h-full min-w-4 flex-1" />
+        {ownControls && <WindowControls />}
+      </div>
+      {listBounds && (
+        <div
+          className="pointer-events-none absolute flex items-center justify-center [&>*]:pointer-events-auto"
+          style={{ left, right, top: separateSearchRow ? height : 0, height: separateSearchRow ? 32 : height - 1, paddingInline: separateSearchRow ? 8 : searchPadding }}
+        >
+          <SearchBox resultsMaxWidth={resultsMaxWidth} />
+        </div>
+      )}
       <HeightHandle />
     </header>
   );
@@ -72,7 +91,6 @@ const DEFAULT_ADD_POSITION: AddPosition = { x: 1, y: 1 };
 
 export function AddMenuButton({ coveredWidth }: { coveredWidth: number }) {
   const t = useT();
-  const importPaths = useApp((state) => state.importPaths);
   const patch = useApp((state) => state.patch);
   const savedPosition = usePrefs((state) => state.addButtonPosition);
   const [draft, setDraft] = useState<AddPosition | null>(null);
@@ -114,10 +132,13 @@ export function AddMenuButton({ coveredWidth }: { coveredWidth: number }) {
     setDraft(null);
   };
 
-  const importFiles = async () => importPaths(await pickFiles());
+  const importFiles = async () => {
+    const paths = await pickFiles();
+    if (paths.length) patch({ importDialog: { paths } });
+  };
   const importFolder = async (mode?: "managed" | "indexed") => {
     const folder = await pickFolder();
-    if (folder) await importPaths([folder], mode);
+    if (folder) patch({ importDialog: { paths: [folder], storage: mode } });
   };
 
   return (

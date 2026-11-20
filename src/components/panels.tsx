@@ -253,6 +253,9 @@ function LibraryPage() {
           ]}
         />
       </Row>
+      <Row label={t("settings.autoClassifyOnImport")} hint={t("settings.autoClassifyOnImportHint")}>
+        <Switch checked={settings.autoClassifyOnImport} onChange={(autoClassifyOnImport) => void save({ autoClassifyOnImport })} label={t("settings.autoClassifyOnImport")} />
+      </Row>
       <Row label={t("settings.catalog")} hint={t("settings.catalogHint")}>
         <Switch checked={settings.offlineCatalog} onChange={(offlineCatalog) => void save({ offlineCatalog })} label={t("settings.catalog")} />
       </Row>
@@ -269,6 +272,9 @@ function OnlinePage() {
     <>
       <Row label={t("settings.summaries")} hint={t("settings.summariesHint")}>
         <Switch checked={settings.fetchSummaries} onChange={(fetchSummaries) => void save({ fetchSummaries })} label={t("settings.summaries")} />
+      </Row>
+      <Row label={t("settings.theSvgIcons")} hint={t("settings.theSvgIconsHint")}>
+        <Switch checked={settings.theSvgIcons} disabled={!settings.fetchSummaries} onChange={(theSvgIcons) => void save({ theSvgIcons })} label={t("settings.theSvgIcons")} />
       </Row>
       <Row label={t("settings.translate")} hint={t("settings.translateHint")}>
         <Switch checked={settings.translateSummaries} onChange={(translateSummaries) => void save({ translateSummaries })} label={t("settings.translate")} />

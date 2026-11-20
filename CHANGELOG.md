@@ -8,6 +8,24 @@ One section per version, titled `## <version>`, with a Chinese and an English pa
 `.github/workflows/release.yml` puts that section into the GitHub Release notes and `latest.json`; the update window
 in ShibaPack (opened from the version number in the bottom-right corner) shows the part that matches the interface language.
 
+## 0.7.0
+
+### 中文
+
+- 导入预览改为紧凑列表，显示安装包图标、软件名称、文件属性版本和文件名版本。可逐项编辑名称和入库版本，匹配已有软件时会提示归入对应软件。
+- 新建仓库预置八个分类。启用智能分类后，导入列表逐行显示分类预览，导入完成后自动为尚未分类的软件归类。
+- 设置中可启用 theSVG 补齐缺失的软件图标，下载后可离线显示。
+- AI 模型设置里的 API 密钥预览最多显示末尾六位。顶部搜索框会随中间列表栏调整位置并居中。
+- 修复 Windows 复制导入安装包时的权限错误。NSIS 更新安装器会在安装目录需要额外权限时请求授权。
+
+### English
+
+- Import preview shows a compact list with installer icons, app names, and versions from both file metadata and filenames. Edit the app name and version in each row, and review which entries will join existing apps.
+- New repositories start with eight categories. Smart categorization previews categories in each import row and applies them to uncategorized apps after import.
+- Enable theSVG in Settings to fill in missing app icons. Downloaded icons are available offline.
+- API key previews in AI model settings show up to the last six characters. The top search box stays centered over the main list.
+- Fixed a Windows permissions error when copying installers into the repository. The NSIS updater requests authorization when the installation directory requires it.
+
 ## 0.6.0
 
 ### 中文

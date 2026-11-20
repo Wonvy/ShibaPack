@@ -1,11 +1,14 @@
-//! 联网给软件找图标：软件主页上声明的网站图标，或者 GitHub 仓库主人的头像。
-//!
-//! 只访问软件自己的主页和 GitHub，不经过第三方的图标服务。取回来的图片原样交给调用方存进仓库，
-//! 之后离线也能显示。
+//! 联网给软件找图标：官网图标、可选的 theSVG 品牌图标、GitHub 仓库所有者头像。
 
 #![cfg_attr(not(feature = "network"), allow(dead_code, unused_imports))]
 
 use crate::summary::Unreachable;
+#[cfg(feature = "network")]
+use std::{
+    collections::HashMap,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
 /// 取回的一张图：文件内容和扩展名。
 #[derive(Debug, Clone, PartialEq)]
@@ -14,24 +17,25 @@ pub struct WebIcon {
     pub ext: &'static str,
 }
 
-/// 网站图标小于这个边长（像素）时，先看看 GitHub 头像有没有更清楚的。
+/// 网站图标小于这个边长（像素）时，先试其他来源。
 const SHARP: u32 = 48;
 /// 一个网站最多下载几张候选图标。
 const MAX_TRIES: usize = 4;
 const MAX_IMAGE: u64 = 1 << 20;
 const MAX_PAGE: u64 = 256 << 10;
+#[cfg(feature = "network")]
+const MAX_REGISTRY: u64 = 8 << 20;
 
 /// 没有编进联网功能时，什么都取不到。
 #[cfg(not(feature = "network"))]
-pub fn fetch_web_icon(_homepage: &str, _github_repo: Option<&str>) -> Result<Option<WebIcon>, Unreachable> {
+pub fn fetch_web_icon(_homepage: &str, _github_repo: Option<&str>, _the_svg_name: Option<&str>) -> Result<Option<WebIcon>, Unreachable> {
     Err(Unreachable)
 }
 
-/// 找一个软件的图标。`homepage` 是主页地址，`github_repo` 是关联的 GitHub 仓库（`owner/repo`）。
+/// `the_svg_name` 是用于匹配 theSVG 清单的本地软件名称，传入 None 时跳过该来源。
 /// `Ok(None)` 表示都问过了、确实没有；只要有请求没得到答复，就返回 `Unreachable`，下次再试。
 #[cfg(feature = "network")]
-pub fn fetch_web_icon(homepage: &str, github_repo: Option<&str>) -> Result<Option<WebIcon>, Unreachable> {
-    use std::time::Duration;
+pub fn fetch_web_icon(homepage: &str, github_repo: Option<&str>, the_svg_name: Option<&str>) -> Result<Option<WebIcon>, Unreachable> {
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(8)))
         .user_agent("ShibaPack/0.1 (desktop app; software icons)")
@@ -54,6 +58,17 @@ pub fn fetch_web_icon(homepage: &str, github_repo: Option<&str>) -> Result<Optio
             blurry.get_or_insert(icon);
         }
     }
+    if let Some(name) = the_svg_name {
+        match the_svg_slug(&net, name) {
+            Ok(Some(slug)) => {
+                if let Some(icon) = net.image(&format!("https://thesvg.org/icons/{slug}/default.svg")).filter(|icon| icon.ext == "svg") {
+                    return Ok(Some(icon));
+                }
+            }
+            Ok(None) => {}
+            Err(Unreachable) => net.failed.set(true),
+        }
+    }
     if let Some(owner) = owner {
         if let Some(icon) = net.image(&format!("https://github.com/{owner}.png?size=128")) {
             return Ok(Some(icon));
@@ -64,6 +79,84 @@ pub fn fetch_web_icon(homepage: &str, github_repo: Option<&str>) -> Result<Optio
         None if net.failed.get() => Err(Unreachable),
         None => Ok(None),
     }
+}
+
+#[cfg(feature = "network")]
+#[derive(serde::Deserialize)]
+struct TheSvgManifest {
+    icons: Vec<TheSvgEntry>,
+}
+
+#[cfg(feature = "network")]
+#[derive(serde::Deserialize)]
+struct TheSvgEntry {
+    slug: String,
+    title: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+}
+
+#[cfg(feature = "network")]
+impl TheSvgManifest {
+    /// 优先用 slug，避免同名徽章盖掉品牌图标。名称或别名有歧义时跳过。
+    fn name_index(self) -> HashMap<String, Option<String>> {
+        let mut slugs = HashMap::new();
+        let mut names = HashMap::new();
+        for TheSvgEntry { slug, title, aliases } in self.icons {
+            if slug.is_empty() || !slug.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_') {
+                continue;
+            }
+            Self::index_name(&mut slugs, &slug, &slug);
+            for label in std::iter::once(&title).chain(&aliases) {
+                Self::index_name(&mut names, label, &slug);
+            }
+        }
+        names.extend(slugs);
+        names
+    }
+
+    fn index_name(index: &mut HashMap<String, Option<String>>, label: &str, slug: &str) {
+        let name = crate::identify::normalize_name(label);
+        if name.is_empty() {
+            return;
+        }
+        index.entry(name)
+            .and_modify(|match_slug| {
+                if match_slug.as_deref() != Some(slug) {
+                    *match_slug = None;
+                }
+            })
+            .or_insert_with(|| Some(slug.to_owned()));
+    }
+}
+
+#[cfg(feature = "network")]
+struct CachedTheSvgRegistry {
+    names: Result<HashMap<String, Option<String>>, Unreachable>,
+    expires_at: Instant,
+}
+
+#[cfg(feature = "network")]
+fn the_svg_slug(net: &Net, name: &str) -> Result<Option<String>, Unreachable> {
+    static REGISTRY: Mutex<Option<CachedTheSvgRegistry>> = Mutex::new(None);
+    let name = crate::identify::normalize_name(name);
+    if name.is_empty() {
+        return Ok(None);
+    }
+    // 并行查找多个软件时共用一份清单。临时故障缓一会儿再重试。
+    let mut cache = REGISTRY.lock().map_err(|_| Unreachable)?;
+    if cache.as_ref().is_none_or(|cached| cached.expires_at <= Instant::now()) {
+        let names = net.get("https://thesvg.org/api/registry.json")
+            .and_then(|mut response| response.body_mut().with_config().limit(MAX_REGISTRY).read_json::<TheSvgManifest>().ok())
+            .filter(|manifest| !manifest.icons.is_empty())
+            .map(TheSvgManifest::name_index)
+            .ok_or(Unreachable);
+        let lifetime = Duration::from_secs(if names.is_ok() { 86_400 } else { 60 });
+        *cache = Some(CachedTheSvgRegistry { names, expires_at: Instant::now() + lifetime });
+    }
+    let cached = cache.as_ref().expect("theSVG registry cache was initialized");
+    let names = cached.names.as_ref().map_err(|_| Unreachable)?;
+    Ok(names.get(&name).cloned().flatten())
 }
 
 #[cfg(feature = "network")]
@@ -396,14 +489,42 @@ mod tests {
         assert_eq!(sniff(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("jpg"));
     }
 
+    #[cfg(feature = "network")]
+    #[test]
+    fn the_svg_matches_full_names_and_unique_aliases() {
+        let manifest: TheSvgManifest = serde_json::from_str(r#"{"icons":[
+            {"slug":"visual-studio-code","title":"Visual Studio Code","aliases":["VS Code","Editor"]},
+            {"slug":"vscode-badge","title":"Visual Studio Code"},
+            {"slug":"another-editor","title":"Another Editor","aliases":["Editor"]},
+            {"slug":"7zip","title":"7Zip"},
+            {"slug":"../bad","title":"Bad"}
+        ]}"#).unwrap();
+        let index = manifest.name_index();
+        let lookup = |name| index.get(&crate::identify::normalize_name(name)).and_then(Option::as_deref);
+        assert_eq!(lookup("Visual Studio Code"), Some("visual-studio-code"));
+        assert_eq!(lookup("VS Code"), Some("visual-studio-code"));
+        assert_eq!(lookup("7-Zip"), Some("7zip"));
+        assert_eq!(lookup("Visual Studio"), None);
+        assert_eq!(lookup("Editor"), None);
+        assert_eq!(lookup("Bad"), None);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    #[ignore = "需要网络"]
+    fn the_svg_icons_from_the_network() {
+        let icon = fetch_web_icon("", None, Some("Obsidian")).expect("theSVG 可访问").expect("应当有品牌图标");
+        assert_eq!(icon.ext, "svg");
+    }
+
     /// 真的去网上取一次。没有网络时跳过。
     #[cfg(feature = "network")]
     #[test]
     #[ignore = "需要网络"]
     fn icons_from_the_network() {
-        let site = fetch_web_icon("https://obsidian.md", None).expect("网络").expect("应当有网站图标");
+        let site = fetch_web_icon("https://obsidian.md", None, None).expect("网络").expect("应当有网站图标");
         assert!(pixel_size(&site).is_none_or(|size| size >= SHARP), "{:?}", pixel_size(&site));
-        let avatar = fetch_web_icon("", Some("neovim/neovim")).expect("网络").expect("应当有头像");
+        let avatar = fetch_web_icon("", Some("neovim/neovim"), None).expect("网络").expect("应当有头像");
         assert!(["png", "jpg"].contains(&avatar.ext));
     }
 }

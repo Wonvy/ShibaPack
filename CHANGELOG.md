@@ -8,6 +8,36 @@ One section per version, titled `## <version>`, with a Chinese and an English pa
 `.github/workflows/release.yml` puts that section into the GitHub Release notes and `latest.json`; the update window
 in ShibaPack (opened from the version number in the bottom-right corner) shows the part that matches the interface language.
 
+## 0.12.0
+
+### 中文
+
+- 新增“监控安装”：安装前记录系统的状态，装完列出安装程序改了什么，包括程序、数据、设置、开机启动项、后台服务、驱动、快捷方式、文件关联、环境变量和注册表（Windows）。
+  - 点“安装”时勾选“监控这次安装”，或者右键安装包选“监控安装”。可以选“标准”或“深度”范围。
+  - 安装时屏幕右上角有一个总在最前面的小窗，实时显示改动了哪些文件，装好后可以直接在小窗里点“完成”。
+  - 报告按类别分组，添加了开机启动、后台服务、驱动的会提醒；缓存、日志这类多半无关的改动默认藏起来。
+  - .pkg 的安装收据、MSI 的组件清单里登记过的改动标为“已确认”；安装期间出现又被删掉的临时文件单独列出。
+  - 安装程序要求重启电脑时，重启后打开 ShibaPack 会接着完成这次监控。
+  - 记录存在仓库里，在软件详情的“安装记录”里可以随时打开。
+- 磁盘分析新增“最大的文件”视图：当前文件夹和所有子文件夹里的文件按大小排成一个清单，显示类型、位置和修改日期，右键可以定位或移到废纸篓。
+- 磁盘分析的矩形图只画一层，文件夹带图标，方块有圆角，名字居中显示；鼠标停在右边列表上，对应的色块跟着高亮，反过来也一样。
+- 磁盘分析右边的列表可以拖动调整宽度，双击分隔线回到默认。
+- 主页“最近安装”右上角可以在列表和图标之间切换。
+
+### English
+
+- New: monitor an installation. ShibaPack records the system before installing and lists what the installer changed afterwards: apps, data, settings, startup items, background services, drivers, shortcuts, file associations, environment variables and, on Windows, the registry.
+  - Tick "Monitor this installation" when you click Install, or right-click an installer and choose Monitor installation. Choose a Standard or Deep scope.
+  - While installing, a small always-on-top window in the top-right corner shows changed files live. Click Done right there when the installer has finished.
+  - The report is grouped by category and warns about new startup items, background services and drivers. Likely unrelated changes such as caches and logs are hidden by default.
+  - Changes listed in a .pkg receipt or an MSI component list are marked as confirmed. Temporary files that appeared and were deleted during installation are listed separately.
+  - If the installer asks for a restart, open ShibaPack after restarting to finish monitoring.
+  - Records are saved in your library; open them any time from Install records in the app details.
+- Disk analysis has a new Largest files view: every file in the current folder and its subfolders, sorted by size, with type, location and modified date. Right-click to show it in the Finder or move it to the Trash.
+- The disk treemap now draws a single level with folder icons, rounded blocks and centered labels. Hovering an item in the list on the right highlights its block, and the other way round.
+- Drag the divider to resize the list on the right of disk analysis; double-click it to reset.
+- Switch Recently installed on Home between a list and icons with the buttons in its top-right corner.
+
 ## 0.11.0
 
 ### 中文

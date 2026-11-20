@@ -8,6 +8,26 @@ One section per version, titled `## <version>`, with a Chinese and an English pa
 `.github/workflows/release.yml` puts that section into the GitHub Release notes and `latest.json`; the update window
 in ShibaPack (opened from the version number in the bottom-right corner) shows the part that matches the interface language.
 
+## 0.10.0
+
+### 中文
+
+- 新增“磁盘分析”（侧栏“清理”下面，主页系统盘卡片上也能直接去）：选用户文件夹、一块盘或任意文件夹扫一遍，只读，几十万个文件几秒钟。
+- 可以在扇形图和矩形图之间切换。点文件夹往里走，点上面的路径或扇形图中间往回走；右边列出这一层的每一项，颜色和图对得上。
+- 色块右键可以进入文件夹或打开文件、在访达（资源管理器）中显示、复制路径、移到废纸篓（回收站）。系统文件夹、用户文件夹本身、应用程序和仓库不能在这里移走。
+- 设置了 AI 时，鼠标停在文件夹上会显示它是做什么的、能不能删。解释单独缓存，看过的再看不用重新问。
+- 大小、文件数、扫描用时和没有权限的文件夹显示在底部状态栏。
+- 侧栏里“全部软件”和分类之间不再有分隔线；新建分类的按钮在“全部软件”这一行上，鼠标停上去出现。
+
+### English
+
+- New Disk usage page (below Clean up in the sidebar, also reachable from the system disk card on Home): scan your home folder, a disk or any folder. It's read-only and handles hundreds of thousands of files in seconds.
+- Switch between a sunburst and a treemap. Click a folder to drill in; click the path above or the center of the sunburst to go back. The list on the right shows every item at the current level in matching colors.
+- Right-click a block to open a folder or file, show it in Finder (File Explorer), copy its path or move it to the Trash (Recycle Bin). System folders, your home folder itself, apps and the library can't be moved from here.
+- With AI set up, hovering over a folder shows what it is and whether it's safe to delete. Explanations are cached separately, so folders you've seen don't need to be asked about again.
+- Size, file count, scan time and inaccessible folders are shown in the status bar at the bottom.
+- The sidebar no longer has a line between All software and the categories; the new-category button appears when you hover over All software.
+
 ## 0.9.0
 
 ### 中文

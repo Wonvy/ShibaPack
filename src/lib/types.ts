@@ -140,6 +140,23 @@ export interface Settings {
   offlineCatalog: boolean;
   /** ShibaPack 发现自己有新版本时，是否自动下载并安装。 */
   autoUpdate: boolean;
+  /** AI 模型：写简介、智能分类用。没设置时 baseUrl 为空。 */
+  ai: AiSettings;
+}
+
+/** 用哪个 AI 服务和模型。API Key 不在这里，只存在每台电脑的系统钥匙串里。 */
+export interface AiSettings {
+  /** 预设的 id（deepseek、ollama……），自己填地址的是 custom。 */
+  preset: string;
+  /** OpenAI 兼容接口的地址。 */
+  baseUrl: string;
+  model: string;
+}
+
+/** AI 分类的进度。 */
+export interface AiProgress {
+  done: number;
+  total: number;
 }
 
 /** 这台电脑上已安装的一个软件。 */
@@ -209,6 +226,8 @@ export interface Suggestion {
   unchanged: boolean;
   known: boolean;
   evidence: string[];
+  /** AI 给的依据：它认为这是个什么软件。内置规则的建议没有。 */
+  reason?: string;
 }
 
 /** 预览里确认的一条分类。 */

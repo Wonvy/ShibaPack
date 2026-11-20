@@ -4,6 +4,7 @@
 
 import { newId } from "./library";
 import type {
+  AiProgress,
   ImportHint,
   BackupInfo,
   Candidate,
@@ -147,7 +148,10 @@ const lib: Library = {
       fetchedAt: stamp(2),
     },
   },
-  settings: { theme: "system", accent: "blue", language: "zh-CN", defaultStorage: "managed", moveOnImport: false, fetchSummaries: true, translateSummaries: true, offlineCatalog: true, autoUpdate: true },
+  settings: { theme: "system", accent: "blue", language: "zh-CN", defaultStorage: "managed", moveOnImport: false, fetchSummaries: true, translateSummaries: true, offlineCatalog: true, autoUpdate: true,
+    // 预览里假装已经设好了 AI，界面上的 AI 按钮才会出来
+    ai: { preset: "deepseek", baseUrl: "https://api.deepseek.com", model: "deepseek-chat" },
+  },
 };
 
 if (english) {
@@ -239,6 +243,36 @@ function suggest(id: string): Suggestion {
     known: true,
     evidence: [],
   };
+}
+
+/** 预览里“AI”给的分类依据。 */
+const AI_REASONS: Record<string, [string, string]> = {
+  dev: ["开发工具", "Developer tool"],
+  editor: ["代码编辑器", "Code editor"],
+  design: ["设计软件", "Design app"],
+  office: ["笔记与文档", "Notes and docs"],
+  media: ["影音播放", "Media player"],
+};
+
+/** 预览里的 AI 分类：在内置猜测的基础上，认不出的也给一个新分类，并带上一句依据。 */
+function aiSuggest(id: string): Suggestion {
+  const guess = suggest(id);
+  const item = lib.software.find((s) => s.id === id)!;
+  if (!guess.categoryId && !guess.newCategory) {
+    return { ...guess, known: false, newCategory: { name: tr("实用工具", "Utilities"), icon: "wrench" }, reason: tr(`${item.name} 是一款工具`, "A utility") };
+  }
+  const category = lib.categories.find((c) => c.id === (guess.categoryId ?? ""));
+  const reason = AI_REASONS[category?.id ?? ""] ?? [category?.name ?? guess.newCategory?.name ?? "", category?.name ?? guess.newCategory?.name ?? ""];
+  return { ...guess, known: false, reason: tr(reason[0], reason[1]) };
+}
+
+let aiKeys = new Set<string>(["https://api.deepseek.com"]);
+let aiCancelled = false;
+const aiListeners = new Set<(progress: AiProgress) => void>();
+
+export function mockOnAi(handler: (progress: AiProgress) => void): () => void {
+  aiListeners.add(handler);
+  return () => aiListeners.delete(handler);
 }
 
 let langPacks: LangPack[] = [];
@@ -608,6 +642,46 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       }
       return snapshot();
     }
+    case "ai_key_saved":
+      return aiKeys.has(String(args.baseUrl).replace(/\/+$/, "").toLowerCase());
+    case "ai_set_key": {
+      const url = String(args.baseUrl).replace(/\/+$/, "").toLowerCase();
+      if (String(args.key).trim()) aiKeys.add(url);
+      else aiKeys = new Set([...aiKeys].filter((key) => key !== url));
+      return null;
+    }
+    case "ai_models":
+      await sleep(500);
+      return ["deepseek-chat", "deepseek-reasoner"];
+    case "ai_test":
+      await sleep(700);
+      return "OK";
+    case "ai_describe": {
+      await sleep(1200);
+      const name = args.name as string;
+      lib.summaries[name] = {
+        text: tr(`${name} 是一款常用的桌面软件。（预览里的 AI 简介）`, `${name} is a popular desktop app. (AI summary in preview)`),
+        source: `AI · ${lib.settings.ai.model}`,
+        fetchedAt: new Date().toISOString(),
+        lang: english ? "en" : "zh",
+      };
+      return snapshot();
+    }
+    case "ai_suggest_categories": {
+      const ids = args.softwareIds as string[];
+      aiCancelled = false;
+      const emit = (done: number) => aiListeners.forEach((handler) => handler({ done, total: ids.length }));
+      emit(0);
+      for (let done = 0; done < ids.length; done = Math.min(ids.length, done + 4)) {
+        await sleep(500);
+        if (aiCancelled) throw "cancelled";
+        emit(Math.min(ids.length, done + 4));
+      }
+      return ids.map(aiSuggest);
+    }
+    case "cancel_ai":
+      aiCancelled = true;
+      return null;
     default:
       // 运行、定位、导出这类动作在预览里什么都不做
       return null;

@@ -28,6 +28,7 @@ import {
   Trash2,
   X,
   PackageMinus,
+  WandSparkles,
 } from "lucide-react";
 import {
   bestAsset,
@@ -62,7 +63,7 @@ import {
   versionPaths,
 } from "../lib/library";
 import { usePrefs } from "../lib/prefs";
-import { useApp, useLanguage, useT } from "../lib/store";
+import { useAiReady, useApp, useLanguage, useT } from "../lib/store";
 import type { PackageFile, Software, SoftwareEdit, Version } from "../lib/types";
 import { SummaryText } from "./SummaryText";
 import { prompt } from "./dialogs";
@@ -288,6 +289,9 @@ function BatchPanel() {
   const files = chosen.reduce((sum, s) => sum + s.versions.reduce((n, v) => n + v.files.length, 0), 0);
   const size = chosen.reduce((sum, s) => sum + s.versions.reduce((n, v) => n + v.files.reduce((m, f) => m + f.size, 0), 0), 0);
   const allStarred = chosen.every((s) => s.starred);
+  const aiReady = useAiReady();
+  const describeWithAi = useApp((state) => state.describeWithAi);
+  const writing = useApp((state) => chosen.some((s) => state.aiBusy[s.name]));
 
   return (
     <div className="flex h-full flex-col">
@@ -329,6 +333,12 @@ function BatchPanel() {
             <Sparkles size={14} strokeWidth={1.75} aria-hidden />
             {t("classify.menu")}
           </Button>
+          {aiReady && (
+            <Button className="w-full" busy={writing} onClick={() => void describeWithAi(chosen.map((s) => ({ name: s.name })))}>
+              {!writing && <WandSparkles size={14} strokeWidth={1.75} aria-hidden />}
+              {t("ai.describe")}
+            </Button>
+          )}
         </div>
 
         <section className="mt-5">
@@ -443,7 +453,13 @@ function Detail({ software }: { software: Software }) {
         </div>
       </div>
 
-      <SummaryText key={software.id} summary={summary} busy={summaryBusy} onFetch={() => requestSummary(software.name, true)} />
+      <SummaryText
+        key={software.id}
+        summary={summary}
+        busy={summaryBusy}
+        onFetch={() => requestSummary(software.name, true)}
+        ai={{ name: software.name }}
+      />
 
       <StatusBlock software={software} />
 

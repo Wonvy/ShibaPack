@@ -2,6 +2,7 @@
 
 import { useCallback } from "react";
 import { create } from "zustand";
+import { aiUsable } from "./ai";
 import { api, onCheckProgress, onDownloadProgress, onImportProgress } from "./api";
 import { type Key, type Translate, type Vars, errorText, setLangPacks, translate } from "./i18n";
 import { filterSoftware, hasUpdate, needsTranslation } from "./library";
@@ -154,6 +155,14 @@ interface AppState {
   requestSummary: (name: string, refresh?: boolean) => void;
   /** 正在取简介的名字。 */
   summaryBusy: Record<string, boolean>;
+  /** 这台电脑的钥匙串里存着设置里那个 AI 服务的 API Key。 */
+  aiKeySaved: boolean;
+  /** 重新看一下钥匙串里有没有 API Key（换了服务、存了密钥之后）。 */
+  refreshAiKey: () => Promise<void>;
+  /** 正在让 AI 写简介的名字。 */
+  aiBusy: Record<string, boolean>;
+  /** 让 AI 给这些名字写简介，一个一个来。只有一个时出错直接提示原因，多个时最后汇总。 */
+  describeWithAi: (items: { name: string; publisher?: string }[]) => Promise<void>;
   /** `hint.name` 给了时，所有文件都归到这个软件下（拖到某个软件上导入）。 */
   importPaths: (paths: string[], mode?: Storage, hint?: ImportHint) => Promise<void>;
   /** 停下正在进行的导入（在两个文件之间停），排着队的也不导了。 */
@@ -188,6 +197,8 @@ function fallbackLanguage(): Language {
 }
 
 let toastSeq = 0;
+/** 上次查过钥匙串的 AI 服务地址：换了地址才再查。 */
+let aiKeyCheckedFor: string | null = null;
 // 开发模式下 React 会把启动逻辑跑两遍，这里保证只初始化一次
 let started = false;
 // 后台任务的状态：补图标、联网找图标、取简介
@@ -358,6 +369,7 @@ export const useApp = create<AppState>()((set, get) => {
     void fillIcons();
     queueWebIcons();
     queueSummaries(library);
+    if (library.settings.ai.baseUrl !== aiKeyCheckedFor) void get().refreshAiKey();
   };
 
   return {
@@ -374,6 +386,8 @@ export const useApp = create<AppState>()((set, get) => {
     importQueue: [],
     importCancelled: false,
     summaryBusy: {},
+    aiKeySaved: false,
+    aiBusy: {},
     dropping: false,
     dropSoftwareId: null,
     toasts: [],
@@ -508,6 +522,52 @@ export const useApp = create<AppState>()((set, get) => {
       }
       enqueueSummary(name, refresh, true);
       pumpSummaries();
+    },
+
+    refreshAiKey: async () => {
+      const baseUrl = get().library?.settings.ai.baseUrl ?? "";
+      aiKeyCheckedFor = baseUrl;
+      const saved = baseUrl.trim() ? await api.aiKeySaved(baseUrl).catch(() => false) : false;
+      // 查的这一会儿又换了服务：以后来的那次为准
+      if (aiKeyCheckedFor === baseUrl) set({ aiKeySaved: saved });
+    },
+
+    describeWithAi: async (items) => {
+      const todo = items.filter((item) => item.name.trim() && !get().aiBusy[item.name]);
+      if (todo.length === 0) return;
+      set({ aiBusy: { ...get().aiBusy, ...Object.fromEntries(todo.map((item) => [item.name, true])) } });
+      let done = 0;
+      let failed = 0;
+      let lastError: unknown = null;
+      for (const item of todo) {
+        try {
+          const library = await api.aiDescribe(item.name, item.publisher);
+          const current = get().library;
+          // 只取回简介这一部分，免得用旧的快照盖掉这期间的其他改动
+          if (current) set({ library: { ...current, summaries: library.summaries } });
+          done++;
+        } catch (error) {
+          failed++;
+          lastError = error;
+          // 密钥、余额、地址这类问题，后面的也一样会失败
+          if (/^(ai_(not_configured|bad_url|no_key|no_model|auth|balance|region|wrong_path|keychain|network)|not_configured)\b/.test(String(error))) {
+            failed += todo.length - done - failed;
+            break;
+          }
+        } finally {
+          const { [item.name]: _done, ...rest } = get().aiBusy;
+          set({ aiBusy: rest });
+        }
+      }
+      set({ aiBusy: Object.fromEntries(Object.entries(get().aiBusy).filter(([name]) => !todo.some((item) => item.name === name))) });
+      const lang = language();
+      if (todo.length === 1) {
+        if (lastError !== null) get().notify(errorText(lang, lastError), "error");
+      } else if (failed === 0) {
+        get().notify(translate(lang, "ai.describedMany", { n: done }));
+      } else {
+        get().notify(`${translate(lang, "ai.describedSome", { n: done, failed })} ${errorText(lang, lastError)}`, "error");
+      }
     },
 
     refreshLibrary: async () => {
@@ -671,6 +731,12 @@ export const useApp = create<AppState>()((set, get) => {
 
 // 开发时改了这个文件就整页重载：这里的状态是模块级的，只做热替换会留下一个没初始化的空状态
 if (import.meta.hot) import.meta.hot.accept(() => location.reload());
+
+/** 这台电脑上能不能用 AI：设置好了服务和模型，需要密钥的已经存了密钥。 */
+export function useAiReady(): boolean {
+  // 只订阅一个布尔值：列表里每一行都会用到，索引换了不该让每行都重画
+  return useApp((state) => aiUsable(state.library?.settings.ai, state.aiKeySaved));
+}
 
 /** 当前语言。仓库还没打开时用上次的语言或系统语言。 */
 export function useLanguage(): Language {

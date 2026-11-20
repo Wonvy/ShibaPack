@@ -1,6 +1,8 @@
 // 首次启动的引导页、设置对话框。
 
 import { FolderOpen, TriangleAlert } from "lucide-react";
+import { useState } from "react";
+import { aiConfigured, isLocalUrl, serviceLabel } from "../lib/ai";
 import { api, pickFolder, pickJsonFile, pickSavePath } from "../lib/api";
 import { type Key, effectivePack, errorText, languages } from "../lib/i18n";
 import { useApp, useLanguage, useT } from "../lib/store";
@@ -10,6 +12,7 @@ import type { Theme } from "../lib/types";
 
 /** 设置里“导入文件时”的三种做法：复制进仓库、移动进仓库、只记录位置。 */
 type ImportMode = "copy" | "move" | "indexed";
+import { AiDialog } from "./AiDialog";
 import { Logo } from "./chrome";
 import { Button, Modal, Segmented, Select, Switch, cx } from "./ui";
 
@@ -67,6 +70,9 @@ export function SettingsDialog() {
   const notify = useApp((state) => state.notify);
   const useLangPacks = useApp((state) => state.useLangPacks);
   const update = useApp((state) => state.appUpdate);
+  const aiKeySaved = useApp((state) => state.aiKeySaved);
+  const language = useLanguage();
+  const [aiOpen, setAiOpen] = useState(false);
   if (!settings) return null;
   const updateNote: Partial<Record<typeof update.phase, string>> = {
     checking: t("update.checking"),
@@ -173,6 +179,22 @@ export function SettingsDialog() {
           onChange={(translateSummaries) => void save({ translateSummaries })}
           label={t("settings.translate")}
         />
+      </Row>
+      <Row label={t("settings.ai")} hint={t("settings.aiHint")}>
+        <div className="flex min-w-0 items-center gap-2">
+          {aiConfigured(settings.ai) ? (
+            <span className="min-w-0 truncate text-[12px] text-fg-2" title={`${settings.ai.baseUrl} · ${settings.ai.model}`}>
+              {serviceLabel(settings.ai, language)} · {settings.ai.model}
+              {!aiKeySaved && !isLocalUrl(settings.ai.baseUrl) && <span className="text-warning"> · {t("settings.aiNoKey")}</span>}
+            </span>
+          ) : (
+            <span className="text-[12px] text-fg-3">{t("settings.aiNone")}</span>
+          )}
+          <Button className="shrink-0" onClick={() => setAiOpen(true)}>
+            {t("settings.aiSetup")}
+          </Button>
+        </div>
+        <AiDialog open={aiOpen} onClose={() => setAiOpen(false)} />
       </Row>
       <Row label={t("settings.catalog")} hint={t("settings.catalogHint")}>
         <Switch checked={settings.offlineCatalog} onChange={(offlineCatalog) => void save({ offlineCatalog })} label={t("settings.catalog")} />

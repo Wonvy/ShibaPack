@@ -1,14 +1,17 @@
 // 智能分类的预览窗口：列出每个软件的建议，可以逐个取消或改成别的分类，确认后才真正归类。
+// 设置好了 AI 时默认让 AI 判断，也可以换回内置规则（不联网，按常见软件名单和关键词）。
 
 import { ArrowRight, LoaderCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { api } from "../lib/api";
+import { api, onAiProgress } from "../lib/api";
 import { categoryPath, flattenTree } from "../lib/library";
 import { errorText } from "../lib/i18n";
-import { useApp, useLanguage, useT } from "../lib/store";
-import type { Assignment, Software, Suggestion } from "../lib/types";
+import { useAiReady, useApp, useLanguage, useT } from "../lib/store";
+import type { AiProgress, Assignment, Software, Suggestion } from "../lib/types";
 import { SoftwareIcon, useSoftwareIcon } from "./SoftwareIcon";
-import { Button, Checkbox, Modal, Select, cx } from "./ui";
+import { Button, Checkbox, Modal, Segmented, Select, cx } from "./ui";
+
+type Mode = "ai" | "rules";
 
 /** 每一行的选择：`""` 不改；`cat:<id>` 放进已有分类；`new:<名字>` 新建分类。 */
 type Choice = string;
@@ -28,6 +31,9 @@ function Dialog({ ids }: { ids: string[] }) {
   const close = () => patch({ classifyIds: null });
 
   const language = useLanguage();
+  const aiReady = useAiReady();
+  const [mode, setMode] = useState<Mode>(aiReady ? "ai" : "rules");
+  const [aiProgress, setAiProgress] = useState<AiProgress | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
   /** 取建议失败（比如仓库打不开）：说出原因，不要显示成“认不出这些软件”。 */
   const [failure, setFailure] = useState<string | null>(null);
@@ -37,7 +43,14 @@ function Dialog({ ids }: { ids: string[] }) {
 
   useEffect(() => {
     let alive = true;
-    api.suggestCategories(ids).then(
+    setSuggestions(null);
+    setFailure(null);
+    setAiProgress(null);
+    const useAi = mode === "ai";
+    let stopListening: (() => void) | null = null;
+    if (useAi) void onAiProgress((progress) => alive && setAiProgress(progress)).then((stop) => (alive ? (stopListening = stop) : stop()));
+    const request = useAi ? api.aiSuggestCategories(ids) : api.suggestCategories(ids);
+    request.then(
       (list) => {
         if (!alive) return;
         setSuggestions(list);
@@ -59,8 +72,11 @@ function Dialog({ ids }: { ids: string[] }) {
     );
     return () => {
       alive = false;
+      stopListening?.();
+      // 关掉窗口或换回内置规则时，后面几批不用再问 AI 了
+      if (useAi) void api.cancelAi();
     };
-  }, [ids]);
+  }, [ids, mode]);
 
   // 下拉框里可选的新建分类：所有建议里提到过的（一批里可能有好几个）
   const newNames = useMemo(
@@ -114,16 +130,30 @@ function Dialog({ ids }: { ids: string[] }) {
         </>
       }
     >
-      {suggestions === null ? (
-        <div className="flex items-center gap-2 py-6 text-[13px] text-fg-3">
-          <LoaderCircle size={15} strokeWidth={2} className="animate-spin" aria-hidden />
-          {t("classify.loading")}
-        </div>
-      ) : (
-        <>
-          <p className={cx("m-0 mb-3 text-[13px] leading-relaxed", failure ? "text-danger" : "text-fg-2")}>
+      <div className="mb-3 flex items-start gap-3">
+        {suggestions === null ? (
+          <div className="flex min-h-7 flex-1 items-center gap-2 text-[13px] text-fg-3">
+            <LoaderCircle size={15} strokeWidth={2} className="animate-spin" aria-hidden />
+            {mode === "ai" ? t("classify.aiLoading", { done: aiProgress?.done ?? 0, total: aiProgress?.total ?? ids.length }) : t("classify.loading")}
+          </div>
+        ) : (
+          <p className={cx("m-0 min-h-7 flex-1 pt-1 text-[13px] leading-relaxed", failure ? "text-danger" : "text-fg-2")}>
             {failure ?? (found > 0 ? t("classify.summary", { n: found }) : t("classify.none"))}
           </p>
+        )}
+        {aiReady && (
+          <Segmented<Mode>
+            value={mode}
+            onChange={setMode}
+            options={[
+              { value: "ai", label: t("classify.byAi") },
+              { value: "rules", label: t("classify.byRules") },
+            ]}
+          />
+        )}
+      </div>
+      {suggestions !== null && (
+        <>
           <div className="max-h-[56vh] overflow-y-auto rounded-lg border border-line">
             {suggestions.map((suggestion) => {
               const software = softwareOf(suggestion.softwareId);
@@ -190,7 +220,9 @@ function Row({
   const icon = useSoftwareIcon(software);
   const reason = suggestion.unchanged
     ? t("classify.unchanged")
-    : suggestion.known
+    : suggestion.reason
+      ? t("classify.aiReason", { reason: suggestion.reason })
+      : suggestion.known
       ? t("classify.known")
       : suggestion.evidence.length > 0
         ? t("classify.evidence", { terms: suggestion.evidence.slice(0, 4).join(t("common.listSeparator")) })

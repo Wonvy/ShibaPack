@@ -29,6 +29,7 @@ import {
   Sparkles,
   Star,
   Trash2,
+  WandSparkles,
 } from "lucide-react";
 import { type PointerEvent, type ReactNode, createContext, memo, useContext, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { DetailToggle } from "../components/chrome";
@@ -83,7 +84,7 @@ import {
   versionPaths,
 } from "../lib/library";
 import { type PackageView, type SortKey, usePrefs } from "../lib/prefs";
-import { type InstallFilter, useApp, useLanguage, useT } from "../lib/store";
+import { type InstallFilter, useAiReady, useApp, useLanguage, useT } from "../lib/store";
 import type { InstalledApp, Platform, Software, Version } from "../lib/types";
 
 // 列表视图的列：名称、版本、平台、大小、添加时间、安装/卸载。名称占满剩下的宽度；右边几列的宽度可以拖，
@@ -491,8 +492,11 @@ function useItem(software: Software) {
     state.selectedIds.length > 1 && selectionOf(state.selectedIds).has(software.id) ? state.selectedIds : null,
   );
   const dropping = useApp((state) => state.dropSoftwareId === software.id);
+  const aiReady = useAiReady();
   // 多选时作用于全部选中的软件，包括搜索后暂时不在列表里的（和详情栏的批量面板一致）
   const chosen = () => selectedSoftware(group ?? []);
+  const describe = (list: Software[]): MenuEntry[] =>
+    aiReady ? [{ label: t("ai.describe"), icon: WandSparkles, onSelect: () => void useApp.getState().describeWithAi(list.map((s) => ({ name: s.name }))) }] : [];
   const menu: MenuEntry[] = group
     ? [
         {
@@ -501,6 +505,7 @@ function useItem(software: Software) {
           onSelect: () => void starMany(chosen(), !chosen().every((s) => s.starred)),
         },
         { label: t("classify.menu"), icon: Sparkles, onSelect: () => classify(group) },
+        ...describe(chosen()),
         { label: t("batch.delete", { n: group.length }), icon: Trash2, danger: true, separated: true, onSelect: () => void deleteSoftwareMany(chosen()) },
       ]
     : [
@@ -510,6 +515,7 @@ function useItem(software: Software) {
           onSelect: () => void toggleStar(software),
         },
         { label: t("classify.menu"), icon: Sparkles, onSelect: () => classify([software.id]) },
+        ...describe([software]),
         { label: t("menu.openFolder"), icon: FolderOpen, separated: true, onSelect: () => void revealSoftware(software) },
         { label: t("detail.deleteSoftware"), icon: Trash2, danger: true, separated: true, onSelect: () => void deleteSoftware(software) },
       ];

@@ -213,6 +213,9 @@ pub struct Suggestion {
     pub known: bool,
     /// 发布者和简介里命中的词，给用户看推荐的依据。
     pub evidence: Vec<String>,
+    /// AI 给的一句依据（它认为这是个什么软件）。内置规则给的建议没有。
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub reason: String,
 }
 
 /// 用户在预览里确认的一条：放进已有分类，或者新建一个分类再放进去。
@@ -284,6 +287,12 @@ fn guess(software: &Software, summary: &str) -> Option<(&'static Kind, bool, Vec
     best.filter(|(_, score, known, _)| *known || *score >= MIN_SCORE).map(|(kind, _, known, evidence)| (kind, known, evidence))
 }
 
+/// 给一个新分类挑图标：名字对得上某一类就用那一类的图标，否则用文件夹。
+pub(crate) fn icon_for(name: &str) -> &'static str {
+    let probe = Category { id: String::new(), name: name.to_string(), parent_id: None, color: None, icon: None };
+    KINDS.iter().find(|kind| category_matches(&probe, kind)).map_or("folder", |kind| kind.icon)
+}
+
 /// 分类名里含某一类的别名，或者和这一类的名字一样。
 fn category_matches(category: &Category, kind: &Kind) -> bool {
     let name = category.name.trim().to_lowercase();
@@ -291,7 +300,7 @@ fn category_matches(category: &Category, kind: &Kind) -> bool {
 }
 
 /// 一个分类的全部下级，按树的顺序。
-fn descendants<'a>(categories: &'a [Category], id: &str, out: &mut Vec<&'a Category>, depth: usize) {
+pub(crate) fn descendants<'a>(categories: &'a [Category], id: &str, out: &mut Vec<&'a Category>, depth: usize) {
     if depth > 16 {
         return;
     }
@@ -302,7 +311,7 @@ fn descendants<'a>(categories: &'a [Category], id: &str, out: &mut Vec<&'a Categ
 }
 
 /// 分类按树的顺序排成一列，同时记下层级。
-fn tree_order<'a>(categories: &'a [Category], parent: Option<&str>, depth: usize, out: &mut Vec<(&'a Category, usize)>) {
+pub(crate) fn tree_order<'a>(categories: &'a [Category], parent: Option<&str>, depth: usize, out: &mut Vec<(&'a Category, usize)>) {
     if depth > 16 {
         return;
     }
@@ -332,6 +341,7 @@ impl Repo {
                     unchanged: false,
                     known: false,
                     evidence: Vec::new(),
+                    reason: String::new(),
                 };
                 let Some((kind, known, evidence)) = guess(software, summary) else { return suggestion };
                 suggestion.known = known;

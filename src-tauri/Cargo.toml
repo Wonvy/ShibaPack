@@ -20,6 +20,8 @@ tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 trash = "5"
+# AI 服务的 API Key 只存在系统钥匙串里（macOS 钥匙串、Windows 凭据管理器、Linux Secret Service）
+keyring = "4.2"
 shibapack-core = { path = "../crates/core" }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

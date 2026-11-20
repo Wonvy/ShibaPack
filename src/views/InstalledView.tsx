@@ -389,7 +389,13 @@ export function InstalledDetail() {
           </div>
         </div>
 
-        <SummaryText key={summaryKey} summary={summary} busy={summaryBusy} onFetch={() => requestSummary(summaryKey, true)} />
+        <SummaryText
+          key={summaryKey}
+          summary={summary}
+          busy={summaryBusy}
+          onFetch={() => requestSummary(summaryKey, true)}
+          ai={summaryKey ? { name: summaryKey, publisher: app.publisher } : undefined}
+        />
 
         <div
           className={cx(

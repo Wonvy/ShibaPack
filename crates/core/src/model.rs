@@ -227,6 +227,23 @@ pub struct Settings {
     /// ShibaPack 发现自己有新版本时，是否自动下载并安装。
     #[serde(default = "default_true")]
     pub auto_update: bool,
+    /// AI 模型：用来写软件简介、做智能分类。没设置时地址为空。
+    #[serde(default)]
+    pub ai: AiSettings,
+}
+
+/// 用哪个 AI 服务和模型。跟着仓库走；API Key 不在这里，只存在每台电脑的系统钥匙串里。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiSettings {
+    /// 选的是哪个预设（deepseek、qwen、ollama……），自己填地址的是 `custom`。
+    #[serde(default)]
+    pub preset: String,
+    /// OpenAI 兼容接口的地址，到 `/v1` 这一级，例如 `https://api.deepseek.com`。
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub model: String,
 }
 
 fn default_true() -> bool {
@@ -255,6 +272,7 @@ impl Default for Settings {
             translate_summaries: true,
             offline_catalog: true,
             auto_update: true,
+            ai: AiSettings::default(),
         }
     }
 }

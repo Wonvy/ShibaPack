@@ -5,6 +5,8 @@
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type {
+  AiProgress,
+  AiSettings,
   Assignment,
   BackupInfo,
   Candidate,
@@ -116,6 +118,21 @@ export const api = {
   exportLangPack: (dest: string, pack: LangPack) => call<void>("export_lang_pack", { dest, pack }),
   /** 用系统的浏览器打开一个网址。 */
   openUrl: (url: string) => call<void>("open_url", { url }),
+
+  // AI 模型。`key` 是设置对话框里刚填、还没存的密钥；不给时用这台电脑钥匙串里存的
+  /** 这台电脑的钥匙串里有没有这个地址的 API Key。 */
+  aiKeySaved: (baseUrl: string) => call<boolean>("ai_key_saved", { baseUrl }),
+  /** 存 API Key（只存在这台电脑的系统钥匙串里）；`key` 为空时删掉。 */
+  aiSetKey: (baseUrl: string, key: string) => call<void>("ai_set_key", { baseUrl, key }),
+  aiModels: (settings: AiSettings, key?: string) => call<string[]>("ai_models", { settings, key: key || null }),
+  /** 和模型说一句话，返回它的回答。 */
+  aiTest: (settings: AiSettings, key?: string) => call<string>("ai_test", { settings, key: key || null }),
+  /** 让 AI 写简介并存进索引（按名字存）。`publisher` 给只装在本机的软件用。 */
+  aiDescribe: (name: string, publisher?: string) => call<Library>("ai_describe", { name, publisher: publisher || null }),
+  /** 用 AI 推荐分类，只读。进度见 `onAiProgress`。 */
+  aiSuggestCategories: (softwareIds: string[]) => call<Suggestion[]>("ai_suggest_categories", { softwareIds }),
+  /** 停下正在进行的 AI 分类。 */
+  cancelAi: () => call<void>("cancel_ai"),
 };
 
 /** 把磁盘上的图标文件变成界面里 <img> 能用的地址。 */
@@ -173,6 +190,13 @@ export async function onCheckProgress(handler: (progress: CheckProgress) => void
   if (!isTauri) return (await import("./mock")).mockOnCheck(handler);
   const { listen } = await import("@tauri-apps/api/event");
   return listen<CheckProgress>("sources://progress", (event) => handler(event.payload));
+}
+
+/** AI 分类的进度。 */
+export async function onAiProgress(handler: (progress: AiProgress) => void): Promise<() => void> {
+  if (!isTauri) return (await import("./mock")).mockOnAi(handler);
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<AiProgress>("ai://progress", (event) => handler(event.payload));
 }
 
 /** 把文件拖进窗口。`onHover` 在文件悬在窗口上方和离开时调用。 */

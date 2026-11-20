@@ -4,12 +4,12 @@
 
 use serde::{Deserialize, Serialize};
 use shibapack_core::{
-    download,
+    ai, download,
     import::{self, BatchSaver, Outcome, Plan},
     identify::same_software,
     installed,
     sources::{self, Candidate, SourceError},
-    summary, Assignment, BackupInfo, Category, ImportHint, ImportReport, InstalledApp, Library, Progress, Release, Repo, Settings,
+    summary, AiSettings, Assignment, BackupInfo, Category, ImportHint, ImportReport, InstalledApp, Library, Progress, Release, Repo, Settings,
     SoftwareEdit, SourceKind, Stats, Storage, Subscription, Suggestion, VerifyReport, VersionEdit, VersionRef, webicon,
 };
 use std::{
@@ -50,6 +50,8 @@ struct AppState {
     cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// 应用自己的版本号（来自 package.json）。
     version: String,
+    /// 正在进行的 AI 分类的“取消”开关。开始新的一次时把上一次的也关掉。
+    ai_cancel: Mutex<Arc<AtomicBool>>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -118,6 +120,13 @@ struct FillResult {
     library: Option<Library>,
     /// 还有没处理的软件，前端应当再调一次。
     more: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiProgress {
+    done: usize,
+    total: usize,
 }
 
 #[derive(Serialize)]
@@ -920,6 +929,114 @@ async fn export_lang_pack(app: AppHandle, dest: String, pack: serde_json::Map<St
     .await
 }
 
+// ── AI 模型 ──────────────────────────────────────────────────
+
+const KEYCHAIN_SERVICE: &str = "app.shibapack.ai";
+
+fn keychain_entry(base_url: &str) -> CmdResult<keyring::Entry> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, &ai::key_account(base_url)).map_err(|e| format!("ai_keychain: {e}"))
+}
+
+/// 这台电脑的钥匙串里存着的、这个地址的 API Key。
+fn saved_key(base_url: &str) -> Option<String> {
+    keychain_entry(base_url).ok()?.get_password().ok().filter(|key| !key.trim().is_empty())
+}
+
+/// 连 AI 服务。`key` 为空时用钥匙串里存的（设置对话框里改了还没保存的密钥会直接传进来）。
+fn ai_service(settings: &AiSettings, key: Option<String>) -> CmdResult<ai::Service> {
+    let key = key.filter(|key| !key.trim().is_empty()).or_else(|| saved_key(&settings.base_url));
+    ai::Service::new(settings, key.as_deref()).map_err(|e| e.code())
+}
+
+/// 仓库设置里的 AI 服务，和此刻索引的一份副本。联网期间不占着仓库的锁。
+fn repo_ai(state: &State<AppState>) -> CmdResult<(ai::Service, Library)> {
+    let library = with_repo(state, |repo| Ok(repo.lib.clone()))?;
+    Ok((ai_service(&library.settings.ai, None)?, library))
+}
+
+#[tauri::command]
+async fn ai_key_saved(app: AppHandle, base_url: String) -> bool {
+    blocking(app, move |_app, _state| saved_key(&base_url).is_some()).await
+}
+
+/// 存这个地址的 API Key；`key` 为空时删掉。只存在这台电脑的系统钥匙串里，不写进仓库。
+#[tauri::command]
+async fn ai_set_key(app: AppHandle, base_url: String, key: String) -> CmdResult<()> {
+    blocking(app, move |_app, _state| {
+        let entry = keychain_entry(&base_url)?;
+        let key = key.trim();
+        let result = if key.is_empty() {
+            match entry.delete_credential() {
+                Err(keyring::Error::NoEntry) => Ok(()),
+                other => other,
+            }
+        } else {
+            entry.set_password(key)
+        };
+        result.map_err(|e| format!("ai_keychain: {e}"))
+    })
+    .await
+}
+
+/// 列出服务上的模型。用设置对话框里还没保存的地址和密钥。
+#[tauri::command]
+async fn ai_models(app: AppHandle, settings: AiSettings, key: Option<String>) -> CmdResult<Vec<String>> {
+    blocking(app, move |_app, _state| ai_service(&settings, key)?.models().map_err(|e| e.code())).await
+}
+
+/// 试着和模型说一句话，返回它的回答。
+#[tauri::command]
+async fn ai_test(app: AppHandle, settings: AiSettings, key: Option<String>) -> CmdResult<String> {
+    blocking(app, move |_app, _state| {
+        let service = ai_service(&settings, key)?;
+        let reply = service.chat("Reply with the single word OK.", "ping", false, 0.0).map_err(|e| e.code())?;
+        Ok(reply.chars().take(60).collect())
+    })
+    .await
+}
+
+/// 让 AI 给一个名字写简介并存进索引（简介按名字存，仓库里的软件和只装在本机的软件都用它）。
+/// `publisher` 给只装在本机、仓库里没有的软件用。
+#[tauri::command]
+async fn ai_describe(app: AppHandle, name: String, publisher: Option<String>) -> CmdResult<Library> {
+    blocking(app, move |_app, state| {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err("not_found".into());
+        }
+        let (service, library) = repo_ai(&state)?;
+        let summary = ai::describe(&service, &library, &name, publisher.as_deref().unwrap_or("")).map_err(|e| e.code())?;
+        mutate(&state, |repo| repo.set_summary(&name, Some(summary)))
+    })
+    .await
+}
+
+/// 用 AI 给一批软件推荐分类，只读。进度通过 `ai://progress` 事件发给前端。
+#[tauri::command]
+async fn ai_suggest_categories(app: AppHandle, software_ids: Vec<String>) -> CmdResult<Vec<Suggestion>> {
+    blocking(app, move |app, state| {
+        let cancel = Arc::new(AtomicBool::new(false));
+        if let Ok(mut current) = state.ai_cancel.lock() {
+            current.store(true, Ordering::SeqCst);
+            *current = cancel.clone();
+        }
+        let (service, library) = repo_ai(&state)?;
+        ai::suggest_categories(&service, &library, &software_ids, &cancel, &mut |done, total| {
+            let _ = app.emit("ai://progress", AiProgress { done, total });
+        })
+        .map_err(|e| e.code())
+    })
+    .await
+}
+
+/// 停下正在进行的 AI 分类（在两批之间停）。
+#[tauri::command]
+fn cancel_ai(state: State<AppState>) {
+    if let Ok(current) = state.ai_cancel.lock() {
+        current.store(true, Ordering::SeqCst);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
@@ -983,6 +1100,7 @@ pub fn run() {
                 import_cancel: AtomicBool::new(false),
                 cancels: Mutex::new(HashMap::new()),
                 version: app.package_info().version.to_string(),
+                ai_cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
             });
             Ok(())
         })
@@ -1040,6 +1158,13 @@ pub fn run() {
             remove_lang_pack,
             export_lang_pack,
             open_url,
+            ai_key_saved,
+            ai_set_key,
+            ai_models,
+            ai_test,
+            ai_describe,
+            ai_suggest_categories,
+            cancel_ai,
         ])
         .run(tauri::generate_context!())
         .expect("ShibaPack 启动失败");

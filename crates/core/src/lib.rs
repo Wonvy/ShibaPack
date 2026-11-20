@@ -1,5 +1,7 @@
 //! ShibaPack 的核心逻辑。这里不依赖 Tauri，所有功能都能用 `cargo test -p shibapack-core` 单独验证。
 
+#[cfg(feature = "network")]
+pub mod ai;
 pub mod catalog;
 pub mod classify;
 pub mod download;

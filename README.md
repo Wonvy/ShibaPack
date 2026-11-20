@@ -13,7 +13,7 @@ Everything lives in a folder you choose. The index is a plain `software.json` fi
 - **Organized by app and version.** Drop installers in and ShibaPack reads the app name, version, platform and architecture from the file name, then files them as `App/Version/file`. Duplicates are detected by SHA-256.
 - **Three ways to add files.** *Copy* puts installers into the library folder. *Move* does the same and removes the originals (across drives it checks the copy first). *Record location only* remembers where a file already is (for example on a NAS) and never touches it.
 - **Several versions per app.** Pick a default version or always use the newest, see which version is installed on this computer, and clean up old versions in one step.
-- **Categories, favorites and smart categorize.** Nested categories, drag and drop to file apps, and a built-in, offline rule set that suggests a category for about 300 well-known apps.
+- **Categories, favorites and smart categorize.** Nested categories, drag and drop to file apps, and a built-in, offline rule set that suggests a category for about 300 well-known apps. With an AI model set up, the AI can categorize instead, and write summaries for apps that have none.
 - **Installed software.** Lists the apps installed on this computer (as a list or a grid), matches them with your library, and shows which ones can be upgraded from an installer you already have. The details pane shows a short summary of what each app does. Install, upgrade and uninstall from one place.
 - **Online sources.** Link an app to Homebrew Cask, GitHub Releases or winget to check for new versions and download them into the library.
 - **Real icons.** Icons are taken from installers and installed apps. For apps with a homepage or a GitHub repository, ShibaPack can also use the site icon or the repository owner's avatar. Apps without an icon get a plain gray letter tile.
@@ -86,6 +86,7 @@ ShibaPack works offline. It goes online only for these:
 
 - **Summaries and icons** (can be turned off in Settings): app names are sent to Wikipedia, Homebrew (`formulae.brew.sh`) and GitHub to look up a short description, and apps without an icon fetch one from their own homepage or their GitHub owner's avatar.
 - **Summary translation** (can be turned off in Settings): a summary that isn't in the interface language is sent to Google Translate, or to MyMemory if Google can't be reached.
+- **AI model** (only if you set one up in Settings): when you ask the AI to write a summary or to categorize, app names, publishers, homepages, installer file names, existing summaries and category names are sent to the service you chose. The API key is kept only in this computer's system keychain. Local services such as Ollama and LM Studio keep everything on this computer.
 - **Online sources**, when you link or check them: Homebrew (`formulae.brew.sh`), GitHub Releases, and the winget package list on GitHub.
 - **Its own updates**: GitHub Releases of this repository (can be turned off in Settings).
 

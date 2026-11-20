@@ -1,13 +1,16 @@
 # 在三个系统上打包安装包和更新包。
 #
 # 推送形如 v0.2.0 的标签时运行（标签要和 package.json 里的 version 一致），也可以在 Actions 页面手动运行。
-# 三个系统各自打包，传到同一个草稿 Release 里：各系统的安装包，以及（有签名私钥时）带签名的更新包和 latest.json。
+# 先建一个草稿 Release；三个系统各自打包，传到这个草稿里：各系统的安装包，以及（有签名私钥时）带签名的更新包和 latest.json。
 # 三个系统全部打包成功后，最后一步自动把草稿发布出去，已安装的 ShibaPack 就会收到这次更新。
 # 有任何一个系统失败，就停在草稿、不发布：修好后重新打包，或者在 GitHub 上检查后手动发布。
 #
-# 更新包的签名私钥放在仓库的 Settings → Secrets and variables → Actions 里：
-#   TAURI_SIGNING_PRIVATE_KEY   ~/.tauri/shibapack-updater.key 的内容
-# 这一项可以不设：不设时只打安装包，不生成更新包和 latest.json，已安装的 ShibaPack 收不到这个版本的自动更新。
+# 仓库的 Settings → Secrets and variables → Actions 里可以放：
+#   TAURI_SIGNING_PRIVATE_KEY   ~/.tauri/shibapack-updater.key 的内容。可以不设：不设时只打安装包，
+#                               不生成更新包和 latest.json，已安装的 ShibaPack 收不到这个版本的自动更新。
+#   RELEASE_TOKEN               可以不设。设了就用它（而不是工作流自带的 GITHUB_TOKEN）创建、上传、发布 Release。
+#                               只有 GitHub 不让 GITHUB_TOKEN 创建 Release、改了仓库设置也不行时才需要：
+#                               建一个只对本仓库有效、带 Contents: Read and write 权限的 fine-grained token 放进来。
 #
 # 安装包本身没有做系统级签名：macOS 上首次打开要到“系统设置 → 隐私与安全性”里放行，
 # Windows 上 SmartScreen 弹出时点“更多信息 → 仍要运行”。
@@ -25,13 +28,49 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p shibapack-core
 
-  build:
+  # 先把草稿 Release 建好，只建一次：三个系统各自打包完再去建，同时打完时会建出两个草稿。
+  # 没有权限建 Release 时在这里就失败，不用等三个系统各打包十分钟才发现。
+  release:
     needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.draft.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: 准备草稿 Release
+        id: draft
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          NOTES: |
+            Download the installer for your system from the assets below. The installers are not code-signed yet; see the [README](https://github.com/Wonvy/ShibaPack#download) for how to open ShibaPack the first time on macOS and Windows.
+
+            在下面的附件里下载对应系统的安装包。安装包还没有做系统级签名，首次打开的方法见 [README](https://github.com/Wonvy/ShibaPack/blob/main/README.zh-CN.md#下载)。
+        run: |
+          # 标签按 package.json 里的版本号来，和打包时 tauri-action 用的一致（手动运行时也对得上）
+          tag="v$(node -p "require('./package.json').version")"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          # 重新运行时草稿已经在了，接着用
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "已有 $tag 的 Release，接着用"
+            exit 0
+          fi
+          if ! gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" --title "ShibaPack $tag" --notes "$NOTES"; then
+            echo "::error title=GitHub 不让这个工作流创建 Release::多半是工作流的 GITHUB_TOKEN 只有读权限。到仓库的 Settings → Actions → General → Workflow permissions，选“Read and write permissions”并保存，然后重新运行。已经是读写还不行，就按 release.yml 开头的说明加一个 RELEASE_TOKEN。"
+            exit 1
+          fi
+          echo "已建好草稿 $tag"
+
+  build:
+    needs: release
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -47,7 +86,7 @@ jobs:
             targets: ""
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Linux 上 Tauri 需要的系统库
         if: startsWith(matrix.os, 'ubuntu')
@@ -55,7 +94,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -82,19 +121,16 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
 
-      # 构建、上传到草稿 Release；有签名私钥时还给更新包签名，并生成更新用的 latest.json
+      # 构建、上传到上一步建好的草稿 Release；有签名私钥时还给更新包签名，并生成更新用的 latest.json。
+      # 草稿按标签找（tagName），latest.json 里的下载地址也按这个标签写
       - uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: v__VERSION__
-          releaseName: ShibaPack v__VERSION__
-          releaseBody: |
-            Download the installer for your system from the assets below. The installers are not code-signed yet; see the [README](https://github.com/Wonvy/ShibaPack#download) for how to open ShibaPack the first time on macOS and Windows.
-
-            在下面的附件里下载对应系统的安装包。安装包还没有做系统级签名，首次打开的方法见 [README](https://github.com/Wonvy/ShibaPack/blob/main/README.zh-CN.md#下载)。
+          tagName: ${{ needs.release.outputs.tag }}
+          releaseName: ShibaPack ${{ needs.release.outputs.tag }}
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: ${{ steps.signing.outputs.signed == 'true' }}
@@ -103,15 +139,15 @@ jobs:
   # 三个系统都打包成功了才走到这里（有一个失败，这一步就不会运行，草稿留着不发布）。
   # 一发布，已安装的 ShibaPack 就会自动更新到这个版本。
   publish:
-    needs: build
+    needs: [release, build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
       - name: 发布草稿 Release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release.outputs.tag }}
         run: |
-          # 和打包时一样，标签按 package.json 里的版本号来（手动运行时也对得上）
-          tag="v$(node -p "require('./package.json').version")"
-          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest
-          echo "已发布 $tag"
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          echo "已发布 $TAG"

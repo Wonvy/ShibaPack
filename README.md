@@ -167,6 +167,8 @@ Installed copies of ShibaPack update themselves from GitHub Releases. To publish
 3. `.github/workflows/release.yml` builds on macOS, Windows and Linux and uploads the installers and, if the signing key is set up, the signed update bundles and `latest.json` to a draft release.
 4. When all three builds succeed, the workflow publishes the release by itself, and installed copies pick up the update. If any build fails, the release stays a draft and is not published: fix the problem and build again, or check the draft on GitHub and click **Publish release** yourself.
 
+If the first step, preparing the draft release, fails because GitHub refuses to create the release (`Resource not accessible by integration`), the workflow's token can't write: open the repository's Settings → Actions → General → Workflow permissions, choose **Read and write permissions**, save, and run it again. If that doesn't help, add a `RELEASE_TOKEN` as described at the top of `release.yml`.
+
 #### Update signing key
 
 The built-in updater only installs update bundles signed with ShibaPack's private key (the public half is in `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`). This is separate from Apple or Microsoft code signing.

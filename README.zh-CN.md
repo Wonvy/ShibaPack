@@ -167,6 +167,8 @@ npm run bundle
 3. `.github/workflows/release.yml` 会在三个系统上构建，把安装包传到一个草稿 Release 里；设好了签名私钥时，还有带签名的更新包和 `latest.json`。
 4. 三个系统全部构建成功后，流程会自己把它发布出去，已安装的 ShibaPack 随后收到更新。有任何一个系统失败，就停在草稿、不发布：修好后重新构建，或者在 GitHub 上检查草稿后自己点“Publish release”。
 
+如果第一步“准备草稿 Release”就失败、提示 GitHub 不让创建 Release（`Resource not accessible by integration`），是工作流的令牌没有写权限：到仓库的 Settings → Actions → General → Workflow permissions，选“Read and write permissions”并保存，再重新运行。还不行的话，按 `release.yml` 开头的说明加一个 `RELEASE_TOKEN`。
+
 #### 更新包签名私钥
 
 内置的自动更新只安装用 ShibaPack 私钥签过名的更新包（公钥在 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`）。这和苹果、微软的系统级签名是两回事。

@@ -35,6 +35,8 @@ interface Prefs {
   sidebarWidth: number | null;
   /** 侧栏收起成一列图标。 */
   sidebarCollapsed: boolean;
+  /** 毛玻璃：窗口背景透出桌面并模糊（macOS、Windows 11）。只和这台电脑有关，所以记在界面偏好里，不进仓库。 */
+  glass: boolean;
   detailWidth: number;
   packageView: PackageView;
   sortKey: SortKey;
@@ -86,6 +88,7 @@ export const usePrefs = create<Prefs>()(
       topBarHeight: TOPBAR.initial,
       sidebarWidth: null,
       sidebarCollapsed: false,
+      glass: false,
       detailWidth: DETAIL.initial,
       packageView: "list",
       sortKey: "name",

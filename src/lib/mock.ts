@@ -974,6 +974,9 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       session.found = mockLeftovers(session.name, session.windows).filter((item) => !item.path.endsWith(".lnk") || item.path.includes("Start Menu"));
       return { items: session.found, stillInstalled: session.windows && Date.now() - session.startedAt < 3000 };
     }
+    case "set_window_glass":
+      // 预览是浏览器，做不了窗口效果
+      return false;
     case "system_overview":
       return {
         hostName: "Demo 的 MacBook Pro",

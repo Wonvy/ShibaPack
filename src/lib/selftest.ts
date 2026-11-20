@@ -305,6 +305,17 @@ export async function runSelftest() {
       await check("主页能读到系统状态", false, String(error));
     }
 
+    // 毛玻璃：打开再关掉（macOS 和 Windows 上打开应该成功）
+    try {
+      const on = await api.setWindowGlass(true);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const off = await api.setWindowGlass(false);
+      const expected = /Mac|Windows/i.test(navigator.userAgent);
+      await check("毛玻璃可以打开和关掉", on === expected && off === false, `打开 ${on}，关掉 ${off}`);
+    } catch (error) {
+      await check("毛玻璃可以打开和关掉", false, String(error));
+    }
+
     // 磁盘分析：扫一遍测试用的仓库文件夹（只读），取一层出来
     try {
       const root = status.repoRoot ?? "";

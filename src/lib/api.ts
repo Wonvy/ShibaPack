@@ -138,6 +138,8 @@ export const api = {
   systemOverview: () => call<SystemOverview>("system_overview"),
   /** 主页：此刻的 CPU、内存、系统盘和所有进程。 */
   systemSample: () => call<SystemSample>("system_sample"),
+  /** 打开或关掉毛玻璃。系统不支持时返回 false。 */
+  setWindowGlass: (enabled: boolean) => call<boolean>("set_window_glass", { enabled }),
   /** 磁盘分析：可以分析的地方（用户文件夹和每一块盘）。 */
   diskLocations: () => call<DiskLocation[]>("disk_locations"),
   /** 扫一个文件夹或一块盘（只读）。进度见 `onDiskProgress`；停下了返回 `cancelled`。 */

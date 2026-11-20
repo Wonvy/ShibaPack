@@ -1082,6 +1082,28 @@ async fn end_process(app: AppHandle, pid: u32, force: bool) -> CmdResult<()> {
     blocking(app, move |_app, state| with_monitor(&state, |monitor| monitor.end(pid, force))).await
 }
 
+// ── 窗口外观 ─────────────────────────────────────────────────
+
+/// 毛玻璃：窗口背景透出后面的桌面并模糊。macOS 用系统的 vibrancy，Windows 11 用 Mica；别的系统不支持，返回 false。
+/// 窗口本身一直是透明的（tauri.conf.json 的 transparent），关掉时界面画不透明的底色，看起来和普通窗口一样。
+#[tauri::command]
+fn set_window_glass(window: tauri::WebviewWindow, enabled: bool) -> CmdResult<bool> {
+    use tauri::window::{Effect, EffectState, EffectsBuilder};
+    if !enabled {
+        window.set_effects(None).map_err(|e| e.to_string())?;
+        return Ok(false);
+    }
+    let effects = if cfg!(target_os = "macos") {
+        EffectsBuilder::new().effect(Effect::UnderWindowBackground).state(EffectState::FollowsWindowActiveState).build()
+    } else if cfg!(windows) {
+        EffectsBuilder::new().effect(Effect::Mica).build()
+    } else {
+        return Ok(false);
+    };
+    window.set_effects(effects).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 // ── 磁盘分析 ─────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -2505,6 +2527,7 @@ pub fn run() {
             match_installed,
             analyze_uninstall,
             system_overview,
+            set_window_glass,
             disk_locations,
             disk_scan,
             disk_cancel,

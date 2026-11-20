@@ -54,6 +54,24 @@
   --pop: 0 0 0 1px rgb(0 0 0 / 0.08), 0 10px 32px rgb(0 0 0 / 0.14);
 }
 
+/*
+ * 毛玻璃（设置里打开、系统支持时，<html> 上有 data-glass）：窗口本身是透明的，系统在后面加模糊；
+ * 这里把大块的底色换成半透明，让模糊透出来。弹出的菜单、对话框仍用不透明的 --panel，文字才看得清。
+ * --bg-solid 是不透明的页面底色，给浮在内容上面的面板用。
+ */
+:root {
+  --bg-solid: var(--bg);
+}
+[data-glass][data-theme="dark"] {
+  --bg-solid: #0f1012;
+  --bg: rgb(15 16 18 / 0.62);
+  --bg-side: rgb(11 12 13 / 0.28);
+}
+[data-glass][data-theme="light"] {
+  --bg-solid: #ffffff;
+  --bg: rgb(255 255 255 / 0.66);
+  --bg-side: rgb(246 246 247 / 0.32);
+}
 :root {
   --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
   --bottom-bar-height: 49px;

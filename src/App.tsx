@@ -13,7 +13,7 @@ import { SettingsDialog, SetupGuide } from "./components/panels";
 import { Sidebar } from "./components/Sidebar";
 import { SourceDialog } from "./components/SourcePanel";
 import { UpdateDialog } from "./components/UpdateDialog";
-import { onFileDrop, windowControls } from "./lib/api";
+import { api, onFileDrop, windowControls } from "./lib/api";
 import { useDrag } from "./lib/drag";
 import { dropOnCategory, fileDropTargetAt } from "./lib/filedrop";
 import { SIDEBAR, SIDEBAR_RAIL, usePrefs } from "./lib/prefs";
@@ -56,6 +56,23 @@ export default function App() {
   const docked = withDetail && !cramped;
   const floating = withDetail && cramped && hasSelection;
   const floatingDetailWidth = Math.min(detailWidth, Math.max(0, windowWidth - sidebarWidth - 48));
+
+  // 毛玻璃：让系统给窗口加模糊效果；系统支持（返回 true）才把界面的底色换成半透明
+  const glass = usePrefs((state) => state.glass);
+  useEffect(() => {
+    let alive = true;
+    void api
+      .setWindowGlass(glass)
+      .catch(() => false)
+      .then((on) => {
+        if (!alive) return;
+        if (on) document.documentElement.dataset.glass = "";
+        else delete document.documentElement.dataset.glass;
+      });
+    return () => {
+      alive = false;
+    };
+  }, [glass]);
 
   useEffect(() => {
     const app = useApp.getState();
@@ -185,7 +202,7 @@ export default function App() {
         {floating && (
           // 让出中间栏的工具栏和状态栏，点列表空白处或按 Esc 关闭
           <aside
-            className="absolute right-0 bottom-(--bottom-bar-height) z-30 min-h-0 animate-fade border-l border-line bg-bg shadow-pop"
+            className="absolute right-0 bottom-(--bottom-bar-height) z-30 min-h-0 animate-fade border-l border-line bg-[var(--bg-solid)] shadow-pop"
             style={{ width: floatingDetailWidth, top: route !== "installed" && windowWidth - sidebarWidth < 440 ? 68 : 44 }}
           >
             <DetailFor route={route} />

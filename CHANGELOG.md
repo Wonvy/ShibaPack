@@ -16,6 +16,8 @@ in ShibaPack (opened from the version number in the bottom-right corner) shows t
 - 侧栏名字更短：启动、磁盘、程序、所有、更新。
 - 主页去掉了标题栏；CPU、内存的走势铺满卡片、放在数字后面；进程单独一行，软件数量和最近安装左右两栏。
 - “程序”页去掉了标题和个数，侧栏里已经写了。
+- 设置 → 通用里可以打开毛玻璃效果：窗口背景透出桌面并模糊（macOS 和 Windows 11）。
+- 主页的系统盘卡片也改成用掉的部分铺满卡片背景。
 
 ### English
 
@@ -23,6 +25,8 @@ in ShibaPack (opened from the version number in the bottom-right corner) shows t
 - Shorter sidebar names: Startup, Disk, Apps, All, Updates.
 - Home no longer has a title bar. CPU and memory trends fill their cards behind the numbers; processes get their own row, with software counts and recently installed apps side by side below.
 - The Apps page no longer repeats its title and count, which are already in the sidebar.
+- Turn on frosted glass in Settings → General to let the desktop show through the window, blurred (macOS and Windows 11).
+- The system disk card on Home now shows used space as a fill behind the numbers, like the CPU and memory cards.
 
 ## 0.10.0
 

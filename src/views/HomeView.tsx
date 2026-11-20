@@ -85,18 +85,32 @@ function Dashboard() {
             history={memoryHistory}
             busy={memoryPercent >= BUSY}
           />
-          <Card>
-            <div className="flex items-center text-[12px] text-fg-3">
-              {t("home.disk")}
-              <button type="button" className="ml-auto flex items-center text-accent hover:underline" onClick={() => useApp.getState().setRoute("disk")}>
-                {t("home.analyzeDisk")}
-                <ChevronRight size={13} strokeWidth={1.75} aria-hidden />
-              </button>
-            </div>
-            <div className="tabular mt-0.5 text-[20px] leading-7 font-semibold">{disk ? t("home.free", { size: formatSize(disk.available) }) : "—"}</div>
-            <div className="text-[12px] text-fg-3">{disk ? t("home.ofTotal", { total: formatSize(disk.total), percent: Math.round(diskPercent) }) : ""}</div>
-            <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-hover">
-              <div className={cx("h-full rounded-full", diskPercent >= BUSY ? "bg-warning" : "bg-accent")} style={{ width: `${diskPercent}%` }} />
+          <Card className="relative overflow-hidden">
+            {/* 用掉的部分从左往右铺满整张卡片，在文字后面，和 CPU、内存的走势一样 */}
+            {disk && (
+              <div
+                aria-hidden
+                className="pointer-events-none absolute inset-y-0 left-0 border-r"
+                style={{
+                  width: `${diskPercent}%`,
+                  background: `color-mix(in srgb, ${diskPercent >= BUSY ? "var(--warning)" : "var(--accent)"} 10%, transparent)`,
+                  borderColor: `color-mix(in srgb, ${diskPercent >= BUSY ? "var(--warning)" : "var(--accent)"} 55%, transparent)`,
+                }}
+              />
+            )}
+            <div className="relative">
+              <div className="flex items-center text-[12px] text-fg-3">
+                {t("home.disk")}
+                <button type="button" className="ml-auto flex items-center text-accent hover:underline" onClick={() => useApp.getState().setRoute("disk")}>
+                  {t("home.analyzeDisk")}
+                  <ChevronRight size={13} strokeWidth={1.75} aria-hidden />
+                </button>
+              </div>
+              <div className={cx("tabular mt-0.5 text-[20px] leading-7 font-semibold", diskPercent >= BUSY && "text-warning")}>
+                {disk ? t("home.free", { size: formatSize(disk.available) }) : "—"}
+              </div>
+              <div className="text-[12px] text-fg-3">{disk ? t("home.ofTotal", { total: formatSize(disk.total), percent: Math.round(diskPercent) }) : ""}</div>
+              <div className="h-10" />
             </div>
           </Card>
         </div>

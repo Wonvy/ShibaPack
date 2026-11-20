@@ -8,6 +8,28 @@ One section per version, titled `## <version>`, with a Chinese and an English pa
 `.github/workflows/release.yml` puts that section into the GitHub Release notes and `latest.json`; the update window
 in ShibaPack (opened from the version number in the bottom-right corner) shows the part that matches the interface language.
 
+## 0.8.0
+
+### 中文
+
+- 新增“清理”页（侧栏“启动与服务”下面），按类别列出能清理的东西、大小和说明：系统临时文件、日志和崩溃报告，Chrome、Edge、Firefox 等浏览器和 Slack、Discord、Claude 等应用的缓存，Xcode、npm、pip、Go、Cargo、Gradle、VS Code 等开发工具的缓存，Homebrew、WinGet 下载的安装包，回收站。
+- 删了会自己重新生成的缓存直接删除，其余移到回收站；清空回收站、清除浏览记录这类找不回来的，确认时要再勾一次。“一键清理”只清这些安全的缓存。
+- 下载文件夹和桌面上的安装包会和仓库比对：一模一样的可以放心清掉，还没收进仓库的可以直接导入。
+- 可以清除浏览记录、Cookie、最近使用的文件和剪贴板，这些默认不勾。清 Cookie 时可以设保留名单，名单里的网站不用重新登录。密码、书签、自动填充一律不碰。
+- 需要管理员权限的系统位置（Windows 更新下载的文件、内存转储、系统临时文件、传递优化缓存，macOS 的 /Library/Caches）一次授权清完。
+- 浏览器、编辑器在运行时对应的项不能勾，可以在这里让它正常退出。系统文件夹、个人文件夹、同步盘和仓库一律不碰，删每一条之前都会再查一遍。
+- 可以添加自定义清理文件夹和排除的文件夹；每次清理都有记录，详情栏能看到上次清理以后又长了多少。
+
+### English
+
+- New Clean up page (below Startup & services in the sidebar) lists what can be cleaned by category, with sizes and explanations: temporary files, logs and crash reports; caches of browsers such as Chrome, Edge and Firefox and of apps such as Slack, Discord and Claude; developer tool caches for Xcode, npm, pip, Go, Cargo, Gradle, VS Code and more; installers downloaded by Homebrew and WinGet; and the Trash.
+- Caches that regenerate by themselves are deleted outright; everything else goes to the Trash. Items that can't be recovered, such as emptying the Trash or clearing history, ask for an extra confirmation. Clean now only cleans these safe caches.
+- Installers in Downloads and on the Desktop are compared with your library: identical copies can be removed safely, and ones not yet in the library can be imported directly.
+- Browsing history, cookies, recent files and the clipboard can be cleared too, but are never selected by default. A cookie keep list keeps you signed in to the sites you choose. Passwords, bookmarks and autofill are never touched.
+- System locations that need administrator rights (Windows Update downloads, memory dumps, system temporary files, the Delivery Optimization cache, and /Library/Caches on macOS) are cleaned after a single authorization.
+- Items belonging to a running browser or editor can't be selected until it quits, and you can ask it to quit from here. System folders, personal folders, synced folders and the library are never touched, and every item is checked again right before it is deleted.
+- Add your own folders to clean or to exclude. Every cleanup is recorded, and the details pane shows how much has grown back since the last one.
+
 ## 0.7.0
 
 ### 中文

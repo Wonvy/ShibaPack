@@ -58,6 +58,10 @@ interface Prefs {
   addButtonPosition: { x: number; y: number } | null;
   /** 各个表格的列宽和隐藏的列。 */
   tableColumns: Record<TableId, TableColumns>;
+  /** 清理页里手动勾上或取消的项（项 id → 勾没勾）。没动过的按默认：安全档勾上，别的不勾。 */
+  cleanupChecked: Record<string, boolean>;
+  /** 清理页里折叠起来的类别。 */
+  cleanupCollapsed: string[];
   set: (patch: Partial<Omit<Prefs, "set" | "toggleCollapsed" | "sortBy" | "toggleColumn" | "setColumnWidth" | "resetColumns">>) => void;
   toggleCollapsed: (id: string) => void;
   sortBy: (key: SortKey) => void;
@@ -91,6 +95,8 @@ export const usePrefs = create<Prefs>()(
       searchShortcuts: ["github", "homebrew"],
       addButtonPosition: null,
       tableColumns: { library: NO_COLUMNS, installed: NO_COLUMNS, startup: NO_COLUMNS, service: NO_COLUMNS },
+      cleanupChecked: {},
+      cleanupCollapsed: [],
       set: (patch) =>
         set((state) => {
           const { sidebarWidth = state.sidebarWidth } = patch;

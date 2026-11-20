@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use shibapack_core::{
-    ai, aicache::{self, AiCache, CachedSuggestion, CachedText}, download, faillog,
+    ai, aicache::{self, AiCache, CachedSuggestion, CachedText}, cleanup, download, faillog,
     leftovers::{self, Leftover, RemoveReport, Target},
     import::{self, BatchSaver, Outcome, Plan},
     identify::same_software,
@@ -66,6 +66,10 @@ struct AppState {
     startup_turn: Mutex<()>,
     /// 读改写 AI 缓存文件时一次只让一个命令做（问 AI 的时候不占着它）。
     ai_cache_turn: Mutex<()>,
+    /// 最近一次清理扫描的结果。清理时按 id 和序号在这里找路径，不接受前端传来的路径。
+    cleanup: Mutex<Option<cleanup::Scan>>,
+    /// 扫描和清理一次只做一件。
+    cleanup_turn: Mutex<()>,
     /// 失败日志放在哪（应用自己的日志文件夹，只和这台电脑有关）。
     log_dir: PathBuf,
 }
@@ -1062,9 +1066,165 @@ fn open_startup_settings(app: AppHandle, page: String) -> CmdResult<()> {
         ("loginItems", "windows") => "ms-settings:startupapps",
         // macOS 的“App 管理”：没有苹果开发者签名的应用要在这里放行，才能更新自己
         ("appManagement", "macos") => "x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles",
+        // 清理时量废纸篓要“完全磁盘访问权限”
+        ("fullDiskAccess", "macos") => "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+        ("storage", "macos") => "x-apple.systempreferences:com.apple.settings.Storage",
+        ("storage", "windows") => "ms-settings:storagesense",
         _ => return Err("not_supported".into()),
     };
     app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+}
+
+// ── 清理 ─────────────────────────────────────────────────────
+
+/// 仓库里的每个文件（大小、SHA-256、软件名、版本号），拿来和下载文件夹里的安装包比对。
+fn library_files(lib: &Library) -> Vec<cleanup::LibraryFile> {
+    lib.software
+        .iter()
+        .flat_map(|s| {
+            s.versions.iter().flat_map(move |v| {
+                v.files.iter().map(move |f| cleanup::LibraryFile { size: f.size, sha256: f.sha256.clone(), software: s.name.clone(), version: v.version.clone() })
+            })
+        })
+        .collect()
+}
+
+/// 扫描和清理要用到的：仓库在哪（整个封住不碰）、仓库里下载用的临时文件夹、仓库里的文件、用户的设置。
+fn cleanup_context(app: &AppHandle, state: &State<AppState>) -> CmdResult<cleanup::Context> {
+    let (root, downloads, library) = {
+        let guard = state.repo.lock().map_err(|_| "internal".to_string())?;
+        match guard.as_ref() {
+            Some(repo) => (Some(repo.root().to_path_buf()), Some(repo.downloads_dir()), library_files(&repo.lib)),
+            None => (None, None, Vec::new()),
+        }
+    };
+    let options = cleanup::load_options(&local_state_dir(app)?);
+    Ok(cleanup::Context::new(root.as_deref(), downloads, library, options))
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CleanupProgress {
+    done: usize,
+    total: usize,
+    /// 正在等用户在系统的授权提示里输入密码或点“是”。
+    waiting_admin: bool,
+}
+
+/// 只读地找一遍能清理的东西。每量完一项通过 `cleanup://item` 发给界面，最后返回全部。
+#[tauri::command]
+async fn cleanup_scan(app: AppHandle) -> CmdResult<Vec<cleanup::CleanItem>> {
+    blocking(app, move |app, state| {
+        let _turn = state.cleanup_turn.lock().unwrap_or_else(|e| e.into_inner());
+        let ctx = cleanup_context(app, &state)?;
+        let scan = cleanup::scan(&ctx, &|item| {
+            let _ = app.emit("cleanup://item", item);
+        });
+        let items = scan.items();
+        if let Ok(mut cached) = state.cleanup.lock() {
+            *cached = Some(scan);
+        }
+        Ok(items)
+    })
+    .await
+}
+
+/// 清理勾选的项：每一项给 id 和不要的条目序号。删之前每一条都再查一遍。进度通过 `cleanup://progress` 发给界面。
+/// 做完写一份清理记录，放在本机应用数据目录的 `cleanup-history/`。
+#[tauri::command]
+async fn cleanup_run(app: AppHandle, picks: Vec<cleanup::Pick>) -> CmdResult<cleanup::Report> {
+    blocking(app, move |app, state| {
+        let _turn = state.cleanup_turn.lock().unwrap_or_else(|e| e.into_inner());
+        let ctx = cleanup_context(app, &state)?;
+        let scan = state.cleanup.lock().ok().and_then(|scan| scan.clone()).ok_or_else(|| "not_found".to_string())?;
+        // 要管理员权限的项另外交给提权的进程，一次授权做完
+        let (admin, normal): (Vec<cleanup::Pick>, Vec<cleanup::Pick>) = picks.into_iter().partition(|pick| scan.is_admin(&pick.id));
+        let (mut report, mut run) = cleanup::clean(&scan, &normal, &ctx, &|done, total| {
+            let _ = app.emit("cleanup://progress", CleanupProgress { done, total, waiting_admin: false });
+        });
+        if !admin.is_empty() {
+            let ids: Vec<String> = admin.iter().map(|pick| pick.id.clone()).collect();
+            let _ = app.emit("cleanup://progress", CleanupProgress { done: 0, total: 0, waiting_admin: true });
+            match cleanup::elevate::clean_as_admin(&ids, scan.skipped_paths(&admin), &ctx.options, ctx.repo_root.as_deref()) {
+                Ok((elevated, elevated_run)) => {
+                    report.merge(elevated);
+                    run.freed += elevated_run.freed;
+                    run.trashed += elevated_run.trashed;
+                    run.skipped += elevated_run.skipped;
+                    run.items.extend(elevated_run.items);
+                }
+                Err(reason) => {
+                    if reason != "cancelled" {
+                        log_failure_to(&state, "cleanup", &reason, &ids.join(", "));
+                    }
+                    run.skipped += ids.len();
+                    report.refuse(&ids, &reason);
+                }
+            }
+        }
+        if !run.items.is_empty() || run.skipped > 0 {
+            report.history = cleanup::history::record(&local_state_dir(app)?.join("cleanup-history"), &run).ok();
+        }
+        // 清掉的东西不在了：下次清理前要重新扫描
+        if let Ok(mut cached) = state.cleanup.lock() {
+            *cached = None;
+        }
+        Ok(report)
+    })
+    .await
+}
+
+/// 让这一项要先关掉的程序正常退出（不强行结束），最多等 10 秒。返回更新后的这一项（`running` 看它退了没有）。
+#[tauri::command]
+async fn cleanup_quit_app(app: AppHandle, id: String) -> CmdResult<cleanup::CleanItem> {
+    blocking(app, move |_app, state| {
+        let mut scan = state.cleanup.lock().map_err(|_| "internal".to_string())?;
+        scan.as_mut().and_then(|scan| scan.quit_app(&id)).ok_or_else(|| "not_found".to_string())
+    })
+    .await
+}
+
+/// 在文件管理器里定位这一项的某一条，或者它的第一个文件夹。
+#[tauri::command]
+async fn cleanup_reveal(app: AppHandle, id: String, index: Option<usize>) -> CmdResult<()> {
+    blocking(app, move |app, state| {
+        let path = state.cleanup.lock().ok().and_then(|scan| scan.as_ref().and_then(|scan| scan.locate(&id, index))).ok_or_else(|| "not_found".to_string())?;
+        if std::fs::symlink_metadata(&path).is_err() {
+            return Err("file_missing".into());
+        }
+        app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// 浏览器里有 Cookie 的网站，给保留名单出主意。只读，先复制一份 Cookie 文件再读。
+#[tauri::command]
+async fn cleanup_cookie_sites(app: AppHandle) -> CmdResult<Vec<cleanup::CookieSite>> {
+    blocking(app, move |app, state| Ok(cleanup::cookie_sites(&cleanup_context(app, &state)?))).await
+}
+
+/// 自定义的清理文件夹和排除的文件夹。
+#[tauri::command]
+async fn cleanup_options(app: AppHandle) -> CmdResult<cleanup::Options> {
+    blocking(app, move |app, _state| Ok(cleanup::load_options(&local_state_dir(app)?))).await
+}
+
+/// 保存自定义的清理文件夹和排除的文件夹。自定义文件夹要过保护检查，不行时返回 `cleanup_protected:路径` 这样的错误。
+#[tauri::command]
+async fn cleanup_set_options(app: AppHandle, options: cleanup::Options) -> CmdResult<cleanup::Options> {
+    blocking(app, move |app, state| {
+        let ctx = cleanup_context(app, &state)?;
+        let options = cleanup::check_options(&ctx.guard, options)?;
+        cleanup::save_options(&local_state_dir(app)?, &options).map_err(|e| e.to_string())?;
+        Ok(options)
+    })
+    .await
+}
+
+/// 最近 20 次清理（不带具体路径）。
+#[tauri::command]
+async fn cleanup_history(app: AppHandle) -> CmdResult<Vec<cleanup::history::Run>> {
+    blocking(app, move |app, _state| Ok(cleanup::history::list(&local_state_dir(app)?.join("cleanup-history"), false))).await
 }
 
 #[derive(Serialize)]
@@ -1779,6 +1939,10 @@ pub fn run() {
     if let Some(code) = leftovers::elevated_entry() {
         std::process::exit(code);
     }
+    // 以管理员身份清理时提权启动的那个进程：只做清理，不开窗口
+    if let Some(code) = cleanup::elevate::elevated_entry() {
+        std::process::exit(code);
+    }
     let mut builder = tauri::Builder::default();
     // 同一台电脑上只开一个 ShibaPack：两个窗口各存各的索引，会互相盖掉对方的改动。
     // 再打开一次时只把已有的窗口叫到前面。用 SHIBAPACK_CONFIG 换了引导文件（开发、自检）时不限制
@@ -1847,6 +2011,8 @@ pub fn run() {
                 startup: Mutex::new(Vec::new()),
                 startup_turn: Mutex::new(()),
                 ai_cache_turn: Mutex::new(()),
+                cleanup: Mutex::new(None),
+                cleanup_turn: Mutex::new(()),
                 log_dir: app.path().app_log_dir().unwrap_or_else(|_| std::env::temp_dir().join("ShibaPack-logs")),
             });
             Ok(())
@@ -1897,6 +2063,14 @@ pub fn run() {
             startup_action,
             reveal_startup,
             open_startup_settings,
+            cleanup_scan,
+            cleanup_run,
+            cleanup_quit_app,
+            cleanup_reveal,
+            cleanup_options,
+            cleanup_set_options,
+            cleanup_history,
+            cleanup_cookie_sites,
             ai_explain_startup_many,
             fill_icons,
             fill_file_info,

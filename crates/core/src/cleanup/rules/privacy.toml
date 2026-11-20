@@ -1,0 +1,234 @@
+# 隐私痕迹：浏览记录、Cookie、最近打开的文件。一律默认不勾、直接删除（进回收站等于没删），要先关掉浏览器。
+# 只删名字列出来的这几个文件：书签（Bookmarks）、密码（Login Data）、自动填充（Web Data）、加密密钥（Local State）
+# 在保护检查里一律不删。Firefox 的历史和书签在同一个文件（places.sqlite）里，不清。
+# Cookie 有保留名单时，只删名单以外网站的 Cookie（改浏览器自己的 Cookie 数据库），不删整个文件。
+
+[[rule]]
+id = "privacy.chrome-history"
+category = "privacy"
+risk = "high"
+permanent = true
+app = "Google Chrome"
+processes = { macos = ["Google Chrome"], windows = ["chrome.exe"], linux = ["chrome"] }
+roots = { macos = ["${app_support}/Google/Chrome/*"], windows = ["${local_app_data}/Google/Chrome/User Data/*"], linux = ["${xdg_config}/google-chrome/*"] }
+names = ["History", "History-journal", "Visited Links", "Top Sites", "Top Sites-journal", "Shortcuts", "Shortcuts-journal", "Network Action Predictor", "Network Action Predictor-journal"]
+name = { zh = "Chrome 浏览记录", en = "Chrome browsing history" }
+about = { zh = "Chrome 记下的访问过的网页、下载记录、常去的网站和地址栏的联想。", en = "Pages you visited, download history, top sites and address bar suggestions Chrome keeps." }
+effect = { zh = "删了就找不回来。书签、密码、Cookie 不受影响。", en = "Cannot be recovered. Bookmarks, passwords and cookies are not affected." }
+evidence = "https://support.google.com/chrome/answer/95589"
+
+[[rule]]
+id = "privacy.chrome-cookies"
+category = "privacy"
+risk = "high"
+permanent = true
+cookies = true
+app = "Google Chrome"
+processes = { macos = ["Google Chrome"], windows = ["chrome.exe"], linux = ["chrome"] }
+roots = { macos = ["${app_support}/Google/Chrome/*", "${app_support}/Google/Chrome/*/Network"], windows = ["${local_app_data}/Google/Chrome/User Data/*", "${local_app_data}/Google/Chrome/User Data/*/Network"], linux = ["${xdg_config}/google-chrome/*", "${xdg_config}/google-chrome/*/Network"] }
+names = ["Cookies", "Cookies-journal"]
+name = { zh = "Chrome Cookie", en = "Chrome cookies" }
+about = { zh = "网站存在 Chrome 里的 Cookie，用来记住登录状态、偏好，也用来跟踪你。", en = "Cookies websites store in Chrome to remember sign-ins and preferences, and to track you." }
+effect = { zh = "保留名单以外的网站要重新登录。删了就找不回来。", en = "Sites not on your keep list will ask you to sign in again. Cannot be recovered." }
+evidence = "https://support.google.com/chrome/answer/95589"
+
+[[rule]]
+id = "privacy.edge-history"
+category = "privacy"
+risk = "high"
+permanent = true
+app = "Microsoft Edge"
+processes = { macos = ["Microsoft Edge"], windows = ["msedge.exe"], linux = ["msedge"] }
+roots = { macos = ["${app_support}/Microsoft Edge/*"], windows = ["${local_app_data}/Microsoft/Edge/User Data/*"], linux = ["${xdg_config}/microsoft-edge/*"] }
+names = ["History", "History-journal", "Visited Links", "Top Sites", "Top Sites-journal", "Shortcuts", "Shortcuts-journal", "Network Action Predictor", "Network Action Predictor-journal"]
+name = { zh = "Edge 浏览记录", en = "Edge browsing history" }
+about = { zh = "Edge 记下的访问过的网页、下载记录、常去的网站和地址栏的联想。", en = "Pages you visited, download history, top sites and address bar suggestions Edge keeps." }
+effect = { zh = "删了就找不回来。书签、密码、Cookie 不受影响。", en = "Cannot be recovered. Bookmarks, passwords and cookies are not affected." }
+evidence = "https://support.google.com/chrome/answer/95589"
+
+[[rule]]
+id = "privacy.edge-cookies"
+category = "privacy"
+risk = "high"
+permanent = true
+cookies = true
+app = "Microsoft Edge"
+processes = { macos = ["Microsoft Edge"], windows = ["msedge.exe"], linux = ["msedge"] }
+roots = { macos = ["${app_support}/Microsoft Edge/*", "${app_support}/Microsoft Edge/*/Network"], windows = ["${local_app_data}/Microsoft/Edge/User Data/*", "${local_app_data}/Microsoft/Edge/User Data/*/Network"], linux = ["${xdg_config}/microsoft-edge/*", "${xdg_config}/microsoft-edge/*/Network"] }
+names = ["Cookies", "Cookies-journal"]
+name = { zh = "Edge Cookie", en = "Edge cookies" }
+about = { zh = "网站存在 Edge 里的 Cookie，用来记住登录状态、偏好，也用来跟踪你。", en = "Cookies websites store in Edge to remember sign-ins and preferences, and to track you." }
+effect = { zh = "保留名单以外的网站要重新登录。删了就找不回来。", en = "Sites not on your keep list will ask you to sign in again. Cannot be recovered." }
+evidence = "https://support.google.com/chrome/answer/95589"
+
+[[rule]]
+id = "privacy.brave-history"
+category = "privacy"
+risk = "high"
+permanent = true
+app = "Brave Browser"
+processes = { macos = ["Brave Browser"], windows = ["brave.exe"], linux = ["brave"] }
+roots = { macos = ["${app_support}/BraveSoftware/Brave-Browser/*"], windows = ["${local_app_data}/BraveSoftware/Brave-Browser/User Data/*"], linux = ["${xdg_config}/BraveSoftware/Brave-Browser/*"] }
+names = ["History", "History-journal", "Visited Links", "Top Sites", "Top Sites-journal", "Shortcuts", "Shortcuts-journal", "Network Action Predictor", "Network Action Predictor-journal"]
+name = { zh = "Brave 浏览记录", en = "Brave browsing history" }
+about = { zh = "Brave 记下的访问过的网页、下载记录、常去的网站和地址栏的联想。", en = "Pages you visited, download history, top sites and address bar suggestions Brave keeps." }
+effect = { zh = "删了就找不回来。书签、密码、Cookie 不受影响。", en = "Cannot be recovered. Bookmarks, passwords and cookies are not affected." }
+evidence = "https://support.google.com/chrome/answer/95589"
+
+[[rule]]
+id = "privacy.brave-cookies"
+category = "privacy"
+risk = "high"
+permanent = true
+cookies = true
+app = "Brave Browser"
+processes = { macos = ["Brave Browser"], windows = ["brave.exe"], linux = ["brave"] }
+roots = { macos = ["${app_support}/BraveSoftware/Brave-Browser/*", "${app_support}/BraveSoftware/Brave-Browser/*/Network"], windows = ["${local_app_data}/BraveSoftware/Brave-Browser/User Data/*", "${local_app_data}/BraveSoftware/Brave-Browser/User Data/*/Network"], linux = ["${xdg_config}/BraveSoftware/Brave-Browser/*", "${xdg_config}/BraveSoftware/Brave-Browser/*/Network"] }
+names = ["Cookies", "Cookies-journal"]
+name = { zh = "Brave Cookie", en = "Brave cookies" }
+about = { zh = "网站存在 Brave 里的 Cookie，用来记住登录状态、偏好，也用来跟踪你。", en = "Cookies websites store in Brave to remember sign-ins and preferences, and to track you." }
+effect = { zh = "保留名单以外的网站要重新登录。删了就找不回来。", en = "Sites not on your keep list will ask you to sign in again. Cannot be recovered." }
+evidence = "https://support.google.com/chrome/answer/95589"
+
+[[rule]]
+id = "privacy.vivaldi-history"
+category = "privacy"
+risk = "high"
+permanent = true
+app = "Vivaldi"
+processes = { macos = ["Vivaldi"], windows = ["vivaldi.exe"], linux = ["vivaldi-bin"] }
+roots = { macos = ["${app_support}/Vivaldi/*"], windows = ["${local_app_data}/Vivaldi/User Data/*"], linux = ["${xdg_config}/vivaldi/*"] }
+names = ["History", "History-journal", "Visited Links", "Top Sites", "Top Sites-journal", "Shortcuts", "Shortcuts-journal", "Network Action Predictor", "Network Action Predictor-journal"]
+name = { zh = "Vivaldi 浏览记录", en = "Vivaldi browsing history" }
+about = { zh = "Vivaldi 记下的访问过的网页、下载记录、常去的网站和地址栏的联想。", en = "Pages you visited, download history, top sites and address bar suggestions Vivaldi keeps." }
+effect = { zh = "删了就找不回来。书签、密码、Cookie 不受影响。", en = "Cannot be recovered. Bookmarks, passwords and cookies are not affected." }
+evidence = "https://support.google.com/chrome/answer/95589"
+
+[[rule]]
+id = "privacy.vivaldi-cookies"
+category = "privacy"
+risk = "high"
+permanent = true
+cookies = true
+app = "Vivaldi"
+processes = { macos = ["Vivaldi"], windows = ["vivaldi.exe"], linux = ["vivaldi-bin"] }
+roots = { macos = ["${app_support}/Vivaldi/*", "${app_support}/Vivaldi/*/Network"], windows = ["${local_app_data}/Vivaldi/User Data/*", "${local_app_data}/Vivaldi/User Data/*/Network"], linux = ["${xdg_config}/vivaldi/*", "${xdg_config}/vivaldi/*/Network"] }
+names = ["Cookies", "Cookies-journal"]
+name = { zh = "Vivaldi Cookie", en = "Vivaldi cookies" }
+about = { zh = "网站存在 Vivaldi 里的 Cookie，用来记住登录状态、偏好，也用来跟踪你。", en = "Cookies websites store in Vivaldi to remember sign-ins and preferences, and to track you." }
+effect = { zh = "保留名单以外的网站要重新登录。删了就找不回来。", en = "Sites not on your keep list will ask you to sign in again. Cannot be recovered." }
+evidence = "https://support.google.com/chrome/answer/95589"
+
+[[rule]]
+id = "privacy.opera-history"
+category = "privacy"
+risk = "high"
+permanent = true
+app = "Opera"
+processes = { macos = ["Opera"], windows = ["opera.exe"], linux = ["opera"] }
+roots = { macos = ["${app_support}/com.operasoftware.Opera"], windows = ["${roaming_app_data}/Opera Software/Opera Stable"], linux = ["${xdg_config}/opera"] }
+names = ["History", "History-journal", "Visited Links", "Top Sites", "Top Sites-journal", "Shortcuts", "Shortcuts-journal", "Network Action Predictor", "Network Action Predictor-journal"]
+name = { zh = "Opera 浏览记录", en = "Opera browsing history" }
+about = { zh = "Opera 记下的访问过的网页、下载记录、常去的网站和地址栏的联想。", en = "Pages you visited, download history, top sites and address bar suggestions Opera keeps." }
+effect = { zh = "删了就找不回来。书签、密码、Cookie 不受影响。", en = "Cannot be recovered. Bookmarks, passwords and cookies are not affected." }
+evidence = "https://support.google.com/chrome/answer/95589"
+
+[[rule]]
+id = "privacy.opera-cookies"
+category = "privacy"
+risk = "high"
+permanent = true
+cookies = true
+app = "Opera"
+processes = { macos = ["Opera"], windows = ["opera.exe"], linux = ["opera"] }
+roots = { macos = ["${app_support}/com.operasoftware.Opera", "${app_support}/com.operasoftware.Opera/Network"], windows = ["${roaming_app_data}/Opera Software/Opera Stable", "${roaming_app_data}/Opera Software/Opera Stable/Network"], linux = ["${xdg_config}/opera", "${xdg_config}/opera/Network"] }
+names = ["Cookies", "Cookies-journal"]
+name = { zh = "Opera Cookie", en = "Opera cookies" }
+about = { zh = "网站存在 Opera 里的 Cookie，用来记住登录状态、偏好，也用来跟踪你。", en = "Cookies websites store in Opera to remember sign-ins and preferences, and to track you." }
+effect = { zh = "保留名单以外的网站要重新登录。删了就找不回来。", en = "Sites not on your keep list will ask you to sign in again. Cannot be recovered." }
+evidence = "https://support.google.com/chrome/answer/95589"
+
+[[rule]]
+id = "privacy.arc-history"
+category = "privacy"
+risk = "high"
+permanent = true
+app = "Arc"
+processes = { macos = ["Arc"] }
+roots = { macos = ["${app_support}/Arc/User Data/*"] }
+names = ["History", "History-journal", "Visited Links", "Top Sites", "Top Sites-journal", "Shortcuts", "Shortcuts-journal", "Network Action Predictor", "Network Action Predictor-journal"]
+name = { zh = "Arc 浏览记录", en = "Arc browsing history" }
+about = { zh = "Arc 记下的访问过的网页、下载记录、常去的网站和地址栏的联想。", en = "Pages you visited, download history, top sites and address bar suggestions Arc keeps." }
+effect = { zh = "删了就找不回来。书签、密码、Cookie 不受影响。", en = "Cannot be recovered. Bookmarks, passwords and cookies are not affected." }
+evidence = "https://support.google.com/chrome/answer/95589"
+
+[[rule]]
+id = "privacy.arc-cookies"
+category = "privacy"
+risk = "high"
+permanent = true
+cookies = true
+app = "Arc"
+processes = { macos = ["Arc"] }
+roots = { macos = ["${app_support}/Arc/User Data/*", "${app_support}/Arc/User Data/*/Network"] }
+names = ["Cookies", "Cookies-journal"]
+name = { zh = "Arc Cookie", en = "Arc cookies" }
+about = { zh = "网站存在 Arc 里的 Cookie，用来记住登录状态、偏好，也用来跟踪你。", en = "Cookies websites store in Arc to remember sign-ins and preferences, and to track you." }
+effect = { zh = "保留名单以外的网站要重新登录。删了就找不回来。", en = "Sites not on your keep list will ask you to sign in again. Cannot be recovered." }
+evidence = "https://support.google.com/chrome/answer/95589"
+
+[[rule]]
+id = "privacy.chromium-history"
+category = "privacy"
+risk = "high"
+permanent = true
+app = "Chromium"
+processes = { macos = ["Chromium"], windows = ["chrome.exe"], linux = ["chromium", "chromium-browse"] }
+roots = { macos = ["${app_support}/Chromium/*"], windows = ["${local_app_data}/Chromium/User Data/*"], linux = ["${xdg_config}/chromium/*"] }
+names = ["History", "History-journal", "Visited Links", "Top Sites", "Top Sites-journal", "Shortcuts", "Shortcuts-journal", "Network Action Predictor", "Network Action Predictor-journal"]
+name = { zh = "Chromium 浏览记录", en = "Chromium browsing history" }
+about = { zh = "Chromium 记下的访问过的网页、下载记录、常去的网站和地址栏的联想。", en = "Pages you visited, download history, top sites and address bar suggestions Chromium keeps." }
+effect = { zh = "删了就找不回来。书签、密码、Cookie 不受影响。", en = "Cannot be recovered. Bookmarks, passwords and cookies are not affected." }
+evidence = "https://support.google.com/chrome/answer/95589"
+
+[[rule]]
+id = "privacy.chromium-cookies"
+category = "privacy"
+risk = "high"
+permanent = true
+cookies = true
+app = "Chromium"
+processes = { macos = ["Chromium"], windows = ["chrome.exe"], linux = ["chromium", "chromium-browse"] }
+roots = { macos = ["${app_support}/Chromium/*", "${app_support}/Chromium/*/Network"], windows = ["${local_app_data}/Chromium/User Data/*", "${local_app_data}/Chromium/User Data/*/Network"], linux = ["${xdg_config}/chromium/*", "${xdg_config}/chromium/*/Network"] }
+names = ["Cookies", "Cookies-journal"]
+name = { zh = "Chromium Cookie", en = "Chromium cookies" }
+about = { zh = "网站存在 Chromium 里的 Cookie，用来记住登录状态、偏好，也用来跟踪你。", en = "Cookies websites store in Chromium to remember sign-ins and preferences, and to track you." }
+effect = { zh = "保留名单以外的网站要重新登录。删了就找不回来。", en = "Sites not on your keep list will ask you to sign in again. Cannot be recovered." }
+evidence = "https://support.google.com/chrome/answer/95589"
+
+[[rule]]
+id = "privacy.firefox-cookies"
+category = "privacy"
+risk = "high"
+permanent = true
+cookies = true
+app = "Firefox"
+processes = { macos = ["firefox"], windows = ["firefox.exe"], linux = ["firefox", "firefox-bin", "firefox-esr"] }
+roots = { macos = ["${app_support}/Firefox/Profiles/*"], windows = ["${roaming_app_data}/Mozilla/Firefox/Profiles/*"], linux = ["${home}/.mozilla/firefox/*", "${xdg_config}/mozilla/firefox/*"] }
+names = ["cookies.sqlite", "cookies.sqlite-wal", "cookies.sqlite-shm"]
+name = { zh = "Firefox Cookie", en = "Firefox cookies" }
+about = { zh = "网站存在 Firefox 里的 Cookie，用来记住登录状态、偏好，也用来跟踪你。", en = "Cookies websites store in Firefox to remember sign-ins and preferences, and to track you." }
+effect = { zh = "保留名单以外的网站要重新登录。删了就找不回来。", en = "Sites not on your keep list will ask you to sign in again. Cannot be recovered." }
+evidence = "https://support.mozilla.org/kb/clear-cookies-and-site-data-firefox"
+
+[[rule]]
+id = "privacy.recent-files"
+category = "privacy"
+risk = "high"
+permanent = true
+roots = { windows = ["${roaming_app_data}/Microsoft/Windows/Recent", "${roaming_app_data}/Microsoft/Windows/Recent/AutomaticDestinations", "${roaming_app_data}/Microsoft/Windows/Recent/CustomDestinations"] }
+names = ["*.lnk", "*.automaticDestinations-ms", "*.customDestinations-ms"]
+name = { zh = "最近使用的文件和跳转列表", en = "Recent files and jump lists" }
+about = { zh = "资源管理器“最近使用的文件”和任务栏右键菜单里的跳转列表。只是指向文件的快捷方式，文件本身不在这里。", en = "File Explorer's recent files and the jump lists on taskbar right-click menus. These are shortcuts; the files themselves are elsewhere." }
+effect = { zh = "最近使用的列表会清空，文件本身不受影响。资源管理器正在用的会跳过。", en = "The recent lists are cleared; the files themselves are not affected. Items in use by Explorer are skipped." }
+evidence = "https://learn.microsoft.com/en-us/windows/win32/shell/taskbar-extensions"

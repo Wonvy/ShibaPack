@@ -142,6 +142,7 @@ crates/core/      与界面无关的核心逻辑，可单独测试
   ops.rs          软件、版本、文件、分类、收藏的增删改
   classify.rs     智能分类：按软件名、发布者、简介推荐分类
   ai.rs           AI 模型：OpenAI 兼容接口，写简介、推荐分类
+  cleanup/        清理：规则（rules/*.toml）、路径变量、保护检查、扫描、删除、回收站、散落的安装包、清理记录
 src-tauri/        桌面外壳：命令、事件、窗口
 src/              React 前端
   lib/            类型、接口封装、状态、国际化、浏览器预览用的模拟后端
@@ -533,6 +534,56 @@ ShibaPack 会更新自己：启动几秒后（之后每六小时）到 GitHub �
 - macOS 13 起“系统设置 › 登录项”里的“允许在后台”开关存在系统的后台任务数据库里，只有 root 能读。在那里关掉的项，这里的开关看不出来（launchd 不会加载它，列表里显示未运行）；应用通过 `SMAppService` 注册在自己包里的后台项也不在列表里。
 - Windows 只列 Run 键和“启动”文件夹，和任务管理器一致；计划任务里的登录触发、RunOnce、Winlogon 这类不在里面。
 - Linux 的 autostart 停用写的是用户自己那一份，只对当前用户生效。
+
+### 清理（第一期）
+
+用户贴了几个开源清理工具（BleachBit、MangoDisk、UniversalDiskCleanupTool、vyrti/cleaner、CrapCleaner），又要求借鉴 CCleaner，让我出方案；方案确认后先做第一期。三个待定的点都按我的建议：安全档直接删除、隐私痕迹放第二期、第三期的项目构建产物和大文件以后再定。MangoDisk 和 BleachBit 是 GPL-3.0，只借鉴思路，规则和代码都是新写的。侧栏“启动与服务”下面多了“清理”（`#/cleanup`）；代码在 `crates/core/src/cleanup/`、`src/views/CleanupView.tsx`、`src/components/CleanupDialogs.tsx`、`src/lib/cleanup.ts`。
+
+| 项 | 说明 |
+|---|---|
+| 规则 | 写在 `cleanup/rules/*.toml`（系统、浏览器、开发工具、安装包），`include_str!` 编进程序。每条规则写类别、风险、每个系统各自的根目录、按名字筛（`names`/`keep`）、`olderThanDays`、`ownOnly`、要先关掉的进程、中英文的名字和说明、`evidence`（官方文档链接）。加载时校验：路径只能以规定的变量开头（`vars.rs`，每个系统一套），不能有 `..`；不按名字筛的规则不能直接清空个人文件夹或 Caches、AppData 这种总文件夹；单元测试会加载全部规则 |
+| 清什么 | 清根目录下第一层的文件和文件夹。`*` 只匹配一层（浏览器的各个配置）；嵌在另一个根目录里的根目录去掉，免得算两遍 |
+| 第一期的内容 | 临时文件（7 天里没动过的，跳过套接字和锁文件）、缩略图缓存、应用日志、崩溃报告；Chrome、Edge、Brave、Vivaldi、Opera、Arc、Chromium、Firefox 的缓存（只清缓存，不碰历史、Cookie、密码、书签）；Xcode 编译数据和设备调试符号、模拟器缓存、npm、Yarn、pip、Go、Cargo、Gradle、VS Code、Cursor 的缓存；Homebrew、WinGet 下载的安装包，下载文件夹里没下完的文件，ShibaPack 自己没下完的 `.part`；回收站；用户自己加的文件夹 |
+| 散落的安装包 | 在下载文件夹、桌面和它们下面一层里找安装包（隐藏文件夹、.app、有 .git 的项目文件夹不进去）。大小和仓库里某个文件一样的才算 SHA-256，一样的归到“仓库里已有的安装包”；不一样的归到“没收进仓库的安装包”，按文件名认出软件名后写上仓库里有哪些版本，可以直接“导入仓库”（打开导入窗口） |
+| 三档风险 | 安全：删了会自己重新生成，默认勾上，直接删除（进回收站不腾空间，几万个小文件进回收站也很慢）。可恢复：默认不勾，移到回收站。高影响（清空回收站）：默认不勾，确认时要再勾“我知道清空以后就找不回来” |
+| 保护检查 | `guard.rs`，扫描和删除时每一条都查。封住的：系统文件夹、`~/.ssh`、`~/.gnupg`、钥匙串、iCloud Drive、OneDrive、Dropbox 等同步盘、ShibaPack 的仓库（例外：仓库里的 `.shibapack/downloads` 可以按名字筛着清）。个人文件夹（用户文件夹、文档、桌面、下载……）本身不能删，也不能整个清空。Caches、Logs、AppData、Temp 这类本身不能删。名字是 Cookies、Login Data、Bookmarks、History、key4.db 这类的，和里面有 `.git` 的文件夹一律不删。不跟随符号链接和联接点，不跨盘 |
+| 删除前复查 | 界面只传“项 id + 不要的条目序号”，后端在最近一次扫描结果里找路径；删每一条前再过一遍保护检查、排除列表、所有者和“最近有没有动过”。直接删除是从里往外一个一个删，删不掉的（被占用、没权限）跳过，别的照删；腾出的空间按实际删掉的文件算（还有别的硬链接的不算） |
+| 要先关掉的程序 | 浏览器、VS Code、Xcode 这类在运行时那一项不能勾，可以点“退出”：macOS 让它正常退出（AppleScript `quit`），Windows 用不带 `/F` 的 `taskkill`，Linux 发 SIGTERM，最多等 10 秒。不强行结束进程 |
+| 回收站 | macOS 量 `~/.Trash` 要“完全磁盘访问权限”，没有时大小写“未知”、给打开系统设置的按钮；清空让访达来做。Windows 用 `SHQueryRecycleBinW` / `SHEmptyRecycleBinW`。Linux 清 `~/.local/share/Trash` |
+| 借鉴 CCleaner 的 | 先扫描后清理；“一键清理”（只清安全档里勾着的）；按类别分组、整组勾选、勾选记在本机；退出浏览器的按钮；自定义清理文件夹和排除列表（清理设置窗口，条目右键“以后不清理这里”）；结果里写清楚每条跳过的原因 |
+| 不做的 | 注册表清理（只保留卸载残留里那套先备份再删的）、磁盘擦除、性能优化、驱动更新、浏览器插件管理。pnpm、uv 的缓存用硬链接分给项目，删了不腾空间，没放进来；Maven 的 `~/.m2` 里有 `mvn install` 装进去的东西，没放进来 |
+| 本机状态 | 清理设置存在本机应用数据目录的 `cleanup-options.json`，清理记录在 `cleanup-history/`（最近 20 次，每次记下删了哪些路径），都不放进仓库 |
+| macOS 授权 | 第一次扫描会问能不能访问“下载”和“桌面”（`Info.plist` 里加了 `NSDownloadsFolderUsageDescription`、`NSDesktopFolderUsageDescription`）；移到废纸篓、清空废纸篓通过访达，第一次会问能不能控制“访达” |
+
+验证情况：
+
+- 核心库新增 30 个单元测试（路径变量和通配、规则校验、保护检查、量大小和硬链接、套接字、不跟随链接、删不掉的跳过、散落安装包比对、清理记录、扫描和清理的完整流程、排除和程序运行时不删），全部通过；全部 163 个测试通过。Windows、Linux 的代码在这台 Mac 上用对应目标做过类型检查。
+- 手动运行的只读测试 `scans_this_machine`（`cargo test -p shibapack-core scans_this_machine -- --ignored --nocapture`）在这台 Mac 上 2.5 秒扫完，找到应用日志、崩溃报告、Edge、npm、pip、Go、Cargo、VS Code 的缓存和下载文件夹里的安装包，认出了正在运行的 Edge 和 VS Code。这一步发现 Edge 的 `*/GPUCache` 会匹配到另一个根目录下面，已改成去掉嵌套的根目录。
+- 界面在浏览器里用模拟后端检查过 macOS 和 Windows（地址后加 `?windows`）两种样子：扫描时一项一项出来、一键清理、确认和结果窗口、退出程序、回收站的二次确认、清理记录、清理设置（加仓库会被拦下）、导入仓库、深色主题、窄窗口下浮动的详情栏。
+- **没有实测的**：没有在桌面窗口里跑过真的清理（删除、移到回收站、清空废纸篓、退出程序、访达和文件夹的授权提示）；Windows 和 Linux 上的实际运行。
+
+### 清理（第二期）
+
+用户说“继续下一阶段的修改”。Cookie 保留名单要改浏览器自己的 SQLite 数据库，问过用户，选了“加 rusqlite，做保留名单”：rusqlite（`bundled`，放在核心库的 `sqlite` 功能里，默认开）只用来改浏览器的 Cookie 文件，ShibaPack 自己的数据照旧不用数据库。
+
+| 项 | 说明 |
+|---|---|
+| 应用缓存 | 新类别“应用”（`rules/apps.toml`）：Slack、Discord、Notion、Obsidian、Claude 的 Electron 缓存（Cache、Code Cache、GPUCache 等，登录状态、设置、内容不在里面），ChatGPT（macOS）的网络缓存。Spotify、Steam 没有官方说明哪些能删，没放进来 |
+| 隐私痕迹 | 新类别“隐私痕迹”（`rules/privacy.toml`），一律默认不勾、直接删除（进回收站等于没删）、高影响（确认时要勾“我知道这些删了就找不回来”）。Chrome、Edge、Brave、Vivaldi、Opera、Arc、Chromium 的浏览记录（History、Visited Links、Top Sites、Shortcuts、Network Action Predictor 和它们的 -journal）和 Cookie（配置文件夹和它下面 Network 里的 Cookies）；Firefox 的 Cookie（cookies.sqlite）；Windows 的最近使用的文件和跳转列表；剪贴板（macOS 用 pbcopy，Windows 用剪贴板接口，Linux 用 wl-copy 或 xsel，都没有时不列）。Firefox 的历史和书签在同一个文件里，不清；macOS 的“最近使用的项目”要完全磁盘访问权限，不清 |
+| 保护检查的放宽 | 名字分成两组：密码（Login Data）、书签、自动填充（Web Data）、加密密钥（Local State）、key4.db、logins.json、places.sqlite 这些一律不删；History、Cookies 这类只有隐私痕迹的规则能删。隐私痕迹的规则必须按名字筛、直接删除、不能是安全档（校验时检查） |
+| Cookie 保留名单 | 清理设置里加网站（输入网址或域名会规范成域名，也可以从“浏览器里有 Cookie 的网站”里点选，这个列表是先复制一份 Cookie 文件再读的）。有保留名单时不删 Cookie 文件，而是删掉数据库里名单以外网站的记录（名单里的域名和它的子域名都保留），再整理数据库；-journal、-wal、-shm 不动。没有保留名单时整个文件删掉。浏览器开着时数据库锁住，跳过并写“正在被使用” |
+| 要管理员权限的位置 | `rules/admin.toml`，默认不勾，只能用 `rule::ADMIN_ROOTS` 列出来的系统文件夹（保护检查里给这几个开了口子，别的系统文件夹照旧封住）。macOS：/Library/Caches（苹果自己的不碰）。Windows：Windows\Temp（7 天里没动过的）、SoftwareDistribution\Download、内存转储（MEMORY.DMP、Minidump）、系统错误报告（ProgramData 下的 WER）、传递优化缓存（不删文件，在提权的进程里运行 `Delete-DeliveryOptimizationCache -Force`）。普通权限读不到的，大小写“未知” |
+| 提权 | `cleanup/elevate.rs`。清理时要管理员权限的项另外放一批，一次授权做完：Windows 用 `Start-Process -Verb RunAs` 弹 UAC，macOS 用 `osascript … with administrator privileges` 输入密码，再启动一次 ShibaPack（带 `--shibapack-clean` 参数，只做清理、不开窗口）。交给它的只有规则 id、界面上去掉的条目路径和用户设置，它自己按规则重新量一遍、按同一套保护检查清理，只认要管理员权限的规则。用户在授权提示里取消时那几项写“已取消”。等授权时底部写“等待管理员授权…” |
+| Windows.old | 列出来但不能勾，详情栏的按钮打开系统设置的存储页，在“临时文件”里删。ShibaPack 不直接删它 |
+| 又长了多少 | 详情栏的“上次清理”：从清理记录里找这一项最近一次清理，写“3 天前清掉 1.2 GB，之后又长了 412 MB” |
+| 没做的 | Spotify、Steam（没有官方说明）；Windows 的 CBS 日志（没找到官方说明哪些能删）；Linux 的最近使用的文件；Firefox 的浏览记录 |
+
+验证情况：
+
+- 核心库新增 7 个单元测试（系统文件夹只给要管理员权限的规则用、隐私规则的校验、隐私名字和密码名字的区分、管理员文件夹的开口、域名规范化和子域名匹配、用真的 SQLite 文件按保留名单删 Chromium 和 Firefox 的 Cookie、提权清单的读写和只认管理员规则），全部 170 个测试通过。Windows、Linux 的代码在这台 Mac 上做过类型检查（不带 sqlite 功能，因为交叉编译不了 SQLite 的 C 代码；Cookie 部分和平台无关，在这台 Mac 上测过）。
+- 在这台 Mac 上只读扫描：多出了 Claude 缓存（595 MB，认出了正在运行）、Edge 浏览记录和 Cookie、剪贴板、/Library/Caches。
+- 浏览器预览（macOS 和 `?windows`）：新类别、隐私项默认不勾、Cookie 保留名单（输入网址、点选建议、连着加几个不会互相盖掉，这个问题是检查时发现并修好的）、确认窗口里的保留名单和管理员提示、等待授权、跳过原因、Windows.old 打开存储设置、“上次清理”。
+- **没有实测的**：桌面窗口里的提权清理（UAC、macOS 密码框）、真的浏览器 Cookie 文件、剪贴板；Windows 和 Linux 上的实际运行。
 
 ### 不纳入的清单项
 

@@ -18,11 +18,14 @@ import { useDrag } from "./lib/drag";
 import { dropOnCategory, fileDropTargetAt } from "./lib/filedrop";
 import { SIDEBAR, usePrefs } from "./lib/prefs";
 import { useStartup } from "./lib/startup";
-import { useApp, useT } from "./lib/store";
+import { type Route, useApp, useT } from "./lib/store";
 import { scheduleUpdateChecks } from "./lib/updater";
 import { InstalledDetail, InstalledView } from "./views/InstalledView";
 import { LibraryView } from "./views/LibraryView";
 import { StartupDetail, StartupView } from "./views/StartupView";
+import { CleanupDetail, CleanupView } from "./views/CleanupView";
+import { CleanupDialogs } from "./components/CleanupDialogs";
+import { useCleanup } from "./lib/cleanup";
 
 export default function App() {
   const t = useT();
@@ -37,12 +40,13 @@ export default function App() {
   const detailOpen = usePrefs((state) => state.detailOpen);
   const setPrefs = usePrefs((state) => state.set);
   const startupSelected = useStartup((state) => state.selectedId !== null);
+  const cleanupSelected = useCleanup((state) => state.selectedId !== null);
   const softwareSelected = useApp((state) => (state.route === "installed" ? state.selectedInstalledId : state.selectedId) !== null);
-  const hasSelection = route === "startup" ? startupSelected : softwareSelected;
+  const hasSelection = route === "startup" ? startupSelected : route === "cleanup" ? cleanupSelected : softwareSelected;
 
   // 存储页不需要详情栏；详情栏收起时中间栏占满。
   // 窗口太窄、中间栏放不下时，详情栏不再占一栏，选中软件时浮在列表右侧
-  const withDetail = (route === "library" || route === "installed" || route === "startup") && detailOpen;
+  const withDetail = (route === "library" || route === "installed" || route === "startup" || route === "cleanup") && detailOpen;
   const dockMinWidth = sidebarWidth + detailWidth + MAIN_MIN;
   const { width: windowWidth, toggle, resizing } = useWindowLayout(detailWidth, dockMinWidth);
   const cramped = windowWidth < dockMinWidth;
@@ -113,6 +117,7 @@ export default function App() {
       const app = useApp.getState();
       if (app.route === "installed") app.selectInstalled(null);
       else if (app.route === "startup") useStartup.getState().select(null);
+      else if (app.route === "cleanup") useCleanup.getState().select(null);
       else app.select(null);
     };
     window.addEventListener("keydown", onKey);
@@ -149,13 +154,15 @@ export default function App() {
           {route === "library" && <LibraryView detailToggle={detailToggle} />}
           {route === "installed" && <InstalledView detailToggle={detailToggle} />}
           {route === "startup" && <StartupView detailToggle={detailToggle} />}
+          {route === "cleanup" && <CleanupView detailToggle={detailToggle} />}
           {dropping && (
             <div className="pointer-events-none absolute inset-2 z-20 flex animate-fade flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-accent bg-accent-soft text-accent backdrop-blur-sm">
               <Download size={28} strokeWidth={1.5} aria-hidden />
               <span className="text-[13px] font-medium">{t("import.drop")}</span>
             </div>
           )}
-          <AddMenuButton coveredWidth={floating ? floatingDetailWidth : 0} />
+          {/* 清理页底部有自己的清理按钮，不放添加按钮 */}
+          {route !== "cleanup" && <AddMenuButton coveredWidth={floating ? floatingDetailWidth : 0} />}
           {/* 状态栏只占中间一栏，左边的侧栏和右边的详情栏一直到窗口底部 */}
           <StatusBar />
         </main>
@@ -163,7 +170,7 @@ export default function App() {
           <>
             <ResizeHandle edge="right" width={detailWidth} onResize={(width) => setPrefs({ detailWidth: width })} />
             <aside className="min-h-0 shrink-0 motion-safe:animate-fade" style={{ width: detailWidth }}>
-              {route === "library" ? <PackageDetail /> : route === "installed" ? <InstalledDetail /> : <StartupDetail />}
+              <DetailFor route={route} />
             </aside>
           </>
         )}
@@ -173,7 +180,7 @@ export default function App() {
             className="absolute right-0 bottom-(--bottom-bar-height) z-30 min-h-0 animate-fade border-l border-line bg-bg shadow-pop"
             style={{ width: floatingDetailWidth, top: route !== "installed" && windowWidth - sidebarWidth < 440 ? 68 : 44 }}
           >
-            {route === "library" ? <PackageDetail /> : route === "installed" ? <InstalledDetail /> : <StartupDetail />}
+            <DetailFor route={route} />
           </aside>
         )}
       </div>
@@ -182,6 +189,7 @@ export default function App() {
       <ImportDialog />
       <ClassifyDialog />
       <UninstallDialog />
+      <CleanupDialogs />
       <DialogHost />
       <ToastView />
       <UpdateCard />
@@ -271,4 +279,12 @@ function useWindowLayout(detailWidth: number, dockMinWidth: number) {
   };
 
   return { width, toggle, resizing };
+}
+
+/** 详情栏里放哪一个：跟着中间栏的页面走。 */
+function DetailFor({ route }: { route: Route }) {
+  if (route === "library") return <PackageDetail />;
+  if (route === "installed") return <InstalledDetail />;
+  if (route === "cleanup") return <CleanupDetail />;
+  return <StartupDetail />;
 }

@@ -1,0 +1,37 @@
+# 安装包相关：包管理器下载的安装包、没下完的文件。
+# 散落在下载文件夹和桌面上的安装包、ShibaPack 自己没下完的文件要和仓库比对，写在 special.rs 里。
+
+[[rule]]
+id = "installers.homebrew"
+category = "installers"
+risk = "safe"
+app = "Homebrew"
+roots = { macos = ["${user_cache}/Homebrew"], linux = ["${xdg_cache}/Homebrew"] }
+name = { zh = "Homebrew 下载缓存", en = "Homebrew download cache" }
+about = { zh = "Homebrew 下载过的安装包和软件包信息，装完以后一般用不到。", en = "Installers and package metadata Homebrew downloaded. Usually not needed after installing." }
+effect = { zh = "重新安装或升级时要重新下载。已经装好的软件不受影响。", en = "Downloaded again when you reinstall or upgrade. Installed software is not affected." }
+evidence = "https://docs.brew.sh/FAQ"
+
+[[rule]]
+id = "installers.winget"
+category = "installers"
+risk = "safe"
+app = "WinGet"
+processes = { windows = ["winget.exe"] }
+roots = { windows = ["${temp}/WinGet"] }
+name = { zh = "WinGet 下载的安装包", en = "WinGet downloads" }
+about = { zh = "WinGet 安装软件时下载的安装程序，装完常常留在临时文件夹里。", en = "Installers WinGet downloaded while installing software. They often stay in the temporary folder." }
+effect = { zh = "重新安装时要重新下载。已经装好的软件不受影响。", en = "Downloaded again when you reinstall. Installed software is not affected." }
+evidence = "https://learn.microsoft.com/en-us/windows/package-manager/winget/"
+
+[[rule]]
+id = "installers.partial-downloads"
+category = "installers"
+risk = "recoverable"
+roots = { macos = ["${downloads}"], windows = ["${downloads}"], linux = ["${downloads}"] }
+names = ["*.crdownload", "*.part", "*.partial", "*.download", "*.opdownload"]
+olderThanDays = 7
+name = { zh = "没下完的文件", en = "Unfinished downloads" }
+about = { zh = "下载文件夹里浏览器没下完的文件，7 天里都没动过。", en = "Files in Downloads that a browser never finished, untouched for 7 days." }
+effect = { zh = "移到回收站。之后没法从断点接着下。", en = "Moved to the Recycle Bin/Trash. These downloads can no longer be resumed." }
+evidence = "https://support.mozilla.org/kb/where-find-and-manage-downloaded-files-firefox"

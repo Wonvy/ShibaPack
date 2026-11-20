@@ -1,0 +1,66 @@
+# 系统：临时文件、缩略图缓存、日志、崩溃报告。只清当前用户自己的，不需要管理员权限。
+# 字段说明见 rule.rs，路径里的变量见 vars.rs。
+
+[[rule]]
+id = "system.temp"
+category = "system"
+risk = "safe"
+roots = { macos = ["${temp}"], windows = ["${temp}"], linux = ["${temp}"] }
+olderThanDays = 7
+ownOnly = true
+# 正在运行的程序的套接字、锁文件，和单独列出来的 WinGet 下载缓存
+keep = [
+  "WinGet", ".X11-unix", ".ICE-unix", ".font-unix", ".XIM-unix", ".Test-unix", "systemd-private-*", "snap-private-tmp",
+  "ssh-*", "tmux-*", "com.apple.*", "TemporaryItems", "*.lock", "*.pid", "*.sock",
+]
+name = { zh = "临时文件", en = "Temporary files" }
+about = { zh = "程序运行时放在临时文件夹里的文件，用完后常常没有删掉。这里只算 7 天里都没动过的。", en = "Files that programs put in the temporary folder and often leave behind. Only items untouched for 7 days are counted." }
+effect = { zh = "不影响已经安装的软件。最近用过的、正在用的不会算进来。", en = "Installed software is not affected. Recently used or in-use items are left alone." }
+evidence = "https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-gettemppathw"
+
+[[rule]]
+id = "system.thumbnails"
+category = "system"
+risk = "safe"
+roots = { linux = ["${xdg_cache}/thumbnails"] }
+name = { zh = "缩略图缓存", en = "Thumbnail cache" }
+about = { zh = "文件管理器为图片、视频生成的预览小图。", en = "Preview images the file manager generates for pictures and videos." }
+effect = { zh = "下次打开文件夹时重新生成，第一次会慢一点。", en = "Regenerated the next time you open a folder, a little slower the first time." }
+evidence = "https://specifications.freedesktop.org/thumbnail-spec/latest/"
+
+[[rule]]
+id = "system.thumbnail-db"
+category = "system"
+risk = "safe"
+roots = { windows = ["${local_app_data}/Microsoft/Windows/Explorer"] }
+names = ["thumbcache_*.db"]
+name = { zh = "缩略图缓存", en = "Thumbnail cache" }
+about = { zh = "资源管理器为图片、视频生成的预览小图，存在 thumbcache 数据库里。", en = "Preview images File Explorer generates for pictures and videos, stored in the thumbcache databases." }
+effect = { zh = "下次打开文件夹时重新生成。资源管理器正在用的会跳过，通常要注销后再清才清得掉。", en = "Regenerated the next time you open a folder. Files in use by Explorer are skipped; signing out first usually frees them." }
+evidence = "https://learn.microsoft.com/en-us/windows/win32/shell/thumbnail-providers"
+
+[[rule]]
+id = "system.logs"
+category = "system"
+risk = "recoverable"
+roots = { macos = ["${user_logs}"] }
+# 崩溃报告单独一项
+keep = ["DiagnosticReports"]
+name = { zh = "应用日志", en = "App logs" }
+about = { zh = "应用写下的运行记录，排查问题时才用得到，时间长了会越积越多。", en = "Activity records apps write for troubleshooting. They pile up over time." }
+effect = { zh = "移到废纸篓。应用会重新开始记，以前的记录就看不到了。", en = "Moved to the Trash. Apps start new logs; older records are gone." }
+evidence = "https://developer.apple.com/library/archive/documentation/FileManagement/Conceptual/FileSystemProgrammingGuide/MacOSXDirectories/MacOSXDirectories.html"
+
+[[rule]]
+id = "system.crash-reports"
+category = "system"
+risk = "recoverable"
+roots = { macos = ["${user_logs}/DiagnosticReports"], windows = [
+  "${local_app_data}/CrashDumps",
+  "${local_app_data}/Microsoft/Windows/WER/ReportArchive",
+  "${local_app_data}/Microsoft/Windows/WER/ReportQueue",
+] }
+name = { zh = "崩溃报告", en = "Crash reports" }
+about = { zh = "程序崩溃时系统记下的报告和内存转储，转储文件常常很大。", en = "Reports and memory dumps the system records when a program crashes. Dumps are often large." }
+effect = { zh = "移到回收站。以后没法再拿这些报告查崩溃原因。", en = "Moved to the Recycle Bin/Trash. You can no longer use these reports to investigate crashes." }
+evidence = "https://learn.microsoft.com/en-us/windows/win32/wer/collecting-user-mode-dumps"

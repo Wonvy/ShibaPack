@@ -5,5 +5,10 @@
 	<!-- 列出和修改“登录时打开”的项目要通过“系统事件”，第一次用时系统会弹出授权提示，显示这句话 -->
 	<key>NSAppleEventsUsageDescription</key>
 	<string>ShibaPack 需要通过“系统事件”读取和修改登录项（登录时打开的应用），以便在“启动与服务”里管理它们。</string>
+	<!-- 清理时要在“下载”和“桌面”里找散落的安装包，第一次扫描时系统会弹出授权提示，显示这两句话 -->
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>ShibaPack 会在“下载”文件夹里找散落的安装包和没下完的文件，和仓库比对后列在“清理”里，由你决定是否清理。</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>ShibaPack 会在桌面上找散落的安装包，和仓库比对后列在“清理”里，由你决定是否清理。</string>
 </dict>
 </plist>

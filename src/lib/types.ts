@@ -491,3 +491,110 @@ export interface VerifyReport {
   checked: number;
   problems: MissingFile[];
 }
+
+// ── 清理 ─────────────────────────────────────────────────────
+
+export type CleanCategory = "system" | "browser" | "apps" | "development" | "installers" | "privacy" | "trash" | "custom";
+/** safe：删了会自己重新生成，默认勾选、直接删除；recoverable、high：默认不勾、移到回收站（high 确认时要再勾一次）。 */
+export type CleanRisk = "safe" | "recoverable" | "high";
+export type CleanAction = "delete" | "trash" | "emptyTrash" | "clearClipboard";
+
+/** 清理规则自带的两种语言的文字，别的语言用英文。 */
+export interface BiText {
+  zh: string;
+  en: string;
+}
+
+export interface CleanEntry {
+  /** 在这一项里的序号。不想清某一条时把序号传回去。 */
+  index: number;
+  path: string;
+  size: number;
+  files: number;
+  modified: number | null;
+  /** 散落的安装包：仓库里对应的软件。`same` 表示和仓库里的文件一模一样。 */
+  library: { software: string; versions: string[]; same: boolean } | null;
+}
+
+export interface CleanItem {
+  id: string;
+  category: CleanCategory;
+  risk: CleanRisk;
+  action: CleanAction;
+  name: BiText;
+  about: BiText;
+  effect: BiText;
+  app: string | null;
+  evidence: string | null;
+  roots: string[];
+  /** 读不到时（macOS 的废纸篓要完全磁盘访问权限）是 null。 */
+  size: number | null;
+  files: number;
+  /** 最大的在前，最多 200 条。 */
+  entries: CleanEntry[];
+  entryCount: number;
+  modified: number | null;
+  /** 要先关掉的程序正在运行。 */
+  running: boolean;
+  canQuit: boolean;
+  /** `unreadable`、`full_disk_access`。 */
+  note: string | null;
+  /** 还没收进仓库的安装包，可以导入。 */
+  importable: boolean;
+  /** 要管理员权限：清理时一起交给提权的进程（Windows 弹 UAC，macOS 输入密码）。 */
+  admin: boolean;
+  /** 浏览器的 Cookie：有保留名单时只删名单以外的网站。 */
+  cookies: boolean;
+  /** 这里不清，要到系统设置里清（`storage`：存储设置）。 */
+  tool: string | null;
+}
+
+export interface CleanPick {
+  id: string;
+  skip: number[];
+}
+
+export interface CleanSkipped {
+  item: string;
+  path: string | null;
+  reason: string;
+}
+
+export interface CleanReport {
+  freed: number;
+  trashed: number;
+  removed: number;
+  items: { id: string; freed: number; trashed: number; removed: number; skipped: number }[];
+  skipped: CleanSkipped[];
+  skippedCount: number;
+  history: string | null;
+}
+
+export interface CleanOptions {
+  custom: string[];
+  exclude: string[];
+  /** 清 Cookie 时保留这些网站（域名，包括子域名）。 */
+  keepCookies: string[];
+}
+
+/** 浏览器里有 Cookie 的网站：给保留名单出主意。 */
+export interface CookieSite {
+  site: string;
+  count: number;
+}
+
+export interface CleanRun {
+  id: string;
+  at: string;
+  freed: number;
+  trashed: number;
+  items: { id: string; name: BiText; freed: number; trashed: number; removed: number; paths: string[]; more: number }[];
+  skipped: number;
+}
+
+export interface CleanProgress {
+  done: number;
+  total: number;
+  /** 正在等用户在系统的授权提示里输入密码或点“是”。 */
+  waitingAdmin: boolean;
+}

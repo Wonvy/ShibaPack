@@ -1,0 +1,184 @@
+# 开发工具：包管理器、编译器、编辑器的缓存。
+# 用硬链接把缓存分给各个项目的（pnpm、uv）不在这里：删缓存腾不出空间，要用它们自己的 prune 命令。
+# Maven 的 ~/.m2 也不在这里：里面有 `mvn install` 装进去的、没法重新下载的东西。
+
+[[rule]]
+id = "development.xcode-derived-data"
+category = "development"
+risk = "safe"
+app = "Xcode"
+processes = { macos = ["Xcode"] }
+roots = { macos = ["${user_library}/Developer/Xcode/DerivedData"] }
+name = { zh = "Xcode 编译数据", en = "Xcode derived data" }
+about = { zh = "Xcode 编译项目时生成的中间文件、索引和编译结果，每个项目一份，项目多了会很大。", en = "Intermediate files, indexes and build products Xcode creates for each project. Grows large with many projects." }
+effect = { zh = "下次打开项目会重新建索引，第一次编译要从头来。", en = "Projects re-index on next open and the first build starts from scratch." }
+evidence = "https://developer.apple.com/documentation/xcode/build-system"
+
+[[rule]]
+id = "development.xcode-simulator-caches"
+category = "development"
+risk = "safe"
+app = "Simulator"
+processes = { macos = ["Simulator"] }
+roots = { macos = ["${user_library}/Developer/CoreSimulator/Caches"] }
+name = { zh = "模拟器缓存", en = "Simulator caches" }
+about = { zh = "iOS 模拟器的动态库缓存，换系统版本后旧的会留着。", en = "Dynamic library caches of the iOS Simulator. Old ones stay after runtime updates." }
+effect = { zh = "下次启动模拟器时重新生成，会慢一些。模拟器里装的应用和数据不受影响。", en = "Regenerated the next time a simulator boots, which takes longer. Apps and data in simulators are not affected." }
+evidence = "https://developer.apple.com/documentation/xcode/running-your-app-in-simulator-or-on-a-device"
+
+[[rule]]
+id = "development.xcode-device-support"
+category = "development"
+risk = "recoverable"
+app = "Xcode"
+processes = { macos = ["Xcode"] }
+roots = { macos = [
+  "${user_library}/Developer/Xcode/iOS DeviceSupport",
+  "${user_library}/Developer/Xcode/watchOS DeviceSupport",
+  "${user_library}/Developer/Xcode/tvOS DeviceSupport",
+  "${user_library}/Developer/Xcode/visionOS DeviceSupport",
+] }
+name = { zh = "设备调试符号", en = "Device support files" }
+about = { zh = "连过 Xcode 的每台设备、每个系统版本各复制一份调试符号，一份就有几个 GB。", en = "Debug symbols Xcode copies for every device and OS version you connected. Each copy is several GB." }
+effect = { zh = "移到废纸篓。下次连那台设备调试时 Xcode 会重新复制，要等一会儿。", en = "Moved to the Trash. Xcode copies them again the next time you debug on that device." }
+evidence = "https://developer.apple.com/documentation/xcode/running-your-app-in-simulator-or-on-a-device"
+
+[[rule]]
+id = "development.npm"
+category = "development"
+risk = "safe"
+app = "npm"
+roots = { macos = ["${home}/.npm/_cacache"], windows = ["${local_app_data}/npm-cache/_cacache"], linux = ["${home}/.npm/_cacache"] }
+name = { zh = "npm 缓存", en = "npm cache" }
+about = { zh = "npm 下载过的包。npm 会自己校验缓存，坏了也会重新下载。", en = "Packages npm has downloaded. npm verifies the cache and re-downloads anything missing." }
+effect = { zh = "下次安装依赖时重新下载。已经装在项目里的不受影响。", en = "Packages are downloaded again on next install. Dependencies already in projects are not affected." }
+evidence = "https://docs.npmjs.com/cli/commands/npm-cache"
+
+[[rule]]
+id = "development.yarn"
+category = "development"
+risk = "safe"
+app = "Yarn"
+roots.macos = ["${user_cache}/Yarn", "${home}/.yarn/berry/cache"]
+roots.windows = ["${local_app_data}/Yarn/Cache", "${home}/.yarn/berry/cache"]
+roots.linux = ["${xdg_cache}/yarn", "${home}/.yarn/berry/cache"]
+name = { zh = "Yarn 缓存", en = "Yarn cache" }
+about = { zh = "Yarn 下载过的包。", en = "Packages Yarn has downloaded." }
+effect = { zh = "下次安装依赖时重新下载。已经装在项目里的不受影响。", en = "Packages are downloaded again on next install. Dependencies already in projects are not affected." }
+evidence = "https://classic.yarnpkg.com/lang/en/docs/cli/cache/"
+
+[[rule]]
+id = "development.pip"
+category = "development"
+risk = "safe"
+app = "pip"
+roots = { macos = ["${user_cache}/pip"], windows = ["${local_app_data}/pip/Cache"], linux = ["${xdg_cache}/pip"] }
+name = { zh = "pip 缓存", en = "pip cache" }
+about = { zh = "pip 下载过的包和编译好的 wheel。", en = "Packages and built wheels pip has downloaded." }
+effect = { zh = "下次安装时重新下载。已经装好的 Python 包不受影响。", en = "Packages are downloaded again on next install. Installed Python packages are not affected." }
+evidence = "https://pip.pypa.io/en/stable/topics/caching/"
+
+[[rule]]
+id = "development.go-build"
+category = "development"
+risk = "safe"
+app = "Go"
+roots = { macos = ["${user_cache}/go-build"], windows = ["${local_app_data}/go-build"], linux = ["${xdg_cache}/go-build"] }
+name = { zh = "Go 编译缓存", en = "Go build cache" }
+about = { zh = "Go 编译和测试时记下的中间结果，用来加快下次编译。", en = "Intermediate results Go keeps from builds and tests to speed up the next build." }
+effect = { zh = "下次编译要从头来，会慢一些。", en = "The next build starts from scratch and takes longer." }
+evidence = "https://pkg.go.dev/cmd/go"
+
+[[rule]]
+id = "development.cargo"
+category = "development"
+risk = "recoverable"
+app = "Cargo"
+roots = { macos = ["${home}/.cargo/registry/cache", "${home}/.cargo/registry/src"], windows = ["${home}/.cargo/registry/cache", "${home}/.cargo/registry/src"], linux = ["${home}/.cargo/registry/cache", "${home}/.cargo/registry/src"] }
+name = { zh = "Cargo 下载的 crate", en = "Cargo downloaded crates" }
+about = { zh = "Cargo 下载的 crate 压缩包和解开的源代码。", en = "Crate archives Cargo downloaded and their extracted sources." }
+effect = { zh = "移到回收站。下次编译 Rust 项目时要重新下载，没有网络时编译不了。", en = "Moved to the Recycle Bin/Trash. Crates are downloaded again on the next build, which needs a network connection." }
+evidence = "https://doc.rust-lang.org/cargo/guide/cargo-home.html"
+
+[[rule]]
+id = "development.gradle"
+category = "development"
+risk = "recoverable"
+app = "Gradle"
+roots = { macos = ["${home}/.gradle/caches"], windows = ["${home}/.gradle/caches"], linux = ["${home}/.gradle/caches"] }
+name = { zh = "Gradle 缓存", en = "Gradle caches" }
+about = { zh = "Gradle 下载的依赖、插件和编译缓存。Android 项目多的话会很大。", en = "Dependencies, plugins and build caches Gradle downloaded. Large with many Android projects." }
+effect = { zh = "移到回收站。下次编译要重新下载依赖。Gradle 后台进程正在用的会跳过。", en = "Moved to the Recycle Bin/Trash. Dependencies are downloaded again on the next build. Files held by a running Gradle daemon are skipped." }
+evidence = "https://docs.gradle.org/current/userguide/directory_layout.html"
+
+[[rule]]
+id = "development.vscode"
+category = "development"
+risk = "safe"
+app = "Visual Studio Code"
+processes = { macos = ["Code"], windows = ["Code.exe"], linux = ["code"] }
+roots.macos = [
+  "${app_support}/Code/Cache",
+  "${app_support}/Code/CachedData",
+  "${app_support}/Code/CachedExtensionVSIXs",
+  "${app_support}/Code/Code Cache",
+  "${app_support}/Code/GPUCache",
+  "${app_support}/Code/DawnGraphiteCache",
+  "${app_support}/Code/DawnWebGPUCache",
+  "${app_support}/Code/logs",
+]
+roots.windows = [
+  "${roaming_app_data}/Code/Cache",
+  "${roaming_app_data}/Code/CachedData",
+  "${roaming_app_data}/Code/CachedExtensionVSIXs",
+  "${roaming_app_data}/Code/Code Cache",
+  "${roaming_app_data}/Code/GPUCache",
+  "${roaming_app_data}/Code/logs",
+]
+roots.linux = [
+  "${xdg_config}/Code/Cache",
+  "${xdg_config}/Code/CachedData",
+  "${xdg_config}/Code/CachedExtensionVSIXs",
+  "${xdg_config}/Code/Code Cache",
+  "${xdg_config}/Code/GPUCache",
+  "${xdg_config}/Code/logs",
+]
+name = { zh = "VS Code 缓存", en = "VS Code cache" }
+about = { zh = "VS Code 的界面缓存、各版本编译好的代码、下载过的扩展安装包和日志。", en = "VS Code's interface cache, compiled code for each version, downloaded extension packages and logs." }
+effect = { zh = "下次打开会慢一点。设置、扩展、打开过的项目都不受影响。", en = "Opens a little slower next time. Settings, extensions and recent projects are not affected." }
+evidence = "https://chromium.googlesource.com/chromium/src/+/HEAD/docs/user_data_dir.md"
+
+[[rule]]
+id = "development.cursor"
+category = "development"
+risk = "safe"
+app = "Cursor"
+processes = { macos = ["Cursor"], windows = ["Cursor.exe"], linux = ["cursor"] }
+roots.macos = [
+  "${app_support}/Cursor/Cache",
+  "${app_support}/Cursor/CachedData",
+  "${app_support}/Cursor/CachedExtensionVSIXs",
+  "${app_support}/Cursor/Code Cache",
+  "${app_support}/Cursor/GPUCache",
+  "${app_support}/Cursor/logs",
+]
+roots.windows = [
+  "${roaming_app_data}/Cursor/Cache",
+  "${roaming_app_data}/Cursor/CachedData",
+  "${roaming_app_data}/Cursor/CachedExtensionVSIXs",
+  "${roaming_app_data}/Cursor/Code Cache",
+  "${roaming_app_data}/Cursor/GPUCache",
+  "${roaming_app_data}/Cursor/logs",
+]
+roots.linux = [
+  "${xdg_config}/Cursor/Cache",
+  "${xdg_config}/Cursor/CachedData",
+  "${xdg_config}/Cursor/CachedExtensionVSIXs",
+  "${xdg_config}/Cursor/Code Cache",
+  "${xdg_config}/Cursor/GPUCache",
+  "${xdg_config}/Cursor/logs",
+]
+name = { zh = "Cursor 缓存", en = "Cursor cache" }
+about = { zh = "Cursor 的界面缓存、编译好的代码、下载过的扩展安装包和日志。", en = "Cursor's interface cache, compiled code, downloaded extension packages and logs." }
+effect = { zh = "下次打开会慢一点。设置、扩展、打开过的项目都不受影响。", en = "Opens a little slower next time. Settings, extensions and recent projects are not affected." }
+evidence = "https://chromium.googlesource.com/chromium/src/+/HEAD/docs/user_data_dir.md"

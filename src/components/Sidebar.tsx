@@ -17,6 +17,7 @@ import {
   Plus,
   RefreshCw,
   Rocket,
+  BrushCleaning,
   Settings,
   Sparkles,
   Star,
@@ -27,8 +28,9 @@ import { canMoveCategory, classify, moveCategory } from "../lib/actions";
 import { api } from "../lib/api";
 import { beginDrag, useDrag } from "../lib/drag";
 import { CATEGORY_COLORS, CATEGORY_ICONS, categoryIcon } from "../lib/icons";
-import { childrenOf, flattenTree, hasUpdate, newId, withDescendants } from "../lib/library";
+import { childrenOf, flattenTree, formatSize, hasUpdate, newId, withDescendants } from "../lib/library";
 import { SIDEBAR, usePrefs } from "../lib/prefs";
+import { useCleanup } from "../lib/cleanup";
 import { useStartup } from "../lib/startup";
 import { type Scope, useApp, useT } from "../lib/store";
 import type { Category } from "../lib/types";
@@ -52,6 +54,9 @@ export function Sidebar({ onAutoWidthChange }: { onAutoWidthChange: (width: numb
   const installedCount = useApp((state) => state.installed?.length);
   // 第三方的、开着的启动项：开机慢时最想知道的那个数
   const startupCount = useStartup((state) => state.items?.filter((i) => i.kind === "startup" && i.enabled && !i.system).length);
+  // 扫过以后显示能清理多少
+  const cleanupBytes = useCleanup((state) => (state.items && !state.scanning ? state.items.reduce((sum, item) => sum + (item.size ?? 0), 0) : null));
+  const cleanupTotal = cleanupBytes ? formatSize(cleanupBytes) : undefined;
   const width = usePrefs((state) => state.sidebarWidth);
   const setPrefs = usePrefs((state) => state.set);
   const [editing, setEditing] = useState<Editing | null>(null);
@@ -158,6 +163,7 @@ export function Sidebar({ onAutoWidthChange }: { onAutoWidthChange: (width: numb
       <div className="flex flex-col gap-px p-2 pb-0">
         {/* 启动与服务和软件库的入口用分隔线隔开 */}
         <NavRow icon={Rocket} label={t("nav.startup")} count={startupCount} active={route === "startup"} onClick={() => setRoute("startup")} />
+        <NavRow icon={BrushCleaning} label={t("nav.cleanup")} badge={cleanupTotal} active={route === "cleanup"} onClick={() => setRoute("cleanup")} />
         <Divider />
         <NavRow
           icon={LayoutGrid}
@@ -262,6 +268,7 @@ function NavRow({
   dropping,
   menu,
   action,
+  badge,
   onClick,
 }: {
   icon?: LucideIcon;
@@ -277,6 +284,8 @@ function NavRow({
   menu?: MenuEntry[];
   /** 数字左边的小按钮。 */
   action?: ReactNode;
+  /** 在数字的位置显示一段文字（清理页的可清理大小）。 */
+  badge?: string;
   onClick: () => void;
 }) {
   const row = (
@@ -300,6 +309,7 @@ function NavRow({
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {action}
       {count !== undefined && count > 0 && <Count n={count} highlight={highlight} />}
+      {badge && <span className="tabular shrink-0 text-[12px] text-fg-3">{badge}</span>}
     </div>
   );
   return menu ? <ContextMenu items={menu}>{row}</ContextMenu> : row;

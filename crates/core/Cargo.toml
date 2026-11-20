@@ -5,9 +5,11 @@ edition = "2021"
 description = "ShibaPack 的核心逻辑：索引读写、识别、导入、整理。不依赖界面。"
 
 [features]
-default = ["network"]
+default = ["network", "sqlite"]
 # 联网取软件简介。关掉后核心库不带任何网络和加密依赖。
 network = ["dep:ureq"]
+# 清理时按保留名单删浏览器 Cookie 数据库里的记录。只用来改浏览器的 Cookie 文件，ShibaPack 自己的数据不用数据库
+sqlite = ["dep:rusqlite"]
 
 [dependencies]
 serde = { version = "1", features = ["derive", "rc"] }
@@ -28,11 +30,14 @@ msi = "0.8"
 memmap2 = "0.9"
 # 卸载残留清理：文件和文件夹移到回收站（废纸篓），不直接删
 trash = "5"
+# 清理规则写在 TOML 里，编进程序
+toml = "0.8"
+rusqlite = { version = "0.40", features = ["bundled"], optional = true }
 ureq = { version = "3", features = ["json"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
-windows-sys = { version = "0.61", features = ["Win32_System_ApplicationInstallationAndServicing", "Win32_System_Environment"] }
+windows-sys = { version = "0.61", features = ["Win32_System_ApplicationInstallationAndServicing", "Win32_System_Environment", "Win32_Foundation", "Win32_UI_Shell", "Win32_System_DataExchange"] }
 
 [dev-dependencies]
 tempfile = "3"

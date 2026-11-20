@@ -6,6 +6,13 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type {
   AiProgress,
+  CleanItem,
+  CleanOptions,
+  CleanPick,
+  CleanProgress,
+  CleanReport,
+  CleanRun,
+  CookieSite,
   AiSuggestions,
   AiSettings,
   Assignment,
@@ -126,7 +133,21 @@ export const api = {
    * 打开系统自己的设置页：`loginItems` 启动项，macOS 上允许控制“系统事件”的 `automation`，
    * 允许没有签名的应用更新自己的 `appManagement`（App 管理）。
    */
-  openStartupSettings: (page: "loginItems" | "automation" | "appManagement") => call<void>("open_startup_settings", { page }),
+  openStartupSettings: (page: "loginItems" | "automation" | "appManagement" | "fullDiskAccess" | "storage") =>
+    call<void>("open_startup_settings", { page }),
+  /** 只读地找一遍能清理的东西。每量完一项通过 `onCleanupItem` 先送来。 */
+  cleanupScan: () => call<CleanItem[]>("cleanup_scan"),
+  /** 清理勾选的项（id 和不要的条目序号）。进度见 `onCleanupProgress`。 */
+  cleanupRun: (picks: CleanPick[]) => call<CleanReport>("cleanup_run", { picks }),
+  /** 让这一项要先关掉的程序正常退出。返回更新后的这一项。 */
+  cleanupQuitApp: (id: string) => call<CleanItem>("cleanup_quit_app", { id }),
+  cleanupReveal: (id: string, index: number | null) => call<void>("cleanup_reveal", { id, index }),
+  cleanupOptions: () => call<CleanOptions>("cleanup_options"),
+  /** 保存自定义的清理文件夹和排除的文件夹。受保护的文件夹返回 `cleanup_protected:路径` 这样的错误。 */
+  cleanupSetOptions: (options: CleanOptions) => call<CleanOptions>("cleanup_set_options", { options }),
+  cleanupHistory: () => call<CleanRun[]>("cleanup_history"),
+  /** 浏览器里有 Cookie 的网站（按主域名合并，多的在前）。 */
+  cleanupCookieSites: () => call<CookieSite[]>("cleanup_cookie_sites"),
   /** 记一条失败日志。 */
   logFailure: (area: string, message: string, detail?: string) => call<void>("log_failure", { area, message, detail: detail ?? null }),
   /** 最近的失败日志，新的在前。 */
@@ -259,6 +280,20 @@ export async function onAiProgress(handler: (progress: AiProgress) => void): Pro
   if (!isTauri) return (await import("./mock")).mockOnAi(handler);
   const { listen } = await import("@tauri-apps/api/event");
   return listen<AiProgress>("ai://progress", (event) => handler(event.payload));
+}
+
+/** 清理扫描时每量完一项送来一次。 */
+export async function onCleanupItem(handler: (item: CleanItem) => void): Promise<() => void> {
+  if (!isTauri) return (await import("./mockCleanup")).mockOnCleanupItem(handler);
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<CleanItem>("cleanup://item", (event) => handler(event.payload));
+}
+
+/** 清理进度。 */
+export async function onCleanupProgress(handler: (progress: CleanProgress) => void): Promise<() => void> {
+  if (!isTauri) return (await import("./mockCleanup")).mockOnCleanupProgress(handler);
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<CleanProgress>("cleanup://progress", (event) => handler(event.payload));
 }
 
 /** 把文件拖进窗口。`onHover` 在文件悬在窗口上方和离开时调用。 */

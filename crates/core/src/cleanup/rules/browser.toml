@@ -1,0 +1,259 @@
+# 浏览器：只清缓存（网页缓存、代码缓存、GPU 和着色器缓存），不碰历史、Cookie、密码、书签、扩展。
+# `*` 是浏览器的各个配置（Default、Profile 1……）。清理前要先关掉浏览器。
+#
+# Chromium 系的缓存在 macOS 上分在两处：网页和代码缓存在 Caches 里，GPU、着色器缓存在 Application Support 的配置里；
+# Linux 上同理分在 ~/.cache 和 ~/.config；Windows 上都在 User Data 下面。
+
+[[rule]]
+id = "browser.chrome"
+category = "browser"
+risk = "safe"
+app = "Google Chrome"
+processes = { macos = ["Google Chrome"], windows = ["chrome.exe"], linux = ["chrome"] }
+roots.macos = [
+  "${user_cache}/Google/Chrome/*/Cache",
+  "${user_cache}/Google/Chrome/*/Code Cache",
+  "${app_support}/Google/Chrome/*/GPUCache",
+  "${app_support}/Google/Chrome/*/DawnGraphiteCache",
+  "${app_support}/Google/Chrome/*/DawnWebGPUCache",
+  "${app_support}/Google/Chrome/GrShaderCache",
+  "${app_support}/Google/Chrome/GraphiteDawnCache",
+  "${app_support}/Google/Chrome/ShaderCache",
+]
+roots.windows = [
+  "${local_app_data}/Google/Chrome/User Data/*/Cache",
+  "${local_app_data}/Google/Chrome/User Data/*/Code Cache",
+  "${local_app_data}/Google/Chrome/User Data/*/GPUCache",
+  "${local_app_data}/Google/Chrome/User Data/*/DawnGraphiteCache",
+  "${local_app_data}/Google/Chrome/User Data/*/DawnWebGPUCache",
+  "${local_app_data}/Google/Chrome/User Data/GrShaderCache",
+  "${local_app_data}/Google/Chrome/User Data/GraphiteDawnCache",
+  "${local_app_data}/Google/Chrome/User Data/ShaderCache",
+]
+roots.linux = [
+  "${xdg_cache}/google-chrome/*/Cache",
+  "${xdg_cache}/google-chrome/*/Code Cache",
+  "${xdg_config}/google-chrome/*/GPUCache",
+  "${xdg_config}/google-chrome/*/DawnGraphiteCache",
+  "${xdg_config}/google-chrome/*/DawnWebGPUCache",
+  "${xdg_config}/google-chrome/GrShaderCache",
+  "${xdg_config}/google-chrome/GraphiteDawnCache",
+  "${xdg_config}/google-chrome/ShaderCache",
+]
+name = { zh = "Chrome 缓存", en = "Chrome cache" }
+about = { zh = "Chrome 存下的网页文件、脚本编译结果和显卡着色器，用来让常去的网站打开得快一点。", en = "Web files, compiled scripts and GPU shaders Chrome keeps so sites you visit often load faster." }
+effect = { zh = "网站第一次打开会慢一点。登录状态、历史、密码、书签都不受影响。", en = "Sites load a little slower the first time. Sign-ins, history, passwords and bookmarks are not affected." }
+evidence = "https://chromium.googlesource.com/chromium/src/+/HEAD/docs/user_data_dir.md"
+
+[[rule]]
+id = "browser.edge"
+category = "browser"
+risk = "safe"
+app = "Microsoft Edge"
+processes = { macos = ["Microsoft Edge"], windows = ["msedge.exe"], linux = ["msedge"] }
+roots.macos = [
+  "${user_cache}/Microsoft Edge/*/Cache",
+  "${user_cache}/Microsoft Edge/*/Code Cache",
+  "${app_support}/Microsoft Edge/*/GPUCache",
+  "${app_support}/Microsoft Edge/*/DawnGraphiteCache",
+  "${app_support}/Microsoft Edge/*/DawnWebGPUCache",
+  "${app_support}/Microsoft Edge/GrShaderCache",
+  "${app_support}/Microsoft Edge/GraphiteDawnCache",
+  "${app_support}/Microsoft Edge/GPUPersistentCache",
+  "${app_support}/Microsoft Edge/ShaderCache",
+]
+roots.windows = [
+  "${local_app_data}/Microsoft/Edge/User Data/*/Cache",
+  "${local_app_data}/Microsoft/Edge/User Data/*/Code Cache",
+  "${local_app_data}/Microsoft/Edge/User Data/*/GPUCache",
+  "${local_app_data}/Microsoft/Edge/User Data/*/DawnGraphiteCache",
+  "${local_app_data}/Microsoft/Edge/User Data/*/DawnWebGPUCache",
+  "${local_app_data}/Microsoft/Edge/User Data/GrShaderCache",
+  "${local_app_data}/Microsoft/Edge/User Data/GraphiteDawnCache",
+  "${local_app_data}/Microsoft/Edge/User Data/GPUPersistentCache",
+  "${local_app_data}/Microsoft/Edge/User Data/ShaderCache",
+]
+roots.linux = [
+  "${xdg_cache}/microsoft-edge/*/Cache",
+  "${xdg_cache}/microsoft-edge/*/Code Cache",
+  "${xdg_config}/microsoft-edge/*/GPUCache",
+  "${xdg_config}/microsoft-edge/GrShaderCache",
+  "${xdg_config}/microsoft-edge/ShaderCache",
+]
+name = { zh = "Edge 缓存", en = "Edge cache" }
+about = { zh = "Edge 存下的网页文件、脚本编译结果和显卡着色器，用来让常去的网站打开得快一点。", en = "Web files, compiled scripts and GPU shaders Edge keeps so sites you visit often load faster." }
+effect = { zh = "网站第一次打开会慢一点。登录状态、历史、密码、收藏夹都不受影响。", en = "Sites load a little slower the first time. Sign-ins, history, passwords and favorites are not affected." }
+evidence = "https://chromium.googlesource.com/chromium/src/+/HEAD/docs/user_data_dir.md"
+
+[[rule]]
+id = "browser.brave"
+category = "browser"
+risk = "safe"
+app = "Brave Browser"
+processes = { macos = ["Brave Browser"], windows = ["brave.exe"], linux = ["brave"] }
+roots.macos = [
+  "${user_cache}/BraveSoftware/Brave-Browser/*/Cache",
+  "${user_cache}/BraveSoftware/Brave-Browser/*/Code Cache",
+  "${app_support}/BraveSoftware/Brave-Browser/*/GPUCache",
+  "${app_support}/BraveSoftware/Brave-Browser/GrShaderCache",
+  "${app_support}/BraveSoftware/Brave-Browser/ShaderCache",
+]
+roots.windows = [
+  "${local_app_data}/BraveSoftware/Brave-Browser/User Data/*/Cache",
+  "${local_app_data}/BraveSoftware/Brave-Browser/User Data/*/Code Cache",
+  "${local_app_data}/BraveSoftware/Brave-Browser/User Data/*/GPUCache",
+  "${local_app_data}/BraveSoftware/Brave-Browser/User Data/GrShaderCache",
+  "${local_app_data}/BraveSoftware/Brave-Browser/User Data/ShaderCache",
+]
+roots.linux = [
+  "${xdg_cache}/BraveSoftware/Brave-Browser/*/Cache",
+  "${xdg_cache}/BraveSoftware/Brave-Browser/*/Code Cache",
+  "${xdg_config}/BraveSoftware/Brave-Browser/*/GPUCache",
+  "${xdg_config}/BraveSoftware/Brave-Browser/GrShaderCache",
+  "${xdg_config}/BraveSoftware/Brave-Browser/ShaderCache",
+]
+name = { zh = "Brave 缓存", en = "Brave cache" }
+about = { zh = "Brave 存下的网页文件、脚本编译结果和显卡着色器。", en = "Web files, compiled scripts and GPU shaders Brave keeps." }
+effect = { zh = "网站第一次打开会慢一点。登录状态、历史、密码、书签都不受影响。", en = "Sites load a little slower the first time. Sign-ins, history, passwords and bookmarks are not affected." }
+evidence = "https://chromium.googlesource.com/chromium/src/+/HEAD/docs/user_data_dir.md"
+
+[[rule]]
+id = "browser.vivaldi"
+category = "browser"
+risk = "safe"
+app = "Vivaldi"
+processes = { macos = ["Vivaldi"], windows = ["vivaldi.exe"], linux = ["vivaldi-bin"] }
+roots.macos = [
+  "${user_cache}/Vivaldi/*/Cache",
+  "${user_cache}/Vivaldi/*/Code Cache",
+  "${app_support}/Vivaldi/*/GPUCache",
+  "${app_support}/Vivaldi/GrShaderCache",
+  "${app_support}/Vivaldi/ShaderCache",
+]
+roots.windows = [
+  "${local_app_data}/Vivaldi/User Data/*/Cache",
+  "${local_app_data}/Vivaldi/User Data/*/Code Cache",
+  "${local_app_data}/Vivaldi/User Data/*/GPUCache",
+  "${local_app_data}/Vivaldi/User Data/GrShaderCache",
+  "${local_app_data}/Vivaldi/User Data/ShaderCache",
+]
+roots.linux = [
+  "${xdg_cache}/vivaldi/*/Cache",
+  "${xdg_cache}/vivaldi/*/Code Cache",
+  "${xdg_config}/vivaldi/*/GPUCache",
+  "${xdg_config}/vivaldi/GrShaderCache",
+  "${xdg_config}/vivaldi/ShaderCache",
+]
+name = { zh = "Vivaldi 缓存", en = "Vivaldi cache" }
+about = { zh = "Vivaldi 存下的网页文件、脚本编译结果和显卡着色器。", en = "Web files, compiled scripts and GPU shaders Vivaldi keeps." }
+effect = { zh = "网站第一次打开会慢一点。登录状态、历史、密码、书签都不受影响。", en = "Sites load a little slower the first time. Sign-ins, history, passwords and bookmarks are not affected." }
+evidence = "https://chromium.googlesource.com/chromium/src/+/HEAD/docs/user_data_dir.md"
+
+[[rule]]
+id = "browser.opera"
+category = "browser"
+risk = "safe"
+app = "Opera"
+processes = { macos = ["Opera"], windows = ["opera.exe"], linux = ["opera"] }
+# Opera 的配置文件夹就是 Opera Stable（或 com.operasoftware.Opera）本身
+roots.macos = [
+  "${user_cache}/com.operasoftware.Opera/Cache",
+  "${user_cache}/com.operasoftware.Opera/Code Cache",
+  "${app_support}/com.operasoftware.Opera/GPUCache",
+  "${app_support}/com.operasoftware.Opera/ShaderCache",
+  "${app_support}/com.operasoftware.Opera/GrShaderCache",
+]
+roots.windows = [
+  "${local_app_data}/Opera Software/Opera Stable/Cache",
+  "${roaming_app_data}/Opera Software/Opera Stable/Code Cache",
+  "${roaming_app_data}/Opera Software/Opera Stable/GPUCache",
+  "${roaming_app_data}/Opera Software/Opera Stable/ShaderCache",
+  "${roaming_app_data}/Opera Software/Opera Stable/GrShaderCache",
+]
+roots.linux = [
+  "${xdg_cache}/opera/Cache",
+  "${xdg_cache}/opera/Code Cache",
+  "${xdg_config}/opera/GPUCache",
+  "${xdg_config}/opera/ShaderCache",
+]
+name = { zh = "Opera 缓存", en = "Opera cache" }
+about = { zh = "Opera 存下的网页文件、脚本编译结果和显卡着色器。", en = "Web files, compiled scripts and GPU shaders Opera keeps." }
+effect = { zh = "网站第一次打开会慢一点。登录状态、历史、密码、书签都不受影响。", en = "Sites load a little slower the first time. Sign-ins, history, passwords and bookmarks are not affected." }
+evidence = "https://chromium.googlesource.com/chromium/src/+/HEAD/docs/user_data_dir.md"
+
+[[rule]]
+id = "browser.arc"
+category = "browser"
+risk = "safe"
+app = "Arc"
+processes = { macos = ["Arc"] }
+roots.macos = [
+  "${user_cache}/Arc/User Data/*/Cache",
+  "${user_cache}/Arc/User Data/*/Code Cache",
+  "${app_support}/Arc/User Data/*/GPUCache",
+  "${app_support}/Arc/User Data/GrShaderCache",
+  "${app_support}/Arc/User Data/ShaderCache",
+]
+name = { zh = "Arc 缓存", en = "Arc cache" }
+about = { zh = "Arc 存下的网页文件、脚本编译结果和显卡着色器。", en = "Web files, compiled scripts and GPU shaders Arc keeps." }
+effect = { zh = "网站第一次打开会慢一点。登录状态、历史、密码、书签都不受影响。", en = "Sites load a little slower the first time. Sign-ins, history, passwords and bookmarks are not affected." }
+evidence = "https://chromium.googlesource.com/chromium/src/+/HEAD/docs/user_data_dir.md"
+
+[[rule]]
+id = "browser.chromium"
+category = "browser"
+risk = "safe"
+app = "Chromium"
+processes = { macos = ["Chromium"], windows = ["chrome.exe"], linux = ["chromium", "chromium-browse"] }
+roots.macos = [
+  "${user_cache}/Chromium/*/Cache",
+  "${user_cache}/Chromium/*/Code Cache",
+  "${app_support}/Chromium/*/GPUCache",
+  "${app_support}/Chromium/GrShaderCache",
+  "${app_support}/Chromium/ShaderCache",
+]
+roots.windows = [
+  "${local_app_data}/Chromium/User Data/*/Cache",
+  "${local_app_data}/Chromium/User Data/*/Code Cache",
+  "${local_app_data}/Chromium/User Data/*/GPUCache",
+  "${local_app_data}/Chromium/User Data/GrShaderCache",
+  "${local_app_data}/Chromium/User Data/ShaderCache",
+]
+roots.linux = [
+  "${xdg_cache}/chromium/*/Cache",
+  "${xdg_cache}/chromium/*/Code Cache",
+  "${xdg_config}/chromium/*/GPUCache",
+  "${xdg_config}/chromium/GrShaderCache",
+  "${xdg_config}/chromium/ShaderCache",
+]
+name = { zh = "Chromium 缓存", en = "Chromium cache" }
+about = { zh = "Chromium 存下的网页文件、脚本编译结果和显卡着色器。", en = "Web files, compiled scripts and GPU shaders Chromium keeps." }
+effect = { zh = "网站第一次打开会慢一点。登录状态、历史、密码、书签都不受影响。", en = "Sites load a little slower the first time. Sign-ins, history, passwords and bookmarks are not affected." }
+evidence = "https://chromium.googlesource.com/chromium/src/+/HEAD/docs/user_data_dir.md"
+
+[[rule]]
+id = "browser.firefox"
+category = "browser"
+risk = "safe"
+app = "Firefox"
+processes = { macos = ["firefox"], windows = ["firefox.exe"], linux = ["firefox", "firefox-bin", "firefox-esr"] }
+# 只清本地配置文件夹里的缓存（cache2、启动缓存、缩略图），书签、历史、Cookie、密码在另一个文件夹里
+roots.macos = [
+  "${user_cache}/Firefox/Profiles/*/cache2",
+  "${user_cache}/Firefox/Profiles/*/startupCache",
+  "${user_cache}/Firefox/Profiles/*/thumbnails",
+]
+roots.windows = [
+  "${local_app_data}/Mozilla/Firefox/Profiles/*/cache2",
+  "${local_app_data}/Mozilla/Firefox/Profiles/*/startupCache",
+  "${local_app_data}/Mozilla/Firefox/Profiles/*/thumbnails",
+]
+roots.linux = [
+  "${xdg_cache}/mozilla/firefox/*/cache2",
+  "${xdg_cache}/mozilla/firefox/*/startupCache",
+  "${xdg_cache}/mozilla/firefox/*/thumbnails",
+]
+name = { zh = "Firefox 缓存", en = "Firefox cache" }
+about = { zh = "Firefox 存下的网页文件、启动缓存和网页缩略图。", en = "Web files, startup cache and page thumbnails Firefox keeps." }
+effect = { zh = "网站第一次打开会慢一点。登录状态、历史、密码、书签都不受影响。", en = "Sites load a little slower the first time. Sign-ins, history, passwords and bookmarks are not affected." }
+evidence = "https://support.mozilla.org/kb/how-clear-firefox-cache"

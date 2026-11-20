@@ -1,0 +1,75 @@
+# 要管理员权限的系统位置。默认不勾，清理时一起交给提权的进程做：Windows 弹一次 UAC，macOS 输入一次密码。
+# 只能用 rule.rs 里 ADMIN_ROOTS 列出来的文件夹。普通权限读不到的，大小显示“未知”，提权以后再量一遍再清。
+
+[[rule]]
+id = "system.library-caches"
+category = "system"
+risk = "safe"
+admin = true
+roots = { macos = ["${system_library}/Caches"] }
+# 苹果自己的（图标缓存这类）系统正在用，删了要重启才恢复，不碰
+keep = ["com.apple.*"]
+name = { zh = "系统级缓存", en = "System-wide caches" }
+about = { zh = "应用放在 /Library/Caches 里、所有用户共用的缓存。苹果自己的不算在内。", en = "Caches that apps keep in /Library/Caches for all users. Apple's own are left out." }
+effect = { zh = "应用下次用到时重新生成。要输入管理员密码。", en = "Apps regenerate them when needed. Requires an administrator password." }
+evidence = "https://developer.apple.com/library/archive/documentation/FileManagement/Conceptual/FileSystemProgrammingGuide/MacOSXDirectories/MacOSXDirectories.html"
+
+[[rule]]
+id = "system.windows-temp"
+category = "system"
+risk = "safe"
+admin = true
+roots = { windows = ["${windows}/Temp"] }
+olderThanDays = 7
+keep = ["*.lock", "*.pid"]
+name = { zh = "系统临时文件", en = "System temporary files" }
+about = { zh = "Windows 和以系统身份运行的程序放在 Windows\\Temp 里的临时文件。这里只算 7 天里都没动过的。", en = "Temporary files Windows and system services leave in Windows\\Temp. Only items untouched for 7 days are counted." }
+effect = { zh = "不影响已经装好的软件。要管理员权限。", en = "Installed software is not affected. Requires administrator rights." }
+evidence = "https://support.microsoft.com/en-us/windows/how-to-use-disk-cleanup-in-windows-8a96ff42-5751-39ad-23d6-434b4d5b9a68"
+
+[[rule]]
+id = "system.windows-update-downloads"
+category = "system"
+risk = "safe"
+admin = true
+roots = { windows = ["${windows}/SoftwareDistribution/Download"] }
+name = { zh = "Windows 更新下载的文件", en = "Windows Update downloads" }
+about = { zh = "Windows 更新下载下来、已经装完的更新包。", en = "Update packages Windows Update downloaded and has already installed." }
+effect = { zh = "已经装好的更新不受影响；还没装的会重新下载。正在用的文件会跳过。要管理员权限。", en = "Installed updates are not affected; pending ones are downloaded again. Files in use are skipped. Requires administrator rights." }
+evidence = "https://learn.microsoft.com/en-us/windows/deployment/update/windows-update-resources"
+
+[[rule]]
+id = "system.memory-dumps"
+category = "system"
+risk = "recoverable"
+admin = true
+roots = { windows = ["${windows}", "${windows}/Minidump"] }
+names = ["*.dmp"]
+name = { zh = "系统内存转储", en = "System memory dumps" }
+about = { zh = "蓝屏时系统写下的内存转储（MEMORY.DMP 和 Minidump），完整转储常常有几个 GB。", en = "Memory dumps Windows writes after a blue screen (MEMORY.DMP and minidumps). A full dump is often several GB." }
+effect = { zh = "移到回收站。以后没法再拿它们查蓝屏原因。要管理员权限。", en = "Moved to the Recycle Bin. You can no longer use them to investigate the crash. Requires administrator rights." }
+evidence = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/performance/memory-dump-file-options"
+
+[[rule]]
+id = "system.error-reports-all-users"
+category = "system"
+risk = "recoverable"
+admin = true
+roots = { windows = ["${program_data}/Microsoft/Windows/WER/ReportArchive", "${program_data}/Microsoft/Windows/WER/ReportQueue"] }
+name = { zh = "系统错误报告", en = "System error reports" }
+about = { zh = "Windows 错误报告为所有用户留下的报告，有的带着很大的转储文件。", en = "Windows Error Reporting files kept for all users. Some include large dump files." }
+effect = { zh = "移到回收站。以后没法再拿这些报告查问题。要管理员权限。", en = "Moved to the Recycle Bin. You can no longer use these reports to investigate problems. Requires administrator rights." }
+evidence = "https://learn.microsoft.com/en-us/windows/win32/wer/wer-settings"
+
+[[rule]]
+id = "system.delivery-optimization"
+category = "system"
+risk = "safe"
+admin = true
+roots = { windows = ["${windows}/ServiceProfiles/NetworkService/AppData/Local/Microsoft/Windows/DeliveryOptimization/Cache"] }
+# 不直接删文件：用系统自带的命令清，传递优化服务自己的记录也一起清掉
+command = { windows = "Delete-DeliveryOptimizationCache -Force" }
+name = { zh = "传递优化缓存", en = "Delivery Optimization cache" }
+about = { zh = "Windows 更新和应用商店下载时留下的分片，用来分享给局域网里的其他电脑。", en = "Pieces of Windows Update and Store downloads kept to share with other PCs on your network." }
+effect = { zh = "不影响已经装好的更新和应用。用系统自带的命令清理，要管理员权限。", en = "Installed updates and apps are not affected. Cleaned with the built-in cmdlet; requires administrator rights." }
+evidence = "https://learn.microsoft.com/windows/deployment/do/waas-delivery-optimization-monitor"

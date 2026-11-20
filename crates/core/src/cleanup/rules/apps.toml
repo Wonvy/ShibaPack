@@ -1,0 +1,83 @@
+# 常用应用的缓存。Slack、Discord、Notion、Obsidian、Claude 都是 Electron 应用，缓存的结构和 Chromium 一样：
+# 网页缓存（Cache）、代码缓存（Code Cache）、显卡缓存（GPUCache 等），删了会自己重新生成。登录状态、设置、聊天记录都不在这些文件夹里。
+# Spotify、Steam 没有官方说明哪些能删，不放进来。
+
+[[rule]]
+id = "apps.slack"
+category = "apps"
+risk = "safe"
+app = "Slack"
+processes = { macos = ["Slack"], windows = ["slack.exe"], linux = ["slack"] }
+roots.macos = ["${app_support}/Slack/Cache", "${app_support}/Slack/Code Cache", "${app_support}/Slack/GPUCache", "${app_support}/Slack/DawnGraphiteCache", "${app_support}/Slack/DawnWebGPUCache", "${app_support}/Slack/logs"]
+roots.windows = ["${roaming_app_data}/Slack/Cache", "${roaming_app_data}/Slack/Code Cache", "${roaming_app_data}/Slack/GPUCache", "${roaming_app_data}/Slack/logs"]
+roots.linux = ["${xdg_config}/Slack/Cache", "${xdg_config}/Slack/Code Cache", "${xdg_config}/Slack/GPUCache", "${xdg_config}/Slack/logs"]
+name = { zh = "Slack 缓存", en = "Slack cache" }
+about = { zh = "Slack 存下的图片、文件预览、编译好的代码和日志。", en = "Images, file previews, compiled code and logs Slack keeps." }
+effect = { zh = "下次打开会慢一点，图片要重新加载。登录状态和消息不受影响。", en = "Opens a little slower next time and images load again. Sign-in and messages are not affected." }
+evidence = "https://www.electronjs.org/docs/latest/api/app"
+
+[[rule]]
+id = "apps.discord"
+category = "apps"
+risk = "safe"
+app = "Discord"
+processes = { macos = ["Discord"], windows = ["Discord.exe"], linux = ["Discord"] }
+roots.macos = ["${app_support}/discord/Cache", "${app_support}/discord/Code Cache", "${app_support}/discord/GPUCache"]
+roots.windows = ["${roaming_app_data}/discord/Cache", "${roaming_app_data}/discord/Code Cache", "${roaming_app_data}/discord/GPUCache"]
+roots.linux = ["${xdg_config}/discord/Cache", "${xdg_config}/discord/Code Cache", "${xdg_config}/discord/GPUCache"]
+name = { zh = "Discord 缓存", en = "Discord cache" }
+about = { zh = "Discord 存下的图片、表情、视频预览和编译好的代码。", en = "Images, emoji, video previews and compiled code Discord keeps." }
+effect = { zh = "下次打开会慢一点，图片要重新加载。登录状态和消息不受影响。", en = "Opens a little slower next time and images load again. Sign-in and messages are not affected." }
+evidence = "https://www.electronjs.org/docs/latest/api/app"
+
+[[rule]]
+id = "apps.notion"
+category = "apps"
+risk = "safe"
+app = "Notion"
+processes = { macos = ["Notion"], windows = ["Notion.exe"] }
+roots.macos = ["${app_support}/Notion/Cache", "${app_support}/Notion/Code Cache", "${app_support}/Notion/GPUCache"]
+roots.windows = ["${roaming_app_data}/Notion/Cache", "${roaming_app_data}/Notion/Code Cache", "${roaming_app_data}/Notion/GPUCache"]
+name = { zh = "Notion 缓存", en = "Notion cache" }
+about = { zh = "Notion 存下的网页文件和编译好的代码。", en = "Web files and compiled code Notion keeps." }
+effect = { zh = "下次打开会慢一点。登录状态和页面内容不受影响。", en = "Opens a little slower next time. Sign-in and pages are not affected." }
+evidence = "https://www.electronjs.org/docs/latest/api/app"
+
+[[rule]]
+id = "apps.obsidian"
+category = "apps"
+risk = "safe"
+app = "Obsidian"
+processes = { macos = ["Obsidian"], windows = ["Obsidian.exe"], linux = ["obsidian"] }
+roots.macos = ["${app_support}/obsidian/Cache", "${app_support}/obsidian/Code Cache", "${app_support}/obsidian/GPUCache"]
+roots.windows = ["${roaming_app_data}/obsidian/Cache", "${roaming_app_data}/obsidian/Code Cache", "${roaming_app_data}/obsidian/GPUCache"]
+roots.linux = ["${xdg_config}/obsidian/Cache", "${xdg_config}/obsidian/Code Cache", "${xdg_config}/obsidian/GPUCache"]
+name = { zh = "Obsidian 缓存", en = "Obsidian cache" }
+about = { zh = "Obsidian 界面用的网页缓存和编译好的代码。笔记在你自己的库文件夹里，不在这里。", en = "Interface web cache and compiled code of Obsidian. Your notes live in your vault, not here." }
+effect = { zh = "下次打开会慢一点。笔记、插件和设置都不受影响。", en = "Opens a little slower next time. Notes, plugins and settings are not affected." }
+evidence = "https://www.electronjs.org/docs/latest/api/app"
+
+[[rule]]
+id = "apps.claude"
+category = "apps"
+risk = "safe"
+app = "Claude"
+processes = { macos = ["Claude"], windows = ["claude.exe"] }
+roots.macos = ["${app_support}/Claude/Cache", "${app_support}/Claude/Code Cache", "${app_support}/Claude/GPUCache", "${app_support}/Claude/DawnGraphiteCache", "${app_support}/Claude/DawnWebGPUCache"]
+roots.windows = ["${roaming_app_data}/Claude/Cache", "${roaming_app_data}/Claude/Code Cache", "${roaming_app_data}/Claude/GPUCache"]
+name = { zh = "Claude 缓存", en = "Claude cache" }
+about = { zh = "Claude 桌面应用存下的网页文件、编译好的代码和显卡缓存。", en = "Web files, compiled code and GPU caches of the Claude desktop app." }
+effect = { zh = "下次打开会慢一点。登录状态、对话和设置都不受影响。", en = "Opens a little slower next time. Sign-in, conversations and settings are not affected." }
+evidence = "https://www.electronjs.org/docs/latest/api/app"
+
+[[rule]]
+id = "apps.chatgpt"
+category = "apps"
+risk = "safe"
+app = "ChatGPT"
+processes = { macos = ["ChatGPT"] }
+roots = { macos = ["${user_cache}/com.openai.chat"] }
+name = { zh = "ChatGPT 缓存", en = "ChatGPT cache" }
+about = { zh = "ChatGPT 桌面应用的网络缓存。", en = "Network cache of the ChatGPT desktop app." }
+effect = { zh = "下次打开会慢一点。登录状态和对话不受影响。", en = "Opens a little slower next time. Sign-in and conversations are not affected." }
+evidence = "https://developer.apple.com/library/archive/documentation/FileManagement/Conceptual/FileSystemProgrammingGuide/MacOSXDirectories/MacOSXDirectories.html"

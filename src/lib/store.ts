@@ -25,8 +25,8 @@ import type {
   Storage,
 } from "./types";
 
-export type Route = "library" | "installed" | "startup";
-const ROUTES: Route[] = ["library", "installed", "startup"];
+export type Route = "library" | "installed" | "startup" | "cleanup";
+const ROUTES: Route[] = ["library", "installed", "startup", "cleanup"];
 
 export type Scope =
   | { kind: "all" }

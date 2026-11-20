@@ -5,6 +5,7 @@ pub mod ai;
 pub mod aicache;
 pub mod catalog;
 pub mod classify;
+pub mod cleanup;
 pub mod download;
 pub mod faillog;
 pub mod fileinfo;

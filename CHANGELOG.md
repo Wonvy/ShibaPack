@@ -8,6 +8,34 @@ One section per version, titled `## <version>`, with a Chinese and an English pa
 `.github/workflows/release.yml` puts that section into the GitHub Release notes and `latest.json`; the update window
 in ShibaPack (opened from the version number in the bottom-right corner) shows the part that matches the interface language.
 
+## 0.14.0
+
+### 中文
+
+- 新增“路径”页（侧栏“磁盘”下面）：软件的配置文件常放在别处，可以把这些文件夹或文件收藏起来，写上备注，随时备份、需要时恢复。
+  - 把文件或文件夹拖进这一页就能收藏；也可以点 ＋ 选择文件夹、文件，或者手动输入路径。
+  - 备份放在仓库的 `.shibapack/paths` 文件夹里，跟着仓库走。可以单条备份、多选备份或全部备份；被占用、没有权限的文件会跳过，并告诉你跳过了几个。
+  - 恢复前会先把现在的内容自动备份一份（标为“恢复前”），再移到回收站，然后把备份复制回去，选错了也能找回来。
+  - 路径支持环境变量：可以写 `~`、`%APPDATA%`、`$HOME`、`${NAME}`。拖进来的绝对路径会自动转成变量写法（macOS 上是 `~`，Windows 上是 `%APPDATA%`、`%LOCALAPPDATA%`、`%USERPROFILE%` 等），换电脑、换用户名也能对上。添加菜单里可以关掉自动转换。
+  - 每条路径都可以在详情栏里切换写法：用变量，还是用完整路径；Windows 上能用好几个变量时可以挑一个。
+  - 在这台电脑上找不到的路径、或者环境变量没有定义的，会标出来。
+- 底部状态栏跟着页面变：
+  - 路径页显示正在备份或恢复哪一条，以及收藏了多少、备份过多少、备份共多大、有几个不存在。
+  - 软件库里点了某个分类（或收藏、更新、未分类）时，只统计这个入口里的软件数、安装包数和大小；再用平台、安装状态或搜索筛选时写“列出 n / 共 m 个软件”；多选时显示选了几个。
+
+### English
+
+- New Paths page (below Disk in the sidebar): apps often keep their settings somewhere else. Save those folders or files here with a note, back them up whenever you like and restore them when needed.
+  - Drag files or folders onto the page to save them, or click + to choose a folder or file, or type a path.
+  - Backups are kept in the library's `.shibapack/paths` folder and travel with it. Back up one path, a selection or everything; files that are in use or not readable are skipped and counted.
+  - Before restoring, the current version is backed up automatically (marked "Before restore") and moved to the trash, then the backup is copied back, so a wrong choice can be undone.
+  - Paths can use environment variables: `~`, `%APPDATA%`, `$HOME`, `${NAME}`. Absolute paths you drag in are converted automatically (`~` on macOS; `%APPDATA%`, `%LOCALAPPDATA%`, `%USERPROFILE%` and others on Windows), so they still match on another computer or user account. You can turn this off in the add menu.
+  - Each path can switch between a variable form and the full path in the details panel; on Windows you can pick which variable to use when several fit.
+  - Paths that don't exist on this computer, or use an undefined variable, are marked.
+- The status bar follows the page:
+  - On Paths it shows what is being backed up or restored, how many paths are saved and backed up, the total backup size and how many are missing.
+  - In the library, choosing a category (or Starred, Updates, Uncategorized) counts only the apps, installers and size in that list. With a platform, install-status or search filter it shows "n of m apps", and the number of selected apps when several are selected.
+
 ## 0.13.0
 
 ### 中文

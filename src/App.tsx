@@ -11,12 +11,11 @@ import { Sidebar } from "./components/Sidebar";
 import { SourceDialog } from "./components/SourcePanel";
 import { type DropPoint, onFileDrop } from "./lib/api";
 import { useDrag } from "./lib/drag";
-import { usePrefs } from "./lib/prefs";
+import { RAIL_WIDTH, SIDEBAR, usePrefs } from "./lib/prefs";
 import { useApp, useT } from "./lib/store";
 import { scheduleUpdateChecks } from "./lib/updater";
 import { InstalledDetail, InstalledView } from "./views/InstalledView";
 import { LibraryView } from "./views/LibraryView";
-import { StorageView } from "./views/StorageView";
 
 export default function App() {
   const t = useT();
@@ -25,7 +24,9 @@ export default function App() {
   const route = useApp((state) => state.route);
   const dropping = useApp((state) => state.dropping);
   const dropName = useApp((state) => state.library?.software.find((s) => s.id === state.dropSoftwareId)?.name);
-  const sidebarWidth = usePrefs((state) => state.sidebarWidth);
+  const sidebarCollapsed = usePrefs((state) => state.sidebarCollapsed);
+  // 侧栏收起时只占一列图标的宽度
+  const sidebarWidth = usePrefs((state) => (state.sidebarCollapsed ? RAIL_WIDTH : state.sidebarWidth));
   const detailWidth = usePrefs((state) => state.detailWidth);
   const detailOpen = usePrefs((state) => state.detailOpen);
   const setPrefs = usePrefs((state) => state.set);
@@ -116,12 +117,20 @@ export default function App() {
       <TopBar />
       <div className="relative flex min-h-0 flex-1">
         <Sidebar />
-        <ResizeHandle edge="left" width={sidebarWidth} onResize={(width) => setPrefs({ sidebarWidth: width })} />
+        {!sidebarCollapsed && (
+          <ResizeHandle
+            edge="left"
+            width={sidebarWidth}
+            onResize={(width) => setPrefs({ sidebarWidth: width })}
+            // 拖得比最窄还窄一截，就收起成一列图标
+            collapseBelow={SIDEBAR.min - 48}
+            onCollapse={() => setPrefs({ sidebarCollapsed: true })}
+          />
+        )}
         <main className="relative flex min-w-0 flex-1 flex-col">
           <ImportProgress />
           {route === "library" && <LibraryView />}
           {route === "installed" && <InstalledView />}
-          {route === "storage" && <StorageView />}
           {dropping && !dropName && (
             <div className="pointer-events-none absolute inset-2 z-20 flex animate-fade flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-accent bg-accent-soft text-accent backdrop-blur-sm">
               <Download size={28} strokeWidth={1.5} aria-hidden />

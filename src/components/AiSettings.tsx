@@ -1,4 +1,4 @@
-// AI 模型的设置：选服务、填地址和密钥、选模型、测试连接。
+// 设置里“AI 模型”这一页：选服务、填地址和密钥、选模型、测试连接，改完点保存。
 //
 // 地址和模型存进仓库的设置；API Key 只存在这台电脑的系统钥匙串里。
 
@@ -9,19 +9,15 @@ import { api } from "../lib/api";
 import { errorText } from "../lib/i18n";
 import { useApp, useLanguage, useT } from "../lib/store";
 import type { AiSettings } from "../lib/types";
-import { Button, Field, Modal, Select, TextInput, cx } from "./ui";
+import { Button, Field, Select, TextInput, cx } from "./ui";
 
 const CUSTOM = "custom";
-
-export function AiDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  // 每次打开都从设置里重新读一遍，上次没保存的改动不留着
-  return open ? <Form onClose={onClose} /> : null;
-}
 
 /** 测试、取模型列表的结果。 */
 type Outcome = { ok: boolean; text: string } | null;
 
-function Form({ onClose }: { onClose: () => void }) {
+/** 每次切到这一页都从设置里重新读一遍，上次没保存的改动不留着。 */
+export function AiSettingsForm() {
   const t = useT();
   const language = useLanguage();
   const saved = useApp((state) => state.library!.settings.ai);
@@ -112,8 +108,9 @@ function Form({ onClose }: { onClose: () => void }) {
       if (key.trim() && !local && (await attempt(() => api.aiSetKey(form.baseUrl, key).then(() => true))) !== true) return;
       await saveSettings({ ai: form });
       await refreshAiKey();
+      if (key.trim() && !local) setKeySaved(true);
+      setKey("");
       notify(t("ai.saved"));
-      onClose();
     } finally {
       setBusy(null);
     }
@@ -130,10 +127,11 @@ function Form({ onClose }: { onClose: () => void }) {
     await saveSettings({ ai: { preset: "", baseUrl: "", model: "" } });
     await refreshAiKey();
     notify(t("ai.off"));
-    onClose();
   };
 
-  const canSave = Boolean(form.baseUrl && form.model) && (local || key.trim() !== "" || keySaved === true);
+  // 和存着的设置一样、又没填新密钥时不用保存
+  const dirty = key.trim() !== "" || form.preset !== saved.preset || form.baseUrl !== saved.baseUrl.trim() || form.model !== saved.model.trim();
+  const canSave = dirty && Boolean(form.baseUrl && form.model) && (local || key.trim() !== "" || keySaved === true);
   const link = (url: string, label: string) => (
     <button type="button" onClick={() => void attempt(() => api.openUrl(url))} className="inline-flex items-center gap-1 text-accent hover:underline">
       {label}
@@ -142,119 +140,109 @@ function Form({ onClose }: { onClose: () => void }) {
   );
 
   return (
-    <Modal
-      open
-      onClose={onClose}
-      title={t("ai.title")}
-      width={480}
-      footer={
-        <>
-          {configured && (
-            <Button variant="ghost" className="mr-auto text-danger" onClick={() => void turnOff()}>
-              {t("ai.turnOff")}
-            </Button>
-          )}
-          <Button variant="ghost" onClick={onClose}>
-            {t("common.cancel")}
-          </Button>
-          <Button variant="primary" busy={busy === "save"} disabled={!canSave || busy !== null} onClick={() => void save()}>
-            {t("common.save")}
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4 pt-1">
+    <div className="flex flex-col gap-4">
+      <Field
+        label={t("ai.service")}
+        hint={
+          info?.local ? (
+            <>
+              {t("ai.localHint")} {link(info.keyUrl, t("ai.download"))}
+            </>
+          ) : undefined
+        }
+      >
+        <Select value={preset} onChange={(event) => choosePreset(event.target.value)}>
+          {AI_PRESETS.map((item) => (
+            <option key={item.id} value={item.id}>
+              {presetName(item, language)}
+            </option>
+          ))}
+          <option value={CUSTOM}>{t("ai.custom")}</option>
+        </Select>
+      </Field>
+
+      <Field label={t("ai.baseUrl")} hint={preset === CUSTOM ? t("ai.baseUrlHint") : undefined}>
+        <TextInput
+          value={baseUrl}
+          placeholder="https://…/v1"
+          onChange={(event) => {
+            setBaseUrl(event.target.value);
+            setOutcome(null);
+          }}
+        />
+      </Field>
+
+      {!local && (
         <Field
-          label={t("ai.service")}
+          label={t("ai.key")}
           hint={
-            info?.local ? (
-              <>
-                {t("ai.localHint")} {link(info.keyUrl, t("ai.download"))}
-              </>
-            ) : undefined
+            <>
+              {t("ai.keyHint")} {info && link(info.keyUrl, t("ai.getKey"))}
+            </>
           }
         >
-          <Select value={preset} onChange={(event) => choosePreset(event.target.value)}>
-            {AI_PRESETS.map((item) => (
-              <option key={item.id} value={item.id}>
-                {presetName(item, language)}
-              </option>
-            ))}
-            <option value={CUSTOM}>{t("ai.custom")}</option>
-          </Select>
-        </Field>
-
-        <Field label={t("ai.baseUrl")} hint={preset === CUSTOM ? t("ai.baseUrlHint") : undefined}>
-          <TextInput
-            value={baseUrl}
-            placeholder="https://…/v1"
-            onChange={(event) => {
-              setBaseUrl(event.target.value);
-              setOutcome(null);
-            }}
-          />
-        </Field>
-
-        {!local && (
-          <Field
-            label={t("ai.key")}
-            hint={
-              <>
-                {t("ai.keyHint")} {info && link(info.keyUrl, t("ai.getKey"))}
-              </>
-            }
-          >
-            <div className="flex gap-2">
-              <TextInput
-                type="password"
-                value={key}
-                placeholder={keySaved ? t("ai.keySaved") : t("ai.keyPlaceholder")}
-                onChange={(event) => {
-                  setKey(event.target.value);
-                  setOutcome(null);
-                }}
-              />
-              {keySaved && (
-                <Button variant="ghost" className="shrink-0 text-danger" onClick={() => void removeKey()}>
-                  {t("ai.removeKey")}
-                </Button>
-              )}
-            </div>
-          </Field>
-        )}
-
-        <Field label={t("ai.model")}>
           <div className="flex gap-2">
-            <TextInput list="ai-models" value={model} placeholder={t("ai.modelPlaceholder")} onChange={(event) => setModel(event.target.value)} />
-            <datalist id="ai-models">
-              {models.map((name) => (
-                <option key={name} value={name} />
-              ))}
-            </datalist>
-            <Button className="shrink-0" busy={busy === "models"} disabled={!form.baseUrl || busy !== null} onClick={() => void loadModels()}>
-              {t("ai.listModels")}
-            </Button>
+            <TextInput
+              type="password"
+              value={key}
+              // 还没查完钥匙串时先空着，免得一闪而过“粘贴 API Key”
+              placeholder={keySaved === null ? "" : keySaved ? t("ai.keySaved") : t("ai.keyPlaceholder")}
+              onChange={(event) => {
+                setKey(event.target.value);
+                setOutcome(null);
+              }}
+            />
+            {keySaved && (
+              <Button variant="ghost" className="shrink-0 text-danger" onClick={() => void removeKey()}>
+                {t("ai.removeKey")}
+              </Button>
+            )}
           </div>
         </Field>
+      )}
 
-        <div className="flex items-start gap-3">
-          <Button className="shrink-0" busy={busy === "test"} disabled={!form.baseUrl || !form.model || busy !== null} onClick={() => void test()}>
-            {t("ai.test")}
+      <Field label={t("ai.model")}>
+        <div className="flex gap-2">
+          <TextInput list="ai-models" value={model} placeholder={t("ai.modelPlaceholder")} onChange={(event) => setModel(event.target.value)} />
+          <datalist id="ai-models">
+            {models.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
+          <Button className="shrink-0" busy={busy === "models"} disabled={!form.baseUrl || busy !== null} onClick={() => void loadModels()}>
+            {t("ai.listModels")}
           </Button>
-          {outcome && (
-            <p className={cx("m-0 flex min-w-0 items-start gap-1.5 pt-1 text-[12px] leading-relaxed break-words", outcome.ok ? "text-success" : "text-danger")}>
-              {outcome.ok ? (
-                <CircleCheck size={14} strokeWidth={2} aria-hidden className="mt-0.5 shrink-0" />
-              ) : (
-                <TriangleAlert size={14} strokeWidth={2} aria-hidden className="mt-0.5 shrink-0" />
-              )}
-              <span className="min-w-0">{outcome.text}</span>
-            </p>
-          )}
         </div>
+      </Field>
 
-        <p className="m-0 text-[12px] leading-relaxed text-fg-3">{t("ai.privacy")}</p>
+      <div className="flex items-start gap-3">
+        <Button className="shrink-0" busy={busy === "test"} disabled={!form.baseUrl || !form.model || busy !== null} onClick={() => void test()}>
+          {t("ai.test")}
+        </Button>
+        {outcome && (
+          <p className={cx("m-0 flex min-w-0 items-start gap-1.5 pt-1 text-[12px] leading-relaxed break-words", outcome.ok ? "text-success" : "text-danger")}>
+            {outcome.ok ? (
+              <CircleCheck size={14} strokeWidth={2} aria-hidden className="mt-0.5 shrink-0" />
+            ) : (
+              <TriangleAlert size={14} strokeWidth={2} aria-hidden className="mt-0.5 shrink-0" />
+            )}
+            <span className="min-w-0">{outcome.text}</span>
+          </p>
+        )}
       </div>
-    </Modal>
+
+      <p className="m-0 text-[12px] leading-relaxed text-fg-3">{t("ai.privacy")}</p>
+
+      <div className="flex items-center gap-2 border-t border-line pt-3">
+        {configured && (
+          <Button variant="ghost" className="text-danger" onClick={() => void turnOff()}>
+            {t("ai.turnOff")}
+          </Button>
+        )}
+        <Button variant="primary" className="ml-auto" busy={busy === "save"} disabled={!canSave || busy !== null} onClick={() => void save()}>
+          {t("common.save")}
+        </Button>
+      </div>
+    </div>
   );
 }

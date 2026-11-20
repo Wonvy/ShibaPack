@@ -4,6 +4,8 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export const SIDEBAR = { min: 140, max: 360, initial: 180 };
+/** 侧栏收起后只剩一列图标时的宽度。 */
+export const RAIL_WIDTH = 52;
 export const DETAIL = { min: 280, max: 560, initial: 380 };
 
 export type SortKey = "name" | "platform" | "size" | "added";
@@ -23,6 +25,8 @@ const NO_COLUMNS: TableColumns = { hidden: [], widths: {} };
 
 interface Prefs {
   sidebarWidth: number;
+  /** 侧栏收起成一列图标。展开时回到原来的宽度。 */
+  sidebarCollapsed: boolean;
   detailWidth: number;
   packageView: PackageView;
   sortKey: SortKey;
@@ -32,6 +36,8 @@ interface Prefs {
   /** 网格视图单独记：卡片按组排时每组常常只有一两张，默认不分组。 */
   gridGroupByCategory: boolean;
   collapsed: string[];
+  /** 软件列表里折叠起来的分组（分类 id，未分类是 `none`）。和侧栏分类树的折叠分开记。 */
+  collapsedGroups: string[];
   /** 右边的详情栏是否展开。 */
   detailOpen: boolean;
   /** 详情栏里“更多信息”是否展开。 */
@@ -56,6 +62,7 @@ export const usePrefs = create<Prefs>()(
   persist(
     (set) => ({
       sidebarWidth: SIDEBAR.initial,
+      sidebarCollapsed: false,
       detailWidth: DETAIL.initial,
       packageView: "list",
       sortKey: "name",
@@ -63,6 +70,7 @@ export const usePrefs = create<Prefs>()(
       groupByCategory: true,
       gridGroupByCategory: false,
       collapsed: [],
+      collapsedGroups: [],
       detailOpen: true,
       detailMoreOpen: false,
       installedView: "list",

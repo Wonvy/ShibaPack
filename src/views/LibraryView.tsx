@@ -8,6 +8,8 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   CircleCheck,
   CircleDashed,
   File as FileIcon,
@@ -25,7 +27,6 @@ import {
   ArrowUpCircle,
   ScanSearch,
   SearchX,
-  SlidersHorizontal,
   Sparkles,
   Star,
   Trash2,
@@ -42,9 +43,9 @@ import {
   EmptyState,
   FilterMenu,
   IconButton,
-  IconSegmented,
   type MenuEntry,
   MiddleTruncate,
+  ViewMenu,
   cx,
   itemClass,
   menuClass,
@@ -111,6 +112,8 @@ export function LibraryView() {
   const links = useApp((state) => state.links);
   const installedKnown = useApp((state) => state.installed !== null);
   const selectedIds = useApp((state) => state.selectedIds);
+  const selectedId = useApp((state) => state.selectedId);
+  const collapsedGroups = usePrefs((state) => state.collapsedGroups);
   const select = useApp((state) => state.select);
   const patch = useApp((state) => state.patch);
   const checkUpdates = useApp((state) => state.checkUpdates);
@@ -121,7 +124,6 @@ export function LibraryView() {
   const sortAsc = usePrefs((state) => state.sortAsc);
   const groupByCategory = usePrefs((state) => state.groupByCategory);
   const gridGroupByCategory = usePrefs((state) => state.gridGroupByCategory);
-  const setPrefs = usePrefs((state) => state.set);
   // 打字时先让输入框跟上，列表稍后再筛：软件多的时候打字不卡
   const deferredSearch = useDeferredValue(search);
   const [frame, frameWidth] = useWidth<HTMLDivElement>();
@@ -158,8 +160,40 @@ export function LibraryView() {
     return out;
   }, [list, library.categories, view, groupByCategory, gridGroupByCategory, scope.kind, search, t]);
 
-  // 屏幕上从上到下的顺序：键盘上下移动、Shift 连选都按它来
-  const ordered = useMemo(() => groups.flatMap((group) => group.items), [groups]);
+  // 分组可以折叠（点分组标题；Alt 点或者右键可以全部折叠、全部展开）。只在分组显示时才算数
+  const folded = useMemo(() => new Set(groups.length > 1 || groups[0]?.title !== null ? collapsedGroups : []), [groups, collapsedGroups]);
+  const toggleGroup = (key: string, all: boolean) => {
+    const keys = groups.filter((group) => group.title !== null).map((group) => group.key);
+    const open = folded.has(key);
+    const next = all
+      ? open
+        ? collapsedGroups.filter((k) => !keys.includes(k))
+        : [...new Set([...collapsedGroups, ...keys])]
+      : open
+        ? collapsedGroups.filter((k) => k !== key)
+        : [...collapsedGroups, key];
+    usePrefs.getState().set({ collapsedGroups: next });
+  };
+  const groupMenu: MenuEntry[] = [
+    { label: t("cat.expandAll"), icon: ChevronsUpDown, disabled: folded.size === 0, onSelect: () => usePrefs.getState().set({ collapsedGroups: [] }) },
+    {
+      label: t("cat.collapseAll"),
+      icon: ChevronsDownUp,
+      onSelect: () => usePrefs.getState().set({ collapsedGroups: [...new Set([...collapsedGroups, ...groups.map((group) => group.key)])] }),
+    },
+  ];
+
+  // 屏幕上从上到下的顺序：键盘上下移动、Shift 连选、全选都按它来，折叠起来的分组不算
+  const ordered = useMemo(() => groups.flatMap((group) => (folded.has(group.key) ? [] : group.items)), [groups, folded]);
+
+  // 从别处选中了一个藏在折叠分组里的软件（概况里点的、刚导入的），就把那一组展开
+  useEffect(() => {
+    if (!selectedId) return;
+    const group = groups.find((g) => g.title !== null && g.items.some((s) => s.id === selectedId));
+    if (group && folded.has(group.key)) usePrefs.getState().set({ collapsedGroups: collapsedGroups.filter((k) => k !== group.key) });
+    // 只在选中的软件变了时检查：手动把选中软件所在的组折起来时不要又弹开
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
   // 换了左侧入口或筛选条件后，选中的软件如果不在列表里了，就不再选着它（详情栏回到概况）
@@ -246,52 +280,44 @@ export function LibraryView() {
 
   return (
     <div ref={frame} className="@container flex min-h-0 flex-1 flex-col">
-      {/* 工具栏：左边是标题和筛选，右边是视图、显示选项和详情栏开关。栏窄时筛选只留图标 */}
-      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-line pr-2 pl-4">
-        <h2 className="m-0 min-w-12 truncate text-[14px] font-semibold" title={title}>
-          {title}
-        </h2>
-        <span className="tabular mr-2 ml-1.5 shrink-0 text-[12px] text-fg-3">{list.length}</span>
-        <FilterMenu<Platform | "all">
-          compact
-          label={t("lib.col.platform")}
-          value={platform}
-          onChange={(value) => patch({ platform: value })}
-          options={[
-            { value: "all", label: t("lib.allPlatforms"), icon: <Boxes size={15} strokeWidth={1.75} /> },
-            ...PLATFORMS.map((p) => ({ value: p, label: t(`platform.${p}`), icon: <PlatformIcon platform={p} size={14} /> })),
-          ]}
-        />
-        {installedKnown && (
-          <FilterMenu<InstallFilter>
-            compact
-            label={t("link.installed")}
-            value={installFilter}
-            onChange={(value) => patch({ installFilter: value })}
+      {/* 工具栏三段：左边标题和数量，正中间是筛选，右边是视图菜单和详情栏开关 */}
+      <div className="grid h-11 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-2 border-b border-line pr-2 pl-4">
+        <div className="flex min-w-0 items-center">
+          <h2 className="m-0 min-w-12 truncate text-[14px] font-semibold" title={title}>
+            {title}
+          </h2>
+          <span className="tabular ml-1.5 shrink-0 text-[12px] text-fg-3">{list.length}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <FilterMenu<Platform | "all">
+            label={t("lib.col.platform")}
+            value={platform}
+            onChange={(value) => patch({ platform: value })}
             options={[
-              { value: "all", label: t("link.all"), icon: <ListFilter size={15} strokeWidth={1.75} /> },
-              { value: "installed", label: t("link.only"), icon: <CircleCheck size={15} strokeWidth={1.75} /> },
-              { value: "missing", label: t("link.missing"), icon: <CircleDashed size={15} strokeWidth={1.75} /> },
+              { value: "all", label: t("lib.allPlatforms"), icon: <Boxes size={15} strokeWidth={1.75} /> },
+              ...PLATFORMS.map((p) => ({ value: p, label: t(`platform.${p}`), icon: <PlatformIcon platform={p} size={14} /> })),
             ]}
           />
-        )}
-        <div className="ml-auto flex shrink-0 items-center gap-1">
+          {installedKnown && (
+            <FilterMenu<InstallFilter>
+              label={t("link.installed")}
+              value={installFilter}
+              onChange={(value) => patch({ installFilter: value })}
+              options={[
+                { value: "all", label: t("link.all"), icon: <ListFilter size={15} strokeWidth={1.75} /> },
+                { value: "installed", label: t("link.only"), icon: <CircleCheck size={15} strokeWidth={1.75} /> },
+                { value: "missing", label: t("link.missing"), icon: <CircleDashed size={15} strokeWidth={1.75} /> },
+              ]}
+            />
+          )}
+        </div>
+        <div className="flex min-w-0 items-center justify-end gap-1">
           {scope.kind === "updates" && (
             <IconButton label={t("scan.updates")} disabled={checking} onClick={() => void checkUpdates()}>
               <RefreshCw size={15} strokeWidth={1.75} className={checking ? "animate-spin" : ""} />
             </IconButton>
           )}
-          <IconSegmented<PackageView>
-            value={view}
-            onChange={(value) => setPrefs({ packageView: value })}
-            options={[
-              { value: "list", label: t("lib.view.list"), icon: <LayoutList size={15} strokeWidth={1.75} /> },
-              { value: "grid", label: t("lib.view.grid"), icon: <LayoutGrid size={15} strokeWidth={1.75} /> },
-              { value: "folder", label: t("lib.view.folder"), icon: <FolderTree size={15} strokeWidth={1.75} /> },
-            ]}
-          />
           <DisplayMenu />
-          <span className="mx-0.5 h-4 w-px bg-line-strong" />
           <DetailToggle />
         </div>
       </div>
@@ -320,27 +346,41 @@ export function LibraryView() {
             {groups.map((group) => (
               <section key={group.key}>
                 {group.title !== null && (
-                  <div className="flex items-center gap-2 px-4 pt-4 pb-1.5 text-[12px] text-fg-3">
-                    <span>{group.title}</span>
-                    <span className="tabular text-fg-4">{group.items.length}</span>
-                    <span className="h-px flex-1 bg-line" />
-                  </div>
+                  <ContextMenu items={groupMenu}>
+                    <button
+                      type="button"
+                      aria-expanded={!folded.has(group.key)}
+                      onClick={(event) => toggleGroup(group.key, event.altKey)}
+                      // 箭头放在左边的留白里，分组名和下面的软件图标仍然对齐
+                      className="group/heading flex w-full items-center pt-4 pr-4 pb-1.5 pl-[3px] text-left text-[12px] text-fg-3 hover:text-fg-2"
+                    >
+                      <ChevronRight
+                        size={12}
+                        strokeWidth={2}
+                        aria-hidden
+                        className={cx("mr-px shrink-0 text-fg-4 transition-transform group-hover/heading:text-fg-3", !folded.has(group.key) && "rotate-90")}
+                      />
+                      <span>{group.title}</span>
+                      <span className="tabular ml-2 text-fg-4">{group.items.length}</span>
+                      <span className="ml-2 h-px flex-1 bg-line" />
+                    </button>
+                  </ContextMenu>
                 )}
-                {view === "list" && (
+                {!folded.has(group.key) && view === "list" && (
                   <div className="px-2">
                     {group.items.map((software) => (
                       <Row key={software.id} software={software} selected={selectedSet.has(software.id)} />
                     ))}
                   </div>
                 )}
-                {view === "grid" && (
+                {!folded.has(group.key) && view === "grid" && (
                   <div className="grid grid-cols-[repeat(auto-fill,minmax(112px,1fr))] gap-1 px-3 pt-1">
                     {group.items.map((software) => (
                       <Card key={software.id} software={software} selected={selectedSet.has(software.id)} />
                     ))}
                   </div>
                 )}
-                {view === "folder" && (
+                {!folded.has(group.key) && view === "folder" && (
                   <div className="px-2">
                     {group.items.map((software) => (
                       <FolderNode key={software.id} software={software} selected={selectedSet.has(software.id)} />
@@ -381,6 +421,7 @@ function clickSelect(id: string, event: { metaKey: boolean; ctrlKey: boolean; sh
 const SORT_KEYS: SortKey[] = ["name", "platform", "size", "added"];
 
 /** “显示选项”菜单：排序方式、顺序、是否按分类分组。网格视图的分组单独记。 */
+/** 视图菜单：换列表、网格、文件夹视图，下面是排序和分组。 */
 function DisplayMenu() {
   const t = useT();
   const prefs = usePrefs();
@@ -394,14 +435,16 @@ function DisplayMenu() {
   );
   const item = cx(itemClass, "justify-between gap-6 text-fg");
   return (
-    <DropdownPrimitive.Root>
-      <DropdownPrimitive.Trigger asChild>
-        <IconButton label={t("lib.display")}>
-          <SlidersHorizontal size={15} strokeWidth={1.75} />
-        </IconButton>
-      </DropdownPrimitive.Trigger>
-      <DropdownPrimitive.Portal>
-        <DropdownPrimitive.Content align="end" sideOffset={4} className={menuClass}>
+    <ViewMenu<PackageView>
+      label={t("lib.view")}
+      value={prefs.packageView}
+      onChange={(value) => prefs.set({ packageView: value })}
+      options={[
+        { value: "list", label: t("lib.view.list"), icon: <LayoutList size={15} strokeWidth={1.75} /> },
+        { value: "grid", label: t("lib.view.grid"), icon: <LayoutGrid size={15} strokeWidth={1.75} /> },
+        { value: "folder", label: t("lib.view.folder"), icon: <FolderTree size={15} strokeWidth={1.75} /> },
+      ]}
+    >
           {label(t("lib.sortBy"))}
           <DropdownPrimitive.RadioGroup value={prefs.sortKey} onValueChange={(value) => prefs.set({ sortKey: value as SortKey })}>
             {SORT_KEYS.map((key) => (
@@ -431,9 +474,7 @@ function DisplayMenu() {
             {t("lib.group")}
             {indicator}
           </DropdownPrimitive.CheckboxItem>
-        </DropdownPrimitive.Content>
-      </DropdownPrimitive.Portal>
-    </DropdownPrimitive.Root>
+    </ViewMenu>
   );
 }
 
@@ -457,6 +498,8 @@ function ListHeader() {
         action: t("lib.col.action"),
       }}
       cells={{
+        // 这一列只放按钮，不用列名
+        action: <span />,
         platform: <SortHeader column="platform" label={t("lib.col.platform")} />,
         size: <SortHeader column="size" label={t("lib.col.size")} />,
         added: <SortHeader column="added" label={t("lib.col.added")} />,

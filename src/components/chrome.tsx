@@ -42,7 +42,6 @@ export function Logo({ size = 18 }: { size?: number }) {
  */
 export function TopBar({ bare = false }: { bare?: boolean }) {
   const t = useT();
-  const route = useApp((state) => state.route);
   const importPaths = useApp((state) => state.importPaths);
   const patch = useApp((state) => state.patch);
   // macOS 的红黄绿按钮在左上角，给它们让出位置；其他系统的窗口按钮自己画在右边
@@ -64,7 +63,7 @@ export function TopBar({ bare = false }: { bare?: boolean }) {
       <Logo />
       <span className="pointer-events-none ml-1 text-[13px] font-semibold">ShibaPack</span>
       <div data-tauri-drag-region className="h-full min-w-4 flex-1" />
-      {!bare && route !== "storage" && <SearchBox />}
+      {!bare && <SearchBox />}
       <div data-tauri-drag-region className="h-full min-w-4 flex-1" />
       {!bare && (
         // 把软件收进仓库的方式都在这一个菜单里
@@ -176,8 +175,23 @@ function WindowControls() {
   );
 }
 
-/** 两栏之间的拖拽手柄。`edge` 说明它调整的是左边那一栏还是右边那一栏。 */
-export function ResizeHandle({ edge, width, onResize }: { edge: "left" | "right"; width: number; onResize: (width: number) => void }) {
+/**
+ * 两栏之间的拖拽手柄。`edge` 说明它调整的是左边那一栏还是右边那一栏。
+ * 给了 `onCollapse` 时，拖得比 `collapseBelow` 还窄就收起这一栏，宽度回到开始拖之前，展开时还是原来那么宽。
+ */
+export function ResizeHandle({
+  edge,
+  width,
+  onResize,
+  collapseBelow = 0,
+  onCollapse,
+}: {
+  edge: "left" | "right";
+  width: number;
+  onResize: (width: number) => void;
+  collapseBelow?: number;
+  onCollapse?: () => void;
+}) {
   const start = useRef<{ x: number; width: number } | null>(null);
   const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
     start.current = { x: event.clientX, width };
@@ -186,7 +200,14 @@ export function ResizeHandle({ edge, width, onResize }: { edge: "left" | "right"
   const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
     if (!start.current) return;
     const delta = event.clientX - start.current.x;
-    onResize(start.current.width + (edge === "left" ? delta : -delta));
+    const next = start.current.width + (edge === "left" ? delta : -delta);
+    if (onCollapse && next < collapseBelow) {
+      onResize(start.current.width);
+      start.current = null;
+      onCollapse();
+      return;
+    }
+    onResize(next);
   };
   const stop = () => {
     start.current = null;

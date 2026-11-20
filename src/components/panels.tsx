@@ -1,8 +1,7 @@
 // 首次启动的引导页、设置对话框。
 
-import { FolderOpen, TriangleAlert } from "lucide-react";
-import { useState } from "react";
-import { aiConfigured, isLocalUrl, serviceLabel } from "../lib/ai";
+import { ArchiveRestore, FolderInput, FolderOpen, Globe, HardDrive, Info, type LucideIcon, SlidersHorizontal, Sparkles, TriangleAlert } from "lucide-react";
+import { type KeyboardEvent, type ReactNode, useState } from "react";
 import { api, pickFolder, pickJsonFile, pickSavePath } from "../lib/api";
 import { type Key, effectivePack, errorText, languages } from "../lib/i18n";
 import { useApp, useLanguage, useT } from "../lib/store";
@@ -12,9 +11,10 @@ import type { Theme } from "../lib/types";
 
 /** 设置里“导入文件时”的三种做法：复制进仓库、移动进仓库、只记录位置。 */
 type ImportMode = "copy" | "move" | "indexed";
-import { AiDialog } from "./AiDialog";
+import { AiSettingsForm } from "./AiSettings";
+import { BackupPage, RepoLocation, StoragePage } from "./StorageSettings";
 import { Logo } from "./chrome";
-import { Button, Modal, Segmented, Select, Switch, cx } from "./ui";
+import { Button, Modal, Segmented, Select, SettingRow as Row, Switch, cx } from "./ui";
 
 /** 还没选仓库文件夹时显示。选好之前别的界面都不出现。 */
 export function SetupGuide() {
@@ -59,30 +59,106 @@ export function SetupGuide() {
   );
 }
 
+/** 设置的各页。左边一列选项卡（按组隔开一点），右边是这一页的内容。 */
+type SettingsPage = "general" | "library" | "storage" | "backup" | "online" | "ai" | "about";
+const PAGES: { page: SettingsPage; icon: LucideIcon; label: Key; hint?: Key; group: number }[] = [
+  { page: "general", icon: SlidersHorizontal, label: "settings.general", group: 0 },
+  { page: "library", icon: FolderInput, label: "settings.library", group: 1 },
+  { page: "storage", icon: HardDrive, label: "settings.storage", group: 1 },
+  { page: "backup", icon: ArchiveRestore, label: "settings.backup", group: 1 },
+  { page: "online", icon: Globe, label: "settings.online", group: 2 },
+  { page: "ai", icon: Sparkles, label: "settings.ai", hint: "settings.aiHint", group: 2 },
+  { page: "about", icon: Info, label: "settings.about", group: 3 },
+];
+
 export function SettingsDialog() {
   const t = useT();
   const open = useApp((state) => state.settingsOpen);
   const settings = useApp((state) => state.library?.settings);
-  const version = useApp((state) => state.status?.version);
   const patch = useApp((state) => state.patch);
+  // 这次运行里记着上次看的是哪一页，再打开时还在那一页
+  const [page, setPage] = useState<SettingsPage>("general");
+  if (!settings) return null;
+  const current = PAGES.find((p) => p.page === page) ?? PAGES[0];
+
+  // 上下方向键在各页之间切换
+  const onNavKey = (event: KeyboardEvent<HTMLDivElement>) => {
+    const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
+    if (!step) return;
+    event.preventDefault();
+    const at = PAGES.findIndex((p) => p.page === page);
+    const next = PAGES[(at + step + PAGES.length) % PAGES.length].page;
+    setPage(next);
+    document.getElementById(`settings-tab-${next}`)?.focus();
+  };
+
+  const body: Record<SettingsPage, () => ReactNode> = {
+    general: () => <GeneralPage />,
+    library: () => <LibraryPage />,
+    storage: () => <StoragePage />,
+    backup: () => <BackupPage />,
+    online: () => <OnlinePage />,
+    ai: () => <AiSettingsForm />,
+    about: () => <AboutPage />,
+  };
+
+  return (
+    <Modal open={open} onClose={() => patch({ settingsOpen: false })} title={t("settings.title")} width={720} bare>
+      <div className="flex h-[min(560px,calc(80vh-44px))] min-h-0 border-t border-line">
+        <div
+          role="tablist"
+          aria-label={t("settings.title")}
+          aria-orientation="vertical"
+          onKeyDown={onNavKey}
+          className="flex w-[168px] shrink-0 flex-col gap-0.5 overflow-y-auto rounded-bl-xl border-r border-line bg-side p-2"
+        >
+          {PAGES.map((p, i) => {
+            const selected = p.page === page;
+            return (
+              <button
+                key={p.page}
+                type="button"
+                role="tab"
+                id={`settings-tab-${p.page}`}
+                aria-selected={selected}
+                aria-controls="settings-panel"
+                tabIndex={selected ? 0 : -1}
+                onClick={() => setPage(p.page)}
+                className={cx(
+                  "flex h-8 shrink-0 items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors",
+                  i > 0 && PAGES[i - 1].group !== p.group && "mt-3",
+                  selected ? "bg-active text-fg" : "text-fg-2 hover:bg-hover hover:text-fg",
+                )}
+              >
+                <p.icon size={15} strokeWidth={1.75} aria-hidden className={cx("shrink-0", selected ? "text-fg" : "text-fg-3")} />
+                <span className="truncate">{t(p.label)}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div
+          role="tabpanel"
+          id="settings-panel"
+          aria-labelledby={`settings-tab-${page}`}
+          className="min-h-0 min-w-0 flex-1 overflow-y-auto px-5 pt-4 pb-5"
+        >
+          <h2 className="m-0 text-[15px] font-semibold">{t(current.label)}</h2>
+          {current.hint && <p className="m-0 mt-1 text-[12px] leading-relaxed text-fg-3">{t(current.hint)}</p>}
+          <div className={current.page === "ai" ? "mt-4" : "mt-1"}>{body[page]()}</div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/** 通用：主题、强调色、界面语言和语言包。 */
+function GeneralPage() {
+  const t = useT();
+  const settings = useApp((state) => state.library!.settings);
   const save = useApp((state) => state.saveSettings);
   const attempt = useApp((state) => state.attempt);
   const notify = useApp((state) => state.notify);
   const useLangPacks = useApp((state) => state.useLangPacks);
-  const update = useApp((state) => state.appUpdate);
-  const aiKeySaved = useApp((state) => state.aiKeySaved);
-  const language = useLanguage();
-  const [aiOpen, setAiOpen] = useState(false);
-  if (!settings) return null;
-  const updateNote: Partial<Record<typeof update.phase, string>> = {
-    checking: t("update.checking"),
-    upToDate: t("update.upToDate"),
-    available: t("update.available", { version: update.version }),
-    downloading: t("update.downloading", { version: update.version }),
-    ready: t("update.ready", { version: update.version }),
-    installed: t("update.installed", { version: update.version }),
-    error: t("update.failed", { message: update.error }),
-  };
   const dark = document.documentElement.dataset.theme !== "light";
   const available = languages();
   const current = available.find((l) => l.code === settings.language);
@@ -110,7 +186,7 @@ export function SettingsDialog() {
   };
 
   return (
-    <Modal open={open} onClose={() => patch({ settingsOpen: false })} title={t("settings.title")} width={460}>
+    <>
       <Row label={t("settings.theme")}>
         <Segmented<Theme>
           value={settings.theme}
@@ -155,6 +231,18 @@ export function SettingsDialog() {
           <Button onClick={() => void importPack()}>{t("settings.langImport")}</Button>
         </div>
       </Row>
+    </>
+  );
+}
+
+/** 仓库：仓库在哪、导入文件时怎么放、离线目录。 */
+function LibraryPage() {
+  const t = useT();
+  const settings = useApp((state) => state.library!.settings);
+  const save = useApp((state) => state.saveSettings);
+  return (
+    <>
+      <RepoLocation />
       <Row label={t("settings.defaultStorage")} hint={t("settings.storageHint")}>
         <Segmented<ImportMode>
           value={settings.defaultStorage === "indexed" ? "indexed" : settings.moveOnImport ? "move" : "copy"}
@@ -166,47 +254,54 @@ export function SettingsDialog() {
           ]}
         />
       </Row>
-      <Row label={t("settings.summaries")} hint={t("settings.summariesHint")}>
-        <Switch
-          checked={settings.fetchSummaries}
-          onChange={(fetchSummaries) => void save({ fetchSummaries })}
-          label={t("settings.summaries")}
-        />
-      </Row>
-      <Row label={t("settings.translate")} hint={t("settings.translateHint")}>
-        <Switch
-          checked={settings.translateSummaries}
-          onChange={(translateSummaries) => void save({ translateSummaries })}
-          label={t("settings.translate")}
-        />
-      </Row>
-      <Row label={t("settings.ai")} hint={t("settings.aiHint")}>
-        <div className="flex min-w-0 items-center gap-2">
-          {aiConfigured(settings.ai) ? (
-            <span className="min-w-0 truncate text-[12px] text-fg-2" title={`${settings.ai.baseUrl} · ${settings.ai.model}`}>
-              {serviceLabel(settings.ai, language)} · {settings.ai.model}
-              {!aiKeySaved && !isLocalUrl(settings.ai.baseUrl) && <span className="text-warning"> · {t("settings.aiNoKey")}</span>}
-            </span>
-          ) : (
-            <span className="text-[12px] text-fg-3">{t("settings.aiNone")}</span>
-          )}
-          <Button className="shrink-0" onClick={() => setAiOpen(true)}>
-            {t("settings.aiSetup")}
-          </Button>
-        </div>
-        <AiDialog open={aiOpen} onClose={() => setAiOpen(false)} />
-      </Row>
       <Row label={t("settings.catalog")} hint={t("settings.catalogHint")}>
         <Switch checked={settings.offlineCatalog} onChange={(offlineCatalog) => void save({ offlineCatalog })} label={t("settings.catalog")} />
       </Row>
-      <Row label={t("update.auto")} hint={t("update.autoHint")}>
-        <Switch checked={settings.autoUpdate} onChange={(autoUpdate) => void save({ autoUpdate })} label={t("update.auto")} />
+    </>
+  );
+}
+
+/** 联网：取简介和图标、自动翻译。 */
+function OnlinePage() {
+  const t = useT();
+  const settings = useApp((state) => state.library!.settings);
+  const save = useApp((state) => state.saveSettings);
+  return (
+    <>
+      <Row label={t("settings.summaries")} hint={t("settings.summariesHint")}>
+        <Switch checked={settings.fetchSummaries} onChange={(fetchSummaries) => void save({ fetchSummaries })} label={t("settings.summaries")} />
       </Row>
-      <div className="flex min-h-12 items-center gap-3 pt-3 text-[12px] text-fg-3">
-        <span className="shrink-0">ShibaPack · {t("settings.version", { version: version ?? "" })}</span>
-        <span className={cx("min-w-0 flex-1 truncate text-right", update.phase === "error" && "text-danger")} title={updateNote[update.phase]}>
-          {updateNote[update.phase]}
-        </span>
+      <Row label={t("settings.translate")} hint={t("settings.translateHint")}>
+        <Switch checked={settings.translateSummaries} onChange={(translateSummaries) => void save({ translateSummaries })} label={t("settings.translate")} />
+      </Row>
+    </>
+  );
+}
+
+/** 关于：版本号、自动更新、检查更新。 */
+function AboutPage() {
+  const t = useT();
+  const settings = useApp((state) => state.library!.settings);
+  const save = useApp((state) => state.saveSettings);
+  const version = useApp((state) => state.status?.version);
+  const update = useApp((state) => state.appUpdate);
+  const updateNote: Partial<Record<typeof update.phase, string>> = {
+    checking: t("update.checking"),
+    upToDate: t("update.upToDate"),
+    available: t("update.available", { version: update.version }),
+    downloading: t("update.downloading", { version: update.version }),
+    ready: t("update.ready", { version: update.version }),
+    installed: t("update.installed", { version: update.version }),
+    error: t("update.failed", { message: update.error }),
+  };
+  return (
+    <>
+      <div className="flex items-center gap-3 border-b border-line py-4">
+        <Logo size={40} />
+        <div className="min-w-0 flex-1">
+          <div className="text-[14px] font-semibold">ShibaPack</div>
+          <div className="text-[12px] text-fg-3">{t("settings.version", { version: version ?? "" })}</div>
+        </div>
         {update.phase === "available" ? (
           <Button onClick={() => void startUpdate()}>{t("update.install")}</Button>
         ) : (
@@ -215,18 +310,14 @@ export function SettingsDialog() {
           </Button>
         )}
       </div>
-    </Modal>
-  );
-}
-
-function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <div className="border-b border-line py-3">
-      <div className="flex flex-wrap items-center justify-between gap-x-4">
-        <span className="text-[13px]">{label}</span>
-        {children}
-      </div>
-      {hint && <p className="m-0 mt-2 text-[12px] leading-relaxed text-fg-3">{hint}</p>}
-    </div>
+      {updateNote[update.phase] && (
+        <p className={cx("m-0 border-b border-line py-3 text-[12px] leading-relaxed", update.phase === "error" ? "text-danger" : "text-fg-2")}>
+          {updateNote[update.phase]}
+        </p>
+      )}
+      <Row label={t("update.auto")} hint={t("update.autoHint")}>
+        <Switch checked={settings.autoUpdate} onChange={(autoUpdate) => void save({ autoUpdate })} label={t("update.auto")} />
+      </Row>
+    </>
   );
 }

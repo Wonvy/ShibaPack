@@ -258,6 +258,23 @@ export function EmptyState({ icon: Icon, title, body, action }: { icon: LucideIc
   );
 }
 
+/**
+ * 设置窗口里的一行：左边是名字，右边是开关或按钮（`children`），下面是说明（`hint`）和更多内容（`below`，比如列表）。
+ * 行与行之间一条细线。
+ */
+export function SettingRow({ label, hint, children, below }: { label: string; hint?: ReactNode; children?: ReactNode; below?: ReactNode }) {
+  return (
+    <div className="border-b border-line py-3 last:border-b-0">
+      <div className="flex min-h-7 flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <span className="text-[13px]">{label}</span>
+        {children}
+      </div>
+      {hint && <p className="m-0 mt-2 text-[12px] leading-relaxed text-fg-3">{hint}</p>}
+      {below && <div className="mt-2.5">{below}</div>}
+    </div>
+  );
+}
+
 // ── 对话框 ───────────────────────────────────────────────────
 
 export function Modal({
@@ -267,6 +284,7 @@ export function Modal({
   width = 420,
   children,
   footer,
+  bare = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -274,6 +292,8 @@ export function Modal({
   width?: number;
   children: ReactNode;
   footer?: ReactNode;
+  /** 内容不留边距、不自己滚动，由内容自己排（比如左边是选项卡的设置窗口）。 */
+  bare?: boolean;
 }) {
   const t = useT();
   return (
@@ -293,7 +313,7 @@ export function Modal({
               </IconButton>
             </Dialog.Close>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">{children}</div>
+          <div className={bare ? "flex min-h-0 flex-1 flex-col" : "min-h-0 flex-1 overflow-y-auto px-4 pb-4"}>{children}</div>
           {footer && <div className="flex shrink-0 justify-end gap-2 border-t border-line px-4 py-3">{footer}</div>}
         </Dialog.Content>
       </Dialog.Portal>
@@ -396,14 +416,11 @@ export function FilterMenu<T extends string>({
   value,
   options,
   onChange,
-  compact,
 }: {
   label: string;
   value: T;
   options: FilterOption<T>[];
   onChange: (value: T) => void;
-  /** 放在 `@container` 里时，容器窄于 36rem 就只显示图标。 */
-  compact?: boolean;
 }) {
   const current = options.find((option) => option.value === value) ?? options[0];
   const filtering = value !== options[0].value;
@@ -413,15 +430,16 @@ export function FilterMenu<T extends string>({
         <button
           type="button"
           aria-label={label}
-          title={compact ? `${label} · ${current.label}` : label}
+          title={label}
           className={cx(
             "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[13px] whitespace-nowrap transition-colors outline-none",
-            filtering ? "bg-accent-soft text-accent" : "text-fg-2 hover:bg-hover hover:text-fg data-[state=open]:bg-hover",
+            filtering ? "bg-accent-soft text-accent" : "text-fg-3 hover:bg-hover hover:text-fg data-[state=open]:bg-hover data-[state=open]:text-fg",
           )}
         >
           {current.icon && <span className="flex size-4 items-center justify-center">{current.icon}</span>}
-          <span className={compact ? "hidden @xl:inline" : undefined}>{current.label}</span>
-          <ChevronDown size={13} strokeWidth={2} aria-hidden className="opacity-60" />
+          {/* 一直显示选中的那一项，不只是图标 */}
+          <span>{current.label}</span>
+          <ChevronDown size={12} strokeWidth={2} aria-hidden className="-ml-0.5 opacity-50" />
         </button>
       </DropdownPrimitive.Trigger>
       <DropdownPrimitive.Portal>
@@ -443,3 +461,54 @@ export function FilterMenu<T extends string>({
   );
 }
 
+
+/**
+ * 列表工具栏右边的“视图”菜单：按钮是当前视图的图标，菜单里换视图；`children` 是更多显示选项（排序、分组），
+ * 放在视图下面。把视图切换和显示选项收进一个按钮，工具栏上少几个图标。
+ */
+export function ViewMenu<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+  children,
+}: {
+  label: string;
+  value: T;
+  options: { value: T; label: string; icon: ReactNode }[];
+  onChange: (value: T) => void;
+  children?: ReactNode;
+}) {
+  const current = options.find((option) => option.value === value) ?? options[0];
+  return (
+    <DropdownPrimitive.Root>
+      <DropdownPrimitive.Trigger asChild>
+        <IconButton label={`${label} · ${current.label}`} className="data-[state=open]:bg-hover data-[state=open]:text-fg">
+          {current.icon}
+        </IconButton>
+      </DropdownPrimitive.Trigger>
+      <DropdownPrimitive.Portal>
+        <DropdownPrimitive.Content align="end" sideOffset={4} className={menuClass}>
+          <DropdownPrimitive.Label className="px-2 pt-1.5 pb-1 text-[12px] text-fg-3">{label}</DropdownPrimitive.Label>
+          <DropdownPrimitive.RadioGroup value={value} onValueChange={(next) => onChange(next as T)}>
+            {options.map((option) => (
+              <DropdownPrimitive.RadioItem key={option.value} value={option.value} className={cx(itemClass, "pr-2 text-fg")}>
+                <span className="flex size-4 items-center justify-center text-fg-2">{option.icon}</span>
+                <span className="flex-1">{option.label}</span>
+                <DropdownPrimitive.ItemIndicator>
+                  <Check size={14} strokeWidth={2} className="text-accent" />
+                </DropdownPrimitive.ItemIndicator>
+              </DropdownPrimitive.RadioItem>
+            ))}
+          </DropdownPrimitive.RadioGroup>
+          {children && (
+            <>
+              <DropdownPrimitive.Separator className="mx-1 my-1 h-px bg-line" />
+              {children}
+            </>
+          )}
+        </DropdownPrimitive.Content>
+      </DropdownPrimitive.Portal>
+    </DropdownPrimitive.Root>
+  );
+}

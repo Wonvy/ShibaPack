@@ -21,7 +21,7 @@ import { DetailToggle } from "../components/chrome";
 import { type ColumnDef, type Columns, ColumnsContext, TableHeader, useTableColumns, useWidth } from "../components/columns";
 import { SoftwareIcon } from "../components/SoftwareIcon";
 import { SummaryText } from "../components/SummaryText";
-import { Button, Chip, ContextMenu, EmptyState, FilterMenu, IconButton, IconSegmented, type MenuEntry, cx } from "../components/ui";
+import { Button, Chip, ContextMenu, EmptyState, FilterMenu, IconButton, type MenuEntry, ViewMenu, cx } from "../components/ui";
 import { uninstallApp } from "../lib/actions";
 import { api } from "../lib/api";
 import { compareVersions, formatDate, formatSize, primaryVersion, summaryName } from "../lib/library";
@@ -109,11 +109,13 @@ export function InstalledView() {
 
   return (
     <div ref={frame} className="@container flex min-h-0 flex-1 flex-col">
-      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-line pr-2 pl-4">
-        <h2 className="m-0 min-w-0 truncate text-[14px] font-semibold">{t("installed.title")}</h2>
-        <span className="tabular mr-2 ml-1.5 shrink-0 text-[12px] text-fg-3">{list.length}</span>
+      {/* 和软件库的工具栏一样分三段：标题、正中间的筛选、右边的按钮 */}
+      <div className="grid h-11 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-2 border-b border-line pr-2 pl-4">
+        <div className="flex min-w-0 items-center">
+          <h2 className="m-0 min-w-0 truncate text-[14px] font-semibold">{t("installed.title")}</h2>
+          <span className="tabular ml-1.5 shrink-0 text-[12px] text-fg-3">{list.length}</span>
+        </div>
         <FilterMenu<RepoFilter>
-          compact
           label={t("installed.repoFilter")}
           value={repoFilter}
           onChange={setRepoFilter}
@@ -123,11 +125,12 @@ export function InstalledView() {
             { value: "out", label: t("installed.repoOut"), icon: <PackageX size={15} strokeWidth={1.75} /> },
           ]}
         />
-        <div className="ml-auto flex shrink-0 items-center gap-0.5">
+        <div className="flex min-w-0 items-center justify-end gap-0.5">
           <IconButton label={t("installed.refresh")} disabled={loading} onClick={() => void reload()}>
             <RefreshCw size={15} strokeWidth={1.75} className={loading ? "animate-spin" : ""} />
           </IconButton>
-          <IconSegmented<InstalledViewKind>
+          <ViewMenu<InstalledViewKind>
+            label={t("lib.view")}
             value={view}
             onChange={(value) => setPrefs({ installedView: value })}
             options={[
@@ -135,7 +138,6 @@ export function InstalledView() {
               { value: "grid", label: t("lib.view.grid"), icon: <LayoutGrid size={15} strokeWidth={1.75} /> },
             ]}
           />
-          <span className="mx-1 h-4 w-px bg-line-strong" />
           <DetailToggle />
         </div>
       </div>
@@ -165,6 +167,8 @@ export function InstalledView() {
                 action: t("lib.col.action"),
               }}
               cells={{
+                // 这一列只放按钮，不用列名
+                action: <span />,
                 version: header("version", t("installed.col.version")),
                 date: header("date", t("installed.col.date")),
                 size: header("size", t("installed.col.size")),

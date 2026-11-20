@@ -57,6 +57,10 @@ import type {
   Suggestion,
   VerifyReport,
   VersionEdit,
+  Trace,
+  TraceProgress,
+  TraceStatus,
+  TraceSummary,
 } from "./types";
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -145,6 +149,18 @@ export const api = {
   /** 扫一个文件夹或一块盘（只读）。进度见 `onDiskProgress`；停下了返回 `cancelled`。 */
   diskScan: (root: string) => call<DiskSummary>("disk_scan", { root }),
   diskCancel: () => call<void>("disk_cancel"),
+  /** 安装监控：先拍基线（进度见 `onTraceProgress`），拍完运行安装包。取消了返回 `cancelled`。 */
+  traceStart: (ref: FileRef, deep: boolean) => call<void>("trace_start", { ...ref, deep }),
+  /** 正在监控的安装，没有时是 null。 */
+  traceStatus: () => call<TraceStatus | null>("trace_status"),
+  /** 装完了：再拍一次、对比、存下记录。 */
+  traceFinish: () => call<Trace>("trace_finish"),
+  traceCancel: () => call<void>("trace_cancel"),
+  listTraces: (softwareId: string | null) => call<TraceSummary[]>("list_traces", { softwareId }),
+  getTrace: (softwareId: string, id: string) => call<Trace>("get_trace", { softwareId, id }),
+  deleteTrace: (softwareId: string, id: string) => call<void>("delete_trace", { softwareId, id }),
+  /** 在文件管理器里定位记录里的第 `index` 项。 */
+  traceReveal: (softwareId: string, id: string, index: number) => call<void>("trace_reveal", { softwareId, id, index }),
   /** 从扫完的结果里取一块：相对扫描根的路径段，往下几层，占比太小的合成“其他”。 */
   diskView: (path: string[], depth: number, minRatio: number) => call<DiskNode>("disk_view", { path, depth, minRatio }),
   /** 在文件管理器里显示；`open` 为真时用默认程序打开。 */
@@ -297,6 +313,13 @@ export async function pickSavePath(defaultName: string): Promise<string | null> 
 }
 
 // ── 事件 ─────────────────────────────────────────────────────
+
+/** 安装监控拍快照的进度。 */
+export async function onTraceProgress(handler: (progress: TraceProgress) => void): Promise<() => void> {
+  if (!isTauri) return (await import("./mockTrace")).mockOnTrace(handler);
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<TraceProgress>("trace://progress", (event) => handler(event.payload));
+}
 
 /** 导入进度。返回取消监听的函数。 */
 export async function onImportProgress(handler: (progress: Progress) => void): Promise<() => void> {

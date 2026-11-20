@@ -70,6 +70,10 @@ interface Prefs {
   cleanupOpen: Record<string, boolean>;
   /** 磁盘分析用扇形图还是矩形图。 */
   diskChart: "sunburst" | "treemap";
+  /** 安装监控用深度范围。 */
+  traceDeep: boolean;
+  /** 点“安装”时默认勾上“监控这次安装”。 */
+  traceInstalls: boolean;
   set: (patch: Partial<Omit<Prefs, "set" | "toggleCollapsed" | "sortBy" | "toggleColumn" | "setColumnWidth" | "resetColumns">>) => void;
   toggleCollapsed: (id: string) => void;
   sortBy: (key: SortKey) => void;
@@ -108,6 +112,8 @@ export const usePrefs = create<Prefs>()(
       cleanupChecked: {},
       cleanupOpen: {},
       diskChart: "sunburst",
+      traceDeep: false,
+      traceInstalls: false,
       set: (patch) =>
         set((state) => {
           const { sidebarWidth = state.sidebarWidth } = patch;

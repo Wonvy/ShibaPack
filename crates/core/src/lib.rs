@@ -22,6 +22,7 @@ pub mod startup;
 pub mod store;
 pub mod summary;
 pub mod system;
+pub mod trace;
 pub mod webicon;
 
 pub use classify::{Assignment, NewCategory, Suggestion};

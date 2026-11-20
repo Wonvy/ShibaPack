@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { ClassifyDialog } from "./components/ClassifyDialog";
 import { UninstallDialog } from "./components/UninstallDialog";
+import { TraceDialog } from "./components/TraceDialog";
 import { AddMenuButton, DetailToggle, ResizeHandle, StatusBar, ToastView, TopBar, UpdateCard } from "./components/chrome";
 import { DialogHost } from "./components/dialogs";
 import { ImportDialog } from "./components/ImportDialog";
@@ -214,6 +215,7 @@ export default function App() {
       <ImportDialog />
       <ClassifyDialog />
       <UninstallDialog />
+      <TraceDialog />
       <CleanupDialogs />
       <DialogHost />
       <ToastView />

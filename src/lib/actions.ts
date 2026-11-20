@@ -5,7 +5,9 @@ import { api, hostPlatform } from "./api";
 import type { DropTarget } from "./drag";
 import { translate } from "./i18n";
 import { newerThan, primaryVersion, shownSummary, sortedVersions, withDescendants } from "./library";
+import { usePrefs } from "./prefs";
 import { useApp } from "./store";
+import { openTraceDialog } from "./trace";
 import type { Asset, Category, InstalledApp, PackageFile, Software, SoftwareEdit, Version } from "./types";
 
 function language() {
@@ -138,14 +140,24 @@ export async function installSoftware(software: Software, upgrade = false, versi
     return;
   }
   const action = translate(lang, upgrade ? "link.upgrade" : "link.install");
-  const { ok } = await confirm({
+  const { ok, checked } = await confirm({
     title: action,
     body: upgrade
       ? translate(lang, "link.upgradeConfirm", { file: pick.file.name, name: software.name, version: pick.version.version })
       : translate(lang, "link.installConfirm", { file: pick.file.name, name: software.name }),
     confirmLabel: action,
+    checkbox: {
+      label: translate(lang, "link.traceThis"),
+      hintOn: translate(lang, "link.traceHintOn"),
+      hintOff: translate(lang, "link.traceHintOff"),
+      initial: usePrefs.getState().traceInstalls,
+    },
   });
-  if (ok) await app.attempt(() => api.runFile({ softwareId: software.id, versionId: pick.version.id, fileId: pick.file.id }));
+  if (!ok) return;
+  usePrefs.getState().set({ traceInstalls: checked });
+  const ref = { softwareId: software.id, versionId: pick.version.id, fileId: pick.file.id };
+  if (checked) openTraceDialog({ mode: "start", ...ref, fileName: pick.file.name, softwareName: software.name, version: pick.version.version });
+  else await app.attempt(() => api.runFile(ref));
 }
 
 /**

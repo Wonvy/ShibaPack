@@ -11,7 +11,7 @@ use shibapack_core::{
     installed, AtStep,
     sources::{self, Candidate, SourceError},
     startup::{self, Listing, StartupItem},
-    summary, AiSettings, Assignment, BackupInfo, Category, ImportHint, ImportReport, InstalledApp, Library, Progress, Release, Repo, Settings,
+    summary, trace, AiSettings, Assignment, BackupInfo, Category, ImportHint, ImportReport, InstalledApp, Library, Progress, Release, Repo, Settings,
     SoftwareEdit, SourceKind, Stats, Storage, Subscription, Suggestion, VerifyReport, VersionEdit, VersionRef, webicon,
 };
 use std::{
@@ -81,6 +81,12 @@ struct AppState {
     disk_cancel: AtomicBool,
     /// 失败日志放在哪（应用自己的日志文件夹，只和这台电脑有关）。
     log_dir: PathBuf,
+    /// 正在进行的安装监控（同时只有一个）：基线快照和要装的是什么。
+    trace: Mutex<Option<TraceSession>>,
+    /// 拍快照时用户点了取消。
+    trace_cancel: AtomicBool,
+    /// 正在拍快照（开始时的基线，或完成时的第二次），这时不接受别的开始、完成。
+    trace_busy: AtomicBool,
 }
 
 /// 记一条失败日志。
@@ -1115,6 +1121,225 @@ struct DiskLocation {
     kind: String,
     total: u64,
     available: u64,
+}
+
+// ───────────────────────────── 安装监控 ─────────────────────────────
+
+/// 一次安装监控：开始时拍的基线和要装的是什么。
+struct TraceSession {
+    baseline: trace::Snapshot,
+    scope: trace::Scope,
+    depth: trace::Depth,
+    software_id: String,
+    version_id: String,
+    software_name: String,
+    version: String,
+    file_name: String,
+    installer: PathBuf,
+    /// 用来存记录的仓库（监控途中换了仓库也存回原来那个）。
+    data_dir: PathBuf,
+    started_at: String,
+    started: Instant,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TraceProgress {
+    /// baseline：开始前拍基线；compare：装完拍第二次。
+    stage: &'static str,
+    entries: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TraceStatus {
+    software_id: String,
+    version_id: String,
+    software_name: String,
+    file_name: String,
+    elapsed_ms: u64,
+    /// 安装程序还在不在跑；看不出来时（.dmg 这种）是 null。
+    installer_running: Option<bool>,
+}
+
+/// 拍快照时一直占着“正在拍”的开关，离开时放下。
+struct BusyGuard<'a>(&'a AtomicBool);
+impl Drop for BusyGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+fn trace_busy<'a>(state: &'a State<AppState>) -> CmdResult<BusyGuard<'a>> {
+    if state.trace_busy.swap(true, Ordering::SeqCst) {
+        return Err("trace_busy".into());
+    }
+    state.trace_cancel.store(false, Ordering::SeqCst);
+    Ok(BusyGuard(&state.trace_busy))
+}
+
+/// 开始监控安装：先拍基线（发 `trace://progress`），拍完运行安装包。`deep` 时范围大一些。
+#[tauri::command]
+async fn trace_start(app: AppHandle, software_id: String, version_id: String, file_id: String, deep: bool) -> CmdResult<()> {
+    blocking(app, move |app, state| {
+        if state.trace.lock().map_err(|_| "internal".to_string())?.is_some() {
+            return Err("trace_busy".into());
+        }
+        let _busy = trace_busy(&state)?;
+        let (installer, software_name, version, file_name, root, data_dir) = with_repo(&state, |repo| {
+            let path = repo.file_path(&software_id, &version_id, &file_id)?;
+            let software = repo.lib.software.iter().find(|s| s.id == software_id).ok_or(shibapack_core::Error::Code("not_found"))?;
+            let version = software.versions.iter().find(|v| v.id == version_id).ok_or(shibapack_core::Error::Code("not_found"))?;
+            let file = version.files.iter().find(|f| f.id == file_id).ok_or(shibapack_core::Error::Code("not_found"))?;
+            Ok((path, software.name.clone(), version.version.clone(), file.name.clone(), repo.root().to_path_buf(), repo.data_dir().join("traces")))
+        })?;
+        if !installer.exists() {
+            return Err("file_missing".into());
+        }
+        // 不扫 ShibaPack 自己的东西：仓库、应用数据、缓存、日志
+        let mut exclude = vec![root, state.icon_cache.clone(), state.log_dir.clone()];
+        for dir in [app.path().app_data_dir(), app.path().app_cache_dir(), app.path().app_config_dir(), app.path().app_local_data_dir()].into_iter().flatten() {
+            exclude.push(dir);
+        }
+        let depth = if deep { trace::Depth::Deep } else { trace::Depth::Standard };
+        let scope = trace::scope(depth, exclude);
+        let baseline = trace::snapshot(&scope, &state.trace_cancel, &|entries| {
+            let _ = app.emit("trace://progress", TraceProgress { stage: "baseline", entries });
+        })
+        .ok_or_else(|| "cancelled".to_string())?;
+
+        let target = import::launch_target(&installer);
+        app.opener().open_path(target.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())?;
+        *state.trace.lock().map_err(|_| "internal".to_string())? = Some(TraceSession {
+            baseline,
+            scope,
+            depth,
+            software_id,
+            version_id,
+            software_name,
+            version,
+            file_name,
+            installer: target,
+            data_dir,
+            started_at: shibapack_core::now(),
+            started: Instant::now(),
+        });
+        Ok(())
+    })
+    .await
+}
+
+/// 正在监控的安装（没有时是 null）：装的是什么、过了多久、安装程序还在不在跑。
+#[tauri::command]
+async fn trace_status(app: AppHandle) -> Option<TraceStatus> {
+    blocking(app, move |_app, state| {
+        let (status, installer) = {
+            let slot = state.trace.lock().ok()?;
+            let session = slot.as_ref()?;
+            (
+                TraceStatus {
+                    software_id: session.software_id.clone(),
+                    version_id: session.version_id.clone(),
+                    software_name: session.software_name.clone(),
+                    file_name: session.file_name.clone(),
+                    elapsed_ms: session.started.elapsed().as_millis() as u64,
+                    installer_running: None,
+                },
+                session.installer.clone(),
+            )
+        };
+        Some(TraceStatus { installer_running: trace::installer_running(&installer), ..status })
+    })
+    .await
+}
+
+/// 装完了：再拍一次（发 `trace://progress`），对比、存下记录并返回。取消了时监控还在，可以再点完成。
+#[tauri::command]
+async fn trace_finish(app: AppHandle) -> CmdResult<trace::Trace> {
+    blocking(app, move |app, state| {
+        let _busy = trace_busy(&state)?;
+        let session = state.trace.lock().map_err(|_| "internal".to_string())?.take().ok_or_else(|| "not_found".to_string())?;
+        let started = Instant::now();
+        let Some(after) = trace::snapshot(&session.scope, &state.trace_cancel, &|entries| {
+            let _ = app.emit("trace://progress", TraceProgress { stage: "compare", entries });
+        }) else {
+            *state.trace.lock().map_err(|_| "internal".to_string())? = Some(session);
+            return Err("cancelled".into());
+        };
+        let (mut changes, truncated) = trace::diff(&session.baseline, &after);
+        trace::fill_details(&mut changes);
+        let record = trace::Trace {
+            id: shibapack_core::new_id(),
+            software_id: session.software_id,
+            version_id: session.version_id,
+            software_name: session.software_name,
+            version: session.version,
+            file_name: session.file_name,
+            platform: std::env::consts::OS.to_string(),
+            depth: session.depth,
+            started_at: session.started_at,
+            finished_at: shibapack_core::now(),
+            baseline_ms: session.baseline.elapsed_ms,
+            compare_ms: started.elapsed().as_millis() as u64,
+            entries: after.entries,
+            changes,
+            truncated,
+        };
+        trace::save(&session.data_dir, &record).map_err(|e| e.to_string())?;
+        Ok(record)
+    })
+    .await
+}
+
+/// 不监控了：正在拍快照就停下；已经在等安装时直接丢掉基线。
+#[tauri::command]
+fn trace_cancel(state: State<AppState>) {
+    state.trace_cancel.store(true, Ordering::SeqCst);
+    if !state.trace_busy.load(Ordering::SeqCst) {
+        if let Ok(mut slot) = state.trace.lock() {
+            *slot = None;
+        }
+    }
+}
+
+fn traces_dir(state: &State<AppState>) -> CmdResult<PathBuf> {
+    let guard = state.repo.lock().map_err(|_| "internal".to_string())?;
+    let repo = guard.as_ref().ok_or_else(|| "not_configured".to_string())?;
+    Ok(repo.data_dir().join("traces"))
+}
+
+/// 安装记录列表（新的在前）。给了软件 id 只列这个软件的。
+#[tauri::command]
+async fn list_traces(app: AppHandle, software_id: Option<String>) -> CmdResult<Vec<trace::TraceSummary>> {
+    blocking(app, move |_app, state| Ok(trace::list(&traces_dir(&state)?, software_id.as_deref()))).await
+}
+
+#[tauri::command]
+async fn get_trace(app: AppHandle, software_id: String, id: String) -> CmdResult<trace::Trace> {
+    blocking(app, move |_app, state| trace::load(&traces_dir(&state)?, &software_id, &id).map_err(|e| e.to_string())).await
+}
+
+#[tauri::command]
+async fn delete_trace(app: AppHandle, software_id: String, id: String) -> CmdResult<()> {
+    blocking(app, move |_app, state| trace::delete(&traces_dir(&state)?, &software_id, &id).map_err(|e| e.to_string())).await
+}
+
+/// 在文件管理器里定位记录里的一项（按序号，不接受前端传来的路径）。已经不在了就定位到还在的上一级。
+#[tauri::command]
+async fn trace_reveal(app: AppHandle, software_id: String, id: String, index: usize) -> CmdResult<()> {
+    blocking(app, move |app, state| {
+        let record = trace::load(&traces_dir(&state)?, &software_id, &id).map_err(|e| e.to_string())?;
+        let change = record.changes.get(index).ok_or_else(|| "not_found".to_string())?;
+        if !matches!(change.kind, trace::ItemKind::File | trace::ItemKind::Folder) {
+            return Err("not_found".into());
+        }
+        let mut path = PathBuf::from(&change.path);
+        while !path.exists() {
+            path = path.parent().ok_or_else(|| "file_missing".to_string())?.to_path_buf();
+        }
+        app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// 可以分析的地方：用户文件夹和每一块盘。
@@ -2486,6 +2711,9 @@ pub fn run() {
                 cleanup_turn: Mutex::new(()),
                 cleanup_cancel: AtomicBool::new(false),
                 log_dir: app.path().app_log_dir().unwrap_or_else(|_| std::env::temp_dir().join("ShibaPack-logs")),
+                trace: Mutex::new(None),
+                trace_cancel: AtomicBool::new(false),
+                trace_busy: AtomicBool::new(false),
             });
             Ok(())
         })
@@ -2531,6 +2759,14 @@ pub fn run() {
             disk_locations,
             disk_scan,
             disk_cancel,
+            trace_start,
+            trace_status,
+            trace_finish,
+            trace_cancel,
+            list_traces,
+            get_trace,
+            delete_trace,
+            trace_reveal,
             disk_view,
             disk_reveal,
             disk_full_path,

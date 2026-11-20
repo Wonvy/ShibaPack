@@ -710,3 +710,88 @@ export interface DiskNode {
   hasChildren: boolean;
   children: DiskNode[];
 }
+
+// ── 安装监控 ─────────────────────────────────────────────────
+
+export type TraceDepth = "standard" | "deep";
+export type TraceOp = "added" | "modified" | "removed";
+export type TraceItemKind = "file" | "folder" | "registryKey" | "registryValue";
+export type TraceCategory =
+  | "app"
+  | "data"
+  | "settings"
+  | "startup"
+  | "service"
+  | "driver"
+  | "shortcut"
+  | "association"
+  | "environment"
+  | "uninstall"
+  | "other";
+
+/** 安装程序做的一项改动。 */
+export interface TraceChange {
+  op: TraceOp;
+  kind: TraceItemKind;
+  /** 文件或文件夹的完整路径；注册表是键的路径。 */
+  path: string;
+  /** 注册表值的名字。 */
+  value?: string;
+  /** 注册表值现在的内容（截短的）。 */
+  data?: string;
+  size?: number;
+  /** 新增或删除的文件夹、注册表键里一共有几项。 */
+  count?: number;
+  category: TraceCategory;
+  /** 多半不是安装程序改的（缓存、日志、浏览器资料……）。 */
+  noise: boolean;
+}
+
+/** 一次安装监控的记录。 */
+export interface Trace {
+  id: string;
+  softwareId: string;
+  versionId: string;
+  softwareName: string;
+  version: string;
+  fileName: string;
+  platform: string;
+  depth: TraceDepth;
+  startedAt: string;
+  finishedAt: string;
+  baselineMs: number;
+  compareMs: number;
+  entries: number;
+  changes: TraceChange[];
+  truncated: boolean;
+}
+
+export interface TraceSummary {
+  id: string;
+  softwareId: string;
+  versionId: string;
+  version: string;
+  fileName: string;
+  platform: string;
+  startedAt: string;
+  finishedAt: string;
+  /** 不算噪音的改动有几项。 */
+  changes: number;
+  addedBytes: number;
+}
+
+/** 正在监控的安装。 */
+export interface TraceStatus {
+  softwareId: string;
+  versionId: string;
+  softwareName: string;
+  fileName: string;
+  elapsedMs: number;
+  /** 安装程序还在不在跑；看不出来时是 null。 */
+  installerRunning: boolean | null;
+}
+
+export interface TraceProgress {
+  stage: "baseline" | "compare";
+  entries: number;
+}

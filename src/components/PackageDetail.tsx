@@ -28,8 +28,10 @@ import {
   Trash2,
   X,
   PackageMinus,
+  Radar,
   WandSparkles,
 } from "lucide-react";
+import { openTraceDialog, useTrace } from "../lib/trace";
 import {
   bestAsset,
   classify,
@@ -49,7 +51,7 @@ import {
   uninstallApp,
   upgradeFor,
 } from "../lib/actions";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, hostPlatform, isMac, pickFiles } from "../lib/api";
 import {
   flattenTree,
@@ -63,7 +65,7 @@ import {
 } from "../lib/library";
 import { usePrefs } from "../lib/prefs";
 import { useAiReady, useApp, useLanguage, useT } from "../lib/store";
-import type { InstalledApp, PackageFile, Software, SoftwareEdit, Version } from "../lib/types";
+import type { InstalledApp, PackageFile, Software, SoftwareEdit, TraceSummary, Version } from "../lib/types";
 import { SummaryText } from "./SummaryText";
 import { useSoftwareHover } from "./HoverCard";
 import { prompt } from "./dialogs";
@@ -467,6 +469,8 @@ function Detail({ software }: { software: Software }) {
 
       <Versions software={software} />
 
+      <TraceHistory software={software} />
+
       <section className="mt-6">
         <SectionHeader title={t("source.title")} />
         <SourceSection software={software} />
@@ -474,6 +478,51 @@ function Detail({ software }: { software: Software }) {
 
       <InfoSection software={software} onSave={save} />
     </div>
+  );
+}
+
+/** 这个软件的安装监控记录（没有就不显示）。点一条打开报告。 */
+function TraceHistory({ software }: { software: Software }) {
+  const t = useT();
+  const language = useLanguage();
+  const revision = useTrace((state) => state.revision);
+  const [traces, setTraces] = useState<TraceSummary[]>([]);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .listTraces(software.id)
+      .then((list) => alive && setTraces(list))
+      .catch(() => alive && setTraces([]));
+    return () => {
+      alive = false;
+    };
+  }, [software.id, revision]);
+
+  if (traces.length === 0) return null;
+  return (
+    <section className="mt-6">
+      <SectionHeader title={t("trace.history")} count={traces.length} />
+      <div className="-mx-2">
+        {traces.map((trace) => (
+          <button
+            key={trace.id}
+            type="button"
+            onClick={() => openTraceDialog({ mode: "view", softwareId: software.id, traceId: trace.id })}
+            className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left hover:bg-hover"
+          >
+            <Radar size={13} strokeWidth={1.75} aria-hidden className="shrink-0 text-fg-3" />
+            <span className="min-w-0 flex-1 truncate text-[12px]">
+              {trace.version || trace.fileName}
+              <span className="ml-1.5 text-fg-3">{formatDate(trace.startedAt, language, true)}</span>
+            </span>
+            <span className="tabular shrink-0 text-[12px] text-fg-3">
+              {t("trace.historyItem", { n: trace.changes, size: formatSize(trace.addedBytes) })}
+            </span>
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -924,6 +973,13 @@ function FileRow({ software, version, file }: { software: Software; version: Ver
       icon: Play,
       disabled: !runnable,
       onSelect: () => void attempt(() => api.runFile(ref)),
+    },
+    {
+      label: t("detail.trace"),
+      icon: Radar,
+      disabled: !runnable,
+      onSelect: () =>
+        openTraceDialog({ mode: "start", ...ref, fileName: file.name, softwareName: software.name, version: version.version }),
     },
     { label: t("detail.reveal"), icon: FolderOpen, onSelect: () => void attempt(() => api.revealFile(ref)) },
     { label: t("detail.copyHash"), icon: Copy, onSelect: () => void copyHash() },

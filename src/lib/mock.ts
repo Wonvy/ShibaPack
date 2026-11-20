@@ -695,6 +695,7 @@ const classifyCache: Record<string, Suggestion> = {};
 export async function mockCall(command: string, args: Record<string, unknown>): Promise<unknown> {
   await sleep(40);
   if (command.startsWith("disk_") || command === "ai_explain_folders") return (await import("./mockDisk")).mockDiskCall(command, args);
+  if (command.startsWith("trace_") || command.endsWith("_trace") || command === "list_traces") return (await import("./mockTrace")).mockTraceCall(command, args);
   if (command.startsWith("cleanup_") || command === "ai_explain_cleanup") return (await import("./mockCleanup")).mockCleanupCall(command, args);
   switch (command) {
     case "get_status":

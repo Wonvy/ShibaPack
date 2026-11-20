@@ -3,7 +3,7 @@
 import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as DropdownPrimitive from "@radix-ui/react-dropdown-menu";
-import { Check, ChevronDown, LoaderCircle, type LucideIcon, X } from "lucide-react";
+import { Check, ChevronDown, LoaderCircle, type LucideIcon, Minus, X } from "lucide-react";
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from "react";
 import { useT } from "../lib/store";
 
@@ -197,6 +197,31 @@ export function Checkbox({ checked, onChange, children }: { checked: boolean; on
       </button>
       <span>{children}</span>
     </label>
+  );
+}
+
+/** 勾选框。`mixed` 是一组里勾了一部分。 */
+export function Tick({ checked, disabled, label, onChange }: { checked: boolean | "mixed"; disabled?: boolean; label: string; onChange: (checked: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      onClick={(event) => {
+        event.stopPropagation();
+        onChange(checked !== true);
+      }}
+      className={cx(
+        "flex size-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors disabled:opacity-40",
+        checked ? "border-accent-strong bg-accent-strong text-white" : "border-line-strong bg-bg",
+      )}
+    >
+      {checked === true && <Check size={12} strokeWidth={3} aria-hidden />}
+      {checked === "mixed" && <Minus size={12} strokeWidth={3} aria-hidden />}
+    </button>
   );
 }
 
@@ -394,13 +419,15 @@ export function ContextMenu({
   items,
   children,
   onCloseAutoFocus,
+  onOpenChange,
 }: {
   items: MenuEntry[];
   children: ReactNode;
   onCloseAutoFocus?: (event: Event) => void;
+  onOpenChange?: (open: boolean) => void;
 }) {
   return (
-    <ContextMenuPrimitive.Root>
+    <ContextMenuPrimitive.Root onOpenChange={onOpenChange}>
       <ContextMenuPrimitive.Trigger asChild>{children}</ContextMenuPrimitive.Trigger>
       <ContextMenuPrimitive.Portal>
         <ContextMenuPrimitive.Content className={menuClass} onCloseAutoFocus={onCloseAutoFocus}>

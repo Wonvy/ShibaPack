@@ -10,6 +10,7 @@ import {
   ChevronsUpDown,
   FolderPlus,
   Inbox,
+  House,
   LayoutGrid,
   type LucideIcon,
   MonitorCheck,
@@ -161,9 +162,18 @@ export function Sidebar({ onAutoWidthChange }: { onAutoWidthChange: (width: numb
   return (
     <nav id="app-sidebar" ref={nav} className="flex shrink-0 flex-col bg-side" style={{ width: width ?? "max-content", minWidth: SIDEBAR.min, maxWidth: SIDEBAR.max }}>
       <div className="flex flex-col gap-px p-2 pb-0">
-        {/* 启动与服务和软件库的入口用分隔线隔开 */}
+        {/* 主页和管本机的几项（启动与服务、清理、已安装）在上面，和软件库的入口用分隔线隔开 */}
+        <NavRow icon={House} label={t("nav.home")} active={route === "home"} onClick={() => setRoute("home")} />
         <NavRow icon={Rocket} label={t("nav.startup")} count={startupCount} active={route === "startup"} onClick={() => setRoute("startup")} />
         <NavRow icon={BrushCleaning} label={t("nav.cleanup")} badge={cleanupTotal} active={route === "cleanup"} onClick={() => setRoute("cleanup")} />
+        {/* 这台电脑上装的软件，和启动、清理一样是管本机的，放在清理下面 */}
+        <NavRow
+          icon={MonitorCheck}
+          label={t("nav.installed")}
+          count={installedCount}
+          active={route === "installed"}
+          onClick={() => setRoute("installed")}
+        />
         <Divider />
         <NavRow
           icon={LayoutGrid}
@@ -172,14 +182,6 @@ export function Sidebar({ onAutoWidthChange }: { onAutoWidthChange: (width: numb
           active={isScope({ kind: "all" })}
           onClick={() => setScope({ kind: "all" })}
           menu={classifyMenu(library.software.map((s) => s.id))}
-        />
-        {/* 这台电脑上装的软件，常用，放在收藏上面 */}
-        <NavRow
-          icon={MonitorCheck}
-          label={t("nav.installed")}
-          count={installedCount}
-          active={route === "installed"}
-          onClick={() => setRoute("installed")}
         />
         <NavRow icon={Star} label={t("nav.starred")} count={starred} active={isScope({ kind: "starred" })} onClick={() => setScope({ kind: "starred" })} />
         <NavRow

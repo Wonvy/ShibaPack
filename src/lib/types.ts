@@ -296,8 +296,10 @@ export interface Leftover {
 
 export interface LeftoverScan {
   items: Leftover[];
-  /** 软件看起来还在（卸载程序可能被取消了）。 */
+  /** 软件看起来还在（卸载程序可能被取消了）。卸载前的分析里总是 false。 */
   stillInstalled: boolean;
+  /** 卸载前的分析里“App”那一行显示的：Windows 是卸载命令，macOS 是 .app 的位置。 */
+  appPath?: string;
 }
 
 export interface RemoveReport {
@@ -618,4 +620,52 @@ export interface CleanProgress {
   total: number;
   /** 正在等用户在系统的授权提示里输入密码或点“是”。 */
   waitingAdmin: boolean;
+}
+
+/** 主页：电脑名、系统、处理器、内存总量、开机时间（不会变的那些）。 */
+export interface SystemOverview {
+  hostName: string;
+  /** 型号：“MacBook Pro (Mac16,1)”、主板登记的厂商和产品名。不知道时为空。 */
+  model: string;
+  /** Apple 芯片的性能核、能效核个数。 */
+  coreSplit: [number, number] | null;
+  /** 处理器频率（MHz），读不到时为 0。 */
+  cpuMhz: number;
+  gpus: { model: string; memory: number | null }[];
+  /** 本机的硬盘，系统盘在前。 */
+  disks: { name: string; mount: string; total: number; available: number; removable: boolean; kind: string }[];
+  os: string;
+  kernel: string;
+  arch: string;
+  cpuBrand: string;
+  cpuThreads: number;
+  cpuCores: number | null;
+  totalMemory: number;
+  totalSwap: number;
+  /** Unix 秒。 */
+  bootTime: number;
+}
+
+/** 某一刻的系统状态。 */
+export interface SystemSample {
+  /** 0–100 */
+  cpu: number;
+  memoryUsed: number;
+  memoryTotal: number;
+  swapUsed: number;
+  swapTotal: number;
+  disk: { mount: string; total: number; available: number } | null;
+  uptime: number;
+  processes: ProcessInfo[];
+}
+
+export interface ProcessInfo {
+  pid: number;
+  name: string;
+  /** 占整台电脑 CPU 的百分比（已除以核心数）。 */
+  cpu: number;
+  memory: number;
+  exe: string | null;
+  /** 不能在这里结束：ShibaPack 自己、系统进程、别的用户的。 */
+  protected: boolean;
 }

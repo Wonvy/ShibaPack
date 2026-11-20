@@ -34,6 +34,8 @@ import type {
   InstalledApp,
   LangPack,
   LeftoverScan,
+  SystemOverview,
+  SystemSample,
   Library,
   Progress,
   Release,
@@ -114,6 +116,8 @@ export const api = {
   listInstalled: () => call<{ apps: InstalledApp[]; cachedIcons: Library["installedIcons"] | null }>("list_installed"),
   measureInstalled: () => call<Record<string, number>>("measure_installed"),
   matchInstalled: () => call<Record<string, string>>("match_installed"),
+  /** 卸载前先分析：软件的数据、快捷方式、设置在哪、多大（不含软件本身）。只读。 */
+  analyzeUninstall: (id: string) => call<LeftoverScan>("analyze_uninstall", { id }),
   uninstallInstalled: (id: string) => call<void>("uninstall_installed", { id }),
   /** 卸载程序还没跑完（软件还在）。 */
   uninstallStatus: (id: string) => call<boolean>("uninstall_status", { id }),
@@ -121,9 +125,19 @@ export const api = {
   scanLeftovers: (id: string) => call<LeftoverScan>("scan_leftovers", { id }),
   /** 清理残留：`indices` 是上次找到的列表里的序号；`elevated` 为真时以管理员身份（Windows）。 */
   removeLeftovers: (id: string, indices: number[], elevated = false) => call<RemoveReport>("remove_leftovers", { id, indices, elevated }),
+  /** 在文件管理器里显示分析或查找到的某一项。 */
+  revealLeftover: (id: string, index: number) => call<void>("reveal_leftover", { id, index }),
   /** 打开清理时备份注册表的文件夹。 */
   openUninstallBackup: (path: string) => call<void>("open_uninstall_backup", { path }),
   revealInstalled: (id: string) => call<void>("reveal_installed", { id }),
+  /** 主页：电脑名、系统、处理器、内存总量。 */
+  systemOverview: () => call<SystemOverview>("system_overview"),
+  /** 主页：此刻的 CPU、内存、系统盘和所有进程。 */
+  systemSample: () => call<SystemSample>("system_sample"),
+  /** 进程的图标（按可执行文件）：取不到的不在结果里。 */
+  processIcons: (exes: string[]) => call<Record<string, string>>("process_icons", { exes }),
+  /** 结束进程：`force` 为假时请它正常退出。 */
+  endProcess: (pid: number, force: boolean) => call<void>("end_process", { pid, force }),
   /** 列出启动项和服务。 */
   listStartup: () => call<StartupListing>("list_startup"),
   /** 启用、停用、启动、停止、重启，或改服务的启动类型。返回改完后重新列出来的结果。 */

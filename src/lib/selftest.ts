@@ -39,6 +39,10 @@ export async function runSelftest() {
     const status = await api.getStatus();
     await check("仓库已打开", status.configured, status.repoRoot ?? "");
 
+    // 打开时默认是主页，下面的检查从软件库开始
+    useApp.getState().setRoute("library");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
     const appWindow = getCurrentWindow();
     const before = await appWindow.innerSize();
@@ -281,6 +285,24 @@ export async function runSelftest() {
     } catch (error) {
       const text = String(error);
       await check("在线更新可以检查", !/not allowed|permission|pubkey|capabilit/i.test(text), text);
+    }
+
+    // 主页：系统信息和进程（只读）
+    try {
+      const overview = await api.systemOverview();
+      const sample = await api.systemSample();
+      const own = sample.processes.filter((p) => p.protected && /shibapack/i.test(p.name));
+      await check(
+        "主页能读到系统状态",
+        overview.totalMemory > 0 && sample.memoryUsed > 0 && sample.processes.length > 5 && own.length > 0,
+        `${overview.os} · ${overview.cpuBrand} · ${sample.processes.length} 个进程 · CPU ${Math.round(sample.cpu)}%`,
+      );
+      await check("本机信息", overview.disks.length > 0 && (!/Mac/i.test(navigator.userAgent) || (overview.model !== "" && overview.gpus.length > 0)), `${overview.model} · ${overview.gpus.map((g) => g.model).join("、")} · ${overview.disks.length} 块磁盘`);
+      const exes = [...new Set(sample.processes.map((p) => p.exe).filter((exe): exe is string => Boolean(exe && /\.app\/|\.exe$/i.test(exe))))];
+      const icons = await api.processIcons(exes);
+      await check("进程图标", exes.length === 0 || Object.keys(icons).length > 0, `${exes.length} 个程序里取到 ${Object.keys(icons).length} 个图标`);
+    } catch (error) {
+      await check("主页能读到系统状态", false, String(error));
     }
 
     // 界面状态和数据是否一致

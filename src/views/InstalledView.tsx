@@ -18,6 +18,7 @@ import {
   SearchX,
   Trash2,
   WandSparkles,
+  ScanSearch,
 } from "lucide-react";
 import { type ReactNode, useContext, useEffect, useMemo, useState } from "react";
 import { useGridMotion } from "../components/gridMotion";
@@ -26,7 +27,7 @@ import { type ColumnDef, type ColumnSamples, type Columns, ColumnsContext, Table
 import { InstalledSoftwareIcon } from "../components/SoftwareIcon";
 import { SummaryText } from "../components/SummaryText";
 import { Button, Chip, ContextMenu, EmptyState, FilterMenu, IconButton, type MenuEntry, ViewMenu, cx } from "../components/ui";
-import { editSummary, uninstallApp } from "../lib/actions";
+import { analyzeApp, editSummary, uninstallApp } from "../lib/actions";
 import { api } from "../lib/api";
 import { compareVersions, formatDate, formatSize, primaryVersion, shownSummary, summaryName } from "../lib/library";
 import { type InstalledView as InstalledViewKind, usePrefs } from "../lib/prefs";
@@ -306,10 +307,16 @@ function useInstalledMenu(app: InstalledApp, group: string[] | null): MenuEntry[
   const describeWithAi = useApp((state) => state.describeWithAi);
   const aiReady = useAiReady();
   const key = useSummaryKey(app);
+  const index = useApp((state) => state.installedIndex);
+  // 多选里能卸载的那些，一起卸载
+  const removable = (group ?? []).flatMap((id) => (index[id]?.uninstallable ? [index[id]!] : []));
   if (group) {
     return [
       { label: t("installed.fetchSummaries", { n: group.length }), icon: RefreshCw, onSelect: () => summaryTargets(group).forEach((target) => requestSummary(target.name, true)) },
       ...(aiReady ? [{ label: t("installed.aiSummaries", { n: group.length }), icon: WandSparkles, onSelect: () => void describeWithAi(summaryTargets(group)) }] : []),
+      ...(removable.length > 0
+        ? [{ label: t("installed.uninstallMany", { n: removable.length }), icon: Trash2, danger: true, separated: true, onSelect: () => void uninstallApp(removable) }]
+        : []),
     ];
   }
   return [
@@ -317,6 +324,7 @@ function useInstalledMenu(app: InstalledApp, group: string[] | null): MenuEntry[
     { label: t("summary.fetch"), icon: RefreshCw, onSelect: () => requestSummary(key, true) },
     ...(aiReady ? [{ label: t("ai.describe"), icon: WandSparkles, onSelect: () => void describeWithAi([{ name: key, publisher: app.publisher }]) }] : []),
     { label: t("menu.openFolder"), icon: FolderOpen, separated: true, disabled: !app.location, onSelect: () => void attempt(() => api.revealInstalled(app.id)) },
+    { label: t("installed.analyze"), icon: ScanSearch, onSelect: () => void analyzeApp(app) },
     ...(app.uninstallable ? [{ label: t("installed.uninstall"), icon: Trash2, danger: true, separated: true, onSelect: () => void uninstallApp(app) }] : []),
   ];
 }
@@ -625,6 +633,10 @@ function InstalledSingle() {
           <Button className="flex-1" disabled={!app.location} onClick={() => void attempt(() => api.revealInstalled(app.id))}>
             <FolderOpen size={14} strokeWidth={1.75} aria-hidden />
             {t("installed.reveal")}
+          </Button>
+          <Button className="flex-1" onClick={() => void analyzeApp(app)}>
+            <ScanSearch size={14} strokeWidth={1.75} aria-hidden />
+            {t("installed.analyze")}
           </Button>
           <Button variant="caution" className="flex-1" disabled={!app.uninstallable} onClick={() => void uninstallApp(app)}>
             <Trash2 size={14} strokeWidth={1.75} aria-hidden />

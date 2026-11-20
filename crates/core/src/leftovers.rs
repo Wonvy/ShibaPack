@@ -242,6 +242,39 @@ pub fn scan(target: &Target, others: &[InstalledApp], still_installed: bool) -> 
     found
 }
 
+/// 卸载之前先看一遍会删掉什么。软件还装着，所以不列它自己的程序：安装文件夹、Program Files 和
+/// `%LOCALAPPDATA%\Programs` 里对得上名字的文件夹、卸载项、App Paths 都交给卸载程序（界面上是“App”那一行）。
+/// 卸载程序跑完以后再用 [`scan`] 找一遍，它没删干净的那时候再列出来。
+/// 这样只清数据、不卸载时，也不会动到软件本身。
+pub fn scan_before(target: &Target, others: &[InstalledApp]) -> Vec<Leftover> {
+    data_only(scan(target, others, false), &program_roots(), cfg!(windows))
+}
+
+/// 去掉属于软件本身的项，只留数据、快捷方式、设置和开机启动。`program` 是装软件的文件夹（`path_key` 过的）。
+pub(crate) fn data_only(mut found: Vec<Leftover>, program: &[String], fold_case: bool) -> Vec<Leftover> {
+    found.retain(|item| {
+        if matches!(item.reason.as_str(), "installDir" | "uninstallKey" | "appPath") {
+            return false;
+        }
+        if !matches!(item.kind, LeftoverKind::Folder | LeftoverKind::File) {
+            return true;
+        }
+        let key = path_key(Path::new(&item.path), fold_case);
+        !program.iter().any(|root| key.starts_with(&format!("{root}/")))
+    });
+    found
+}
+
+/// 装软件本身的地方：Program Files（三种写法）和 `%LOCALAPPDATA%\Programs`。
+fn program_roots() -> Vec<String> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    let mut roots: Vec<PathBuf> = ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"].iter().filter_map(std::env::var_os).map(PathBuf::from).collect();
+    roots.extend(std::env::var_os("LOCALAPPDATA").map(|local| PathBuf::from(local).join("Programs")));
+    roots.iter().filter(|root| !root.as_os_str().is_empty()).map(|root| path_key(root, true)).collect()
+}
+
 /// 别的软件和这个软件的关系：它们的名字、它们的文件夹。
 struct Neighbours {
     names: HashSet<String>,
@@ -853,6 +886,25 @@ mod tests {
             install_dir: dir.map(Path::to_path_buf),
             bundle_id: None,
         }
+    }
+
+    /// 卸载前的分析只留数据：软件本身（安装文件夹、Program Files 里的、卸载项、App Paths）交给卸载程序。
+    #[test]
+    fn analysis_before_uninstall_leaves_the_program_alone() {
+        let item = |kind, path: &str, reason: &str| Leftover { kind, path: path.into(), value: None, confidence: Confidence::High, reason: reason.into(), size: None };
+        let found = vec![
+            item(LeftoverKind::Folder, "C:/Program Files/Foo", "installDir"),
+            item(LeftoverKind::Folder, "C:/Program Files (x86)/Foo", "name"),
+            item(LeftoverKind::Folder, "C:/Users/me/AppData/Local/Programs/Foo", "name"),
+            item(LeftoverKind::Folder, "C:/Users/me/AppData/Roaming/Foo", "name"),
+            item(LeftoverKind::File, "C:/Users/me/Desktop/Foo.lnk", "shortcut"),
+            item(LeftoverKind::RegistryKey, r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Foo", "uninstallKey"),
+            item(LeftoverKind::RegistryKey, r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\foo.exe", "appPath"),
+            item(LeftoverKind::RegistryKey, r"HKCU\Software\Foo", "name"),
+        ];
+        let program = ["c:/program files", "c:/program files (x86)", "c:/users/me/appdata/local/programs"].map(String::from);
+        let kept: Vec<String> = data_only(found, &program, true).into_iter().map(|item| item.path).collect();
+        assert_eq!(kept, ["C:/Users/me/AppData/Roaming/Foo", "C:/Users/me/Desktop/Foo.lnk", r"HKCU\Software\Foo"]);
     }
 
     fn no_protection() -> Protected {

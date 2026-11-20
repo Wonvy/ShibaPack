@@ -23,6 +23,7 @@ import { scheduleUpdateChecks } from "./lib/updater";
 import { InstalledDetail, InstalledView } from "./views/InstalledView";
 import { LibraryView } from "./views/LibraryView";
 import { StartupDetail, StartupView } from "./views/StartupView";
+import { HomeView } from "./views/HomeView";
 import { CleanupDetail, CleanupView } from "./views/CleanupView";
 import { CleanupDialogs } from "./components/CleanupDialogs";
 import { useCleanup } from "./lib/cleanup";
@@ -151,6 +152,7 @@ export default function App() {
           onReset={() => setPrefs({ sidebarWidth: null })}
         />
         <main className="relative flex min-w-0 flex-1 flex-col">
+          {route === "home" && <HomeView />}
           {route === "library" && <LibraryView detailToggle={detailToggle} />}
           {route === "installed" && <InstalledView detailToggle={detailToggle} />}
           {route === "startup" && <StartupView detailToggle={detailToggle} />}
@@ -161,8 +163,8 @@ export default function App() {
               <span className="text-[13px] font-medium">{t("import.drop")}</span>
             </div>
           )}
-          {/* 清理页底部有自己的清理按钮，不放添加按钮 */}
-          {route !== "cleanup" && <AddMenuButton coveredWidth={floating ? floatingDetailWidth : 0} />}
+          {/* 清理页底部有自己的清理按钮，主页是看板，都不放添加按钮 */}
+          {route !== "cleanup" && route !== "home" && <AddMenuButton coveredWidth={floating ? floatingDetailWidth : 0} />}
           {/* 状态栏只占中间一栏，左边的侧栏和右边的详情栏一直到窗口底部 */}
           <StatusBar />
         </main>

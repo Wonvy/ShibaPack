@@ -53,8 +53,8 @@ export function TopBar({ listBounds }: { listBounds?: { left: number; right: num
 
   const { left = 0, right = 0, windowWidth = 0 } = listBounds ?? {};
   const listWidth = windowWidth - left - right;
-  // 在列表两侧对称留空，避免搜索框碰到标题或窗口按钮。
-  const searchPadding = Math.max(8, nativeLights ? 184 - left : 0, ownControls ? 144 - right : 0);
+  // 在列表两侧对称留空，避免搜索框碰到标题或窗口按钮。macOS 不显示标题，只给红黄绿按钮留位置。
+  const searchPadding = Math.max(8, nativeLights ? 88 - left : 0, ownControls ? 144 - right : 0);
   const separateSearchRow = Boolean(listBounds && searchPadding > 8 && listWidth - searchPadding * 2 < 180);
   const resultsMaxWidth = Math.max(0, windowWidth - Math.abs(left - right) - 16);
 
@@ -69,8 +69,13 @@ export function TopBar({ listBounds }: { listBounds?: { left: number; right: num
         className="flex items-center gap-1 pr-2"
         style={{ height: height - 1, paddingLeft: nativeLights ? 80 : 12 }}
       >
-        <Logo />
-        <span className="pointer-events-none ml-1 text-[13px] font-semibold">ShibaPack</span>
+        {/* macOS 左上角只留红黄绿按钮，不显示图标和名字 */}
+        {!isMac && (
+          <>
+            <Logo />
+            <span className="pointer-events-none ml-1 text-[13px] font-semibold">ShibaPack</span>
+          </>
+        )}
         <div data-tauri-drag-region className="h-full min-w-4 flex-1" />
         {ownControls && <WindowControls />}
       </div>

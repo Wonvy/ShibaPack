@@ -19,6 +19,11 @@ in ShibaPack (opened from the version number in the bottom-right corner) shows t
 - 清理设置里可以添加和编辑自定义规则：文件名筛选、多少天没动过、要先关掉的程序、直接删除还是移到回收站。
 - 新增 Microsoft Teams 缓存。微信、企业微信、飞书、钉钉、QQ 没有官方说明哪些文件能删，所以不直接删，改为列出“××自带的清理”，一点就打开那个应用去用它自己的清理。
 - 扫描时不再弹出“控制访达”的授权；需要看废纸篓里有什么时再问。停止扫描更快了。
+- 卸载前先分析：列出软件本身和它的数据、快捷方式、设置、注册表项各有多大，有把握的默认勾上，拿不准的放在“需确认”。勾选后卸载和清理一次做完。
+- 已安装里可以多选后一起卸载；详情栏和右键菜单有“分析”，只看占用，也可以只清理数据、不卸载。
+- 新增主页（侧栏最上面，打开时默认进这里）：电脑配置，CPU、内存的实时占用和走势，系统盘可用空间，占用最多的进程，软件数量、有更新、开机自启、可清理，最近安装的软件。
+- “查看全部”是任务管理器：搜索、排序全部进程，右键结束进程，退不出来时可以强制结束。系统进程不能在这里结束。
+- 侧栏“已安装”移到“清理”下面；macOS 窗口左上角不再显示图标和名字。
 
 ### English
 
@@ -29,6 +34,11 @@ in ShibaPack (opened from the version number in the bottom-right corner) shows t
 - Add and edit your own cleanup rules in the cleanup settings: name filters, days untouched, programs to quit first, and whether to delete or move to the Trash.
 - Microsoft Teams caches are now included. WeChat, WeCom, Feishu/Lark, DingTalk and QQ have no official guidance on which files are safe to remove, so instead of deleting anything they get an item that opens the app to use its own cleanup.
 - Scanning no longer asks for permission to control Finder; it asks only when you want to see what's in the Trash. Stopping a scan is faster.
+- Uninstalling now starts with an analysis that lists the app with its data, shortcuts, settings and registry entries and their sizes. Likely items are ticked; uncertain ones wait under Check first. Uninstall and clean up in one go.
+- Select several apps in Installed to uninstall them together. Analyze, in the details pane and the right-click menu, shows what an app takes up and can clean only its data without uninstalling it.
+- New Home page at the top of the sidebar, opened by default: computer specs, live CPU and memory use with trends, free space on the system disk, the busiest processes, software counts, updates, login items, space to clean, and recently installed apps.
+- View all opens a task manager to search and sort every process and end one from the right-click menu, with force quit if it won't close. System processes can't be ended here.
+- Installed moved below Clean up in the sidebar; on macOS the window no longer shows the icon and name in the top-left corner.
 
 ## 0.8.0
 

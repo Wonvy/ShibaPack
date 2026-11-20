@@ -7,6 +7,8 @@ import { maskAiKey } from "./ai";
 import { siNotion, siPostman } from "simple-icons";
 import type {
   AiProgress,
+  ProcessInfo,
+  SystemSample,
   ImportHint,
   BackupInfo,
   Candidate,
@@ -303,9 +305,8 @@ export function mockOnAi(handler: (progress: AiProgress) => void): () => void {
   return () => aiListeners.delete(handler);
 }
 
-/** 预览里正在卸载的软件和找到的残留。 */
-let uninstalling = { windows: false, name: "", startedAt: 0 };
-let lastLeftovers: Leftover[] = [];
+/** 预览里分析过、正在卸载的软件：按 id 分开，可以同时卸载好几个。 */
+const uninstalling = new Map<string, { windows: boolean; name: string; startedAt: number; found: Leftover[] }>();
 
 function mockLeftovers(name: string, windows: boolean): Leftover[] {
   const MB = 1024 * 1024;
@@ -315,6 +316,7 @@ function mockLeftovers(name: string, windows: boolean): Leftover[] {
     const short = name.replace(/^Microsoft /, "");
     return [
       item("folder", `C:\\Program Files (x86)\\Microsoft\\${short}\\Application`, "high", "installDir", 220 * MB),
+      item("file", `C:\\Users\\demo\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\${name}.lnk`, "medium", "shortcut", 4096),
       item("folder", `C:\\Users\\demo\\AppData\\Local\\Microsoft\\${short}`, "high", "publisherName", 1840 * MB),
       item("file", `C:\\Users\\demo\\Desktop\\${name}.lnk`, "medium", "shortcut", 2048),
       item("folder", `C:\\Users\\demo\\AppData\\Roaming\\${short}Backup`, "low", "nameContains", 3 * MB),
@@ -329,7 +331,65 @@ function mockLeftovers(name: string, windows: boolean): Leftover[] {
     item("file", `/Users/demo/Library/Preferences/${id}.plist`, "high", "bundleId", 4096),
     item("folder", `/Users/demo/Library/Saved Application State/${id}.savedState`, "high", "bundleId", 20480),
     item("folder", `/Users/demo/Library/Application Support/${name}`, "medium", "name", 320 * MB),
+    item("folder", `/Users/demo/Library/Logs/${name} Helper`, "low", "nameContains", 6 * MB),
   ];
+}
+
+/** 卸载前的分析：不含软件本身（安装文件夹、卸载项、Program Files 里的），和 leftovers::scan_before 一样。 */
+function mockAnalysis(name: string, windows: boolean): Leftover[] {
+  return mockLeftovers(name, windows).filter(
+    (item) => !["installDir", "uninstallKey", "appPath"].includes(item.reason) && !item.path.startsWith("C:\\Program Files"),
+  );
+}
+
+/** 预览里的进程：名字、平时的 CPU 和内存，每次取样在附近晃一晃。 */
+const GB = 1024 ** 3;
+let processes: (ProcessInfo & { base: number })[] = [
+  ["Google Chrome", 6, 1.2 * GB, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"],
+  ["Google Chrome Helper (Renderer)", 4, 640 * MB, null],
+  ["Google Chrome Helper (GPU)", 3, 380 * MB, null],
+  ["Figma", 5, 980 * MB, "/Applications/Figma.app/Contents/MacOS/Figma"],
+  ["Visual Studio Code", 2.5, 820 * MB, "/Applications/Visual Studio Code.app/Contents/MacOS/Electron"],
+  ["Docker", 1.8, 2.1 * GB, "/Applications/Docker.app/Contents/MacOS/Docker"],
+  ["DataGrip", 1.2, 1.6 * GB, "/Applications/DataGrip.app/Contents/MacOS/datagrip"],
+  ["ShibaPack", 0.8, 160 * MB, "/Applications/ShibaPack.app/Contents/MacOS/shibapack"],
+  ["WindowServer", 3.5, 410 * MB, "/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer"],
+  ["kernel_task", 2.2, 18 * MB, null],
+  ["Finder", 0.3, 210 * MB, "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder"],
+  ["Safari", 0.6, 450 * MB, "/Applications/Safari.app/Contents/MacOS/Safari"],
+  ["mds_stores", 1.1, 120 * MB, null],
+  ["node", 1.4, 300 * MB, "/opt/homebrew/bin/node"],
+  ["zsh", 0, 6 * MB, "/bin/zsh"],
+  ["Obsidian", 0.4, 360 * MB, "/Applications/Obsidian.app/Contents/MacOS/Obsidian"],
+  ["VLC", 0.2, 140 * MB, "/Applications/VLC.app/Contents/MacOS/VLC"],
+  ["launchd", 0.1, 12 * MB, "/sbin/launchd"],
+  ["coreaudiod", 0.3, 24 * MB, null],
+  ["Spotlight", 0.1, 90 * MB, null],
+].map(([name, base, memory, exe], i) => ({
+  pid: name === "launchd" ? 1 : name === "kernel_task" ? 0 : 400 + i * 37,
+  name: name as string,
+  base: base as number,
+  cpu: base as number,
+  memory: memory as number,
+  exe: exe as string | null,
+  protected: ["ShibaPack", "WindowServer", "kernel_task", "launchd", "coreaudiod", "mds_stores", "Spotlight"].includes(name as string),
+}));
+
+function mockSample(): SystemSample {
+  const wobble = (value: number, spread: number) => Math.max(0, value + (Math.random() - 0.5) * spread);
+  processes = processes.map((p) => ({ ...p, cpu: Math.min(100, wobble(p.base, p.base * 0.8 + 0.2)), memory: wobble(p.memory, p.memory * 0.02) }));
+  const list = processes.map(({ base: _base, ...p }) => p).sort((a, b) => b.cpu - a.cpu);
+  const memoryTotal = 36 * GB;
+  return {
+    cpu: Math.min(100, list.reduce((sum, p) => sum + p.cpu, 0)),
+    memoryUsed: Math.min(memoryTotal, list.reduce((sum, p) => sum + p.memory, 0) + 9 * GB),
+    memoryTotal,
+    swapUsed: 1.2 * GB,
+    swapTotal: 4 * GB,
+    disk: { mount: "/", total: 994 * GB, available: 182 * GB },
+    uptime: Math.round(performance.now() / 1000) + 3 * 86400 + 4 * 3600,
+    processes: list,
+  };
 }
 
 let langPacks: LangPack[] = [];
@@ -878,23 +938,83 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       }
       return links;
     }
+    case "analyze_uninstall": {
+      await sleep(600);
+      const target = installedApps.find((candidate) => candidate.id === args.id);
+      if (!target) throw "not_found";
+      const windows = target.source === "registry";
+      const found = mockAnalysis(target.name, windows);
+      uninstalling.set(target.id, { windows, name: target.name, startedAt: 0, found });
+      const appPath = windows ? `"C:\\Program Files\\${target.name}\\Uninstall ${target.name}.exe" /currentuser` : target.location;
+      return { items: found, stillInstalled: false, appPath };
+    }
     case "uninstall_installed": {
       const target = installedApps.find((candidate) => candidate.id === args.id);
-      uninstalling = { windows: target?.source === "registry", name: target?.name ?? "", startedAt: Date.now() };
+      const session = uninstalling.get(args.id as string);
+      uninstalling.set(args.id as string, {
+        windows: target?.source === "registry",
+        name: target?.name ?? "",
+        startedAt: Date.now(),
+        found: session?.found ?? [],
+      });
       installedApps = installedApps.filter((candidate) => candidate.id !== args.id);
       return null;
     }
-    case "uninstall_status":
+    case "uninstall_status": {
       // Windows 那种要等卸载程序跑完，预览里等 3 秒
-      return uninstalling.windows && Date.now() - uninstalling.startedAt < 3000;
+      const session = uninstalling.get(args.id as string);
+      return Boolean(session?.windows && Date.now() - session.startedAt < 3000);
+    }
     case "scan_leftovers": {
       await sleep(800);
-      lastLeftovers = mockLeftovers(uninstalling.name, uninstalling.windows);
-      return { items: lastLeftovers, stillInstalled: uninstalling.windows && Date.now() - uninstalling.startedAt < 3000 };
+      const session = uninstalling.get(args.id as string);
+      if (!session) throw "not_found";
+      // 卸载程序删掉了桌面快捷方式，没删安装文件夹
+      session.found = mockLeftovers(session.name, session.windows).filter((item) => !item.path.endsWith(".lnk") || item.path.includes("Start Menu"));
+      return { items: session.found, stillInstalled: session.windows && Date.now() - session.startedAt < 3000 };
     }
+    case "system_overview":
+      return {
+        hostName: "Demo 的 MacBook Pro",
+        os: "macOS 15.6 Sequoia",
+        kernel: "24.6.0",
+        arch: "arm64",
+        cpuBrand: "Apple M3 Pro",
+        cpuThreads: 12,
+        cpuCores: 12,
+        model: "MacBook Pro (Mac15,6)",
+        coreSplit: [6, 6],
+        cpuMhz: 0,
+        gpus: [{ model: "Apple M3 Pro", memory: null }],
+        disks: [
+          { name: "Macintosh HD", mount: "/", total: 994 * GB, available: 182 * GB, removable: false, kind: "SSD" },
+          { name: "Backup", mount: "/Volumes/Backup", total: 2000 * GB, available: 1210 * GB, removable: true, kind: "HDD" },
+        ],
+        totalMemory: 36 * GB,
+        totalSwap: 4 * GB,
+        bootTime: Math.round(Date.now() / 1000) - 3 * 86400,
+      };
+    case "system_sample":
+      await sleep(80);
+      return mockSample();
+    case "process_icons":
+      // 预览里没有真的图标文件
+      return {};
+    case "end_process": {
+      const target = processes.find((p) => p.pid === args.pid);
+      if (!target) throw "not_found";
+      if (target.protected) throw "protected";
+      // 正常退出时 Docker 不理会，要强制结束
+      if (!args.force && target.name === "Docker") return null;
+      processes = processes.filter((p) => p.pid !== args.pid);
+      return null;
+    }
+    case "reveal_leftover":
+      return null;
     case "remove_leftovers": {
       await sleep(700);
-      const chosen = (args.indices as number[]).map((i) => lastLeftovers[i]).filter(Boolean);
+      const found = uninstalling.get(args.id as string)?.found ?? [];
+      const chosen = (args.indices as number[]).map((i) => found[i]).filter(Boolean);
       // 普通权限删不掉 Program Files 和 HKLM 下的；以管理员身份重试就都删掉
       const denied = args.elevated ? [] : chosen.filter((item) => item.path.startsWith("C:\\Program Files") || item.path.startsWith("HKLM"));
       const registry = chosen.some((item) => item.kind.startsWith("registry"));

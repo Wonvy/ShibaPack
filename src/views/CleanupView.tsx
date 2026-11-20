@@ -18,7 +18,6 @@ import {
   History,
   Import,
   LoaderCircle,
-  Minus,
   MonitorCog,
   MousePointerClick,
   Package,
@@ -34,7 +33,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { SoftwareIcon } from "../components/SoftwareIcon";
-import { Button, Chip, ContextMenu, EmptyState, FilterMenu, IconButton, type MenuEntry, Switch, cx } from "../components/ui";
+import { Button, Chip, ContextMenu, EmptyState, FilterMenu, IconButton, type MenuEntry, Switch, Tick, cx } from "../components/ui";
 import { api, isMac } from "../lib/api";
 import { aiUsable } from "../lib/ai";
 import {
@@ -84,31 +83,6 @@ export function CleanIcon({ item, size, plain }: { item: CleanItem; size: number
     <span className={cx("flex shrink-0 items-center justify-center rounded-[22%]", plain ? "text-fg-4" : "bg-hover text-fg-2")} style={{ width: size, height: size }}>
       <Icon size={Math.round(size * 0.55)} strokeWidth={1.75} aria-hidden />
     </span>
-  );
-}
-
-/** 勾选框。`mixed` 是一组里勾了一部分。 */
-function Tick({ checked, disabled, label, onChange }: { checked: boolean | "mixed"; disabled?: boolean; label: string; onChange: (checked: boolean) => void }) {
-  return (
-    <button
-      type="button"
-      role="checkbox"
-      aria-checked={checked}
-      aria-label={label}
-      title={label}
-      disabled={disabled}
-      onClick={(event) => {
-        event.stopPropagation();
-        onChange(checked !== true);
-      }}
-      className={cx(
-        "flex size-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors disabled:opacity-40",
-        checked ? "border-accent-strong bg-accent-strong text-white" : "border-line-strong bg-bg",
-      )}
-    >
-      {checked === true && <Check size={12} strokeWidth={3} aria-hidden />}
-      {checked === "mixed" && <Minus size={12} strokeWidth={3} aria-hidden />}
-    </button>
   );
 }
 

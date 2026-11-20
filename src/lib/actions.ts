@@ -165,10 +165,18 @@ export async function setDefaultVersion(software: Software, versionId: string | 
   await useApp.getState().apply(() => api.updateSoftware(software.id, edit));
 }
 
-/** 卸载一个已安装的软件（先确认）。 */
-/** 卸载这台电脑上的一个软件：打开卸载窗口（先确认，卸载后可以查找并清理残留，见 components/UninstallDialog）。 */
-export async function uninstallApp(target: InstalledApp) {
-  useApp.getState().patch({ uninstallTarget: target });
+/**
+ * 卸载这台电脑上的软件：打开卸载窗口。窗口先分析每个软件的数据、快捷方式和设置，勾选确认后再卸载、清理
+ * （见 components/UninstallDialog）。可以一次卸载好几个。
+ */
+export async function uninstallApp(target: InstalledApp | InstalledApp[]) {
+  const apps = (Array.isArray(target) ? target : [target]).filter((app) => app.uninstallable);
+  if (apps.length > 0) useApp.getState().patch({ uninstallTarget: { apps, analyze: false } });
+}
+
+/** 只分析一个软件占了哪些地方，不卸载；窗口里可以再勾上软件本身去卸载，或者只清理数据。 */
+export async function analyzeApp(target: InstalledApp) {
+  useApp.getState().patch({ uninstallTarget: { apps: [target], analyze: true } });
 }
 
 /** 在线源上最新版本里，最适合这台电脑的安装包：系统对得上，架构一致或通用的优先。 */

@@ -25,8 +25,8 @@ import type {
   Storage,
 } from "./types";
 
-export type Route = "library" | "installed" | "startup" | "cleanup";
-const ROUTES: Route[] = ["library", "installed", "startup", "cleanup"];
+export type Route = "home" | "library" | "installed" | "startup" | "cleanup";
+const ROUTES: Route[] = ["home", "library", "installed", "startup", "cleanup"];
 
 export type Scope =
   | { kind: "all" }
@@ -143,8 +143,8 @@ interface AppState {
   checking: CheckProgress | null;
   /** 打开着的智能分类预览：要分类的软件。 */
   classifyIds: string[] | null;
-  /** 打开着的卸载窗口：要卸载的软件。 */
-  uninstallTarget: InstalledApp | null;
+  /** 打开着的卸载窗口：要卸载（或只是分析）的软件，可以好几个。`analyze` 时默认不勾软件本身，只看占用。 */
+  uninstallTarget: { apps: InstalledApp[]; analyze: boolean } | null;
   /**
    * 打开着的“关联在线源”对话框：给哪个软件关联；null 表示从在线源新添一个软件。
    * 从顶栏搜索的在线结果打开时，带着源、标识和名字，对话框直接查出最新版本等用户确认。
@@ -233,7 +233,8 @@ interface AppState {
 
 function routeFromHash(): Route {
   const name = location.hash.replace(/^#\/?/, "") as Route;
-  return ROUTES.includes(name) ? name : "library";
+  // 没有指定页面时打开主页
+  return ROUTES.includes(name) ? name : "home";
 }
 
 function fallbackLanguage(): Language {

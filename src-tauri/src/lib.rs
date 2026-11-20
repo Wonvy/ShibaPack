@@ -59,7 +59,11 @@ struct AppState {
     /// 统计大小同时只跑一轮，后来的等前一轮跑完、直接用记下的结果。
     measure_turn: Mutex<()>,
     /// 正在卸载的软件：卸载前记下的样子，和找到的残留。清理时只认这里面的项，不接受界面随便给一个路径。
-    uninstall: Mutex<Option<UninstallSession>>,
+    uninstall: Mutex<HashMap<String, UninstallSession>>,
+    /// 主页和任务管理器读系统状态用的，第一次打开主页时才建。
+    monitor: Mutex<Option<shibapack_core::system::Monitor>>,
+    /// 进程的可执行文件 → 图标文件（取不到的也记下，不再试）。和 `monitor` 分开锁，取图标慢时不挡着刷新。
+    process_icons: Mutex<HashMap<String, Option<String>>>,
     /// 最近一次列出的启动项和服务。启用、停用、定位时按 id 在这里查，不接受前端传来的路径或命令。
     startup: Mutex<Vec<StartupItem>>,
     /// 列启动项和改启动项一次只做一件，免得改到一半又被一次列表盖掉。
@@ -81,8 +85,8 @@ fn log_failure_to(state: &State<AppState>, area: &str, message: &str, detail: &s
     faillog::append(&state.log_dir, area, message, detail);
 }
 
+/// 一个软件的卸载过程：卸载前记下的样子和最近一次找到的项。可以同时卸载好几个，按已安装软件的 id 分开。
 struct UninstallSession {
-    id: String,
     target: Target,
     found: Vec<Leftover>,
 }
@@ -91,8 +95,11 @@ struct UninstallSession {
 #[serde(rename_all = "camelCase")]
 struct LeftoverScan {
     items: Vec<Leftover>,
-    /// 软件看起来还在（卸载程序可能被取消了）：找到的都没有默认勾选。
+    /// 软件看起来还在（卸载程序可能被取消了）：找到的都没有默认勾选。卸载前的分析里总是假。
     still_installed: bool,
+    /// 卸载前的分析里“App”那一行显示的：Windows 是登记的卸载命令，macOS 是 .app 的位置。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    app_path: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -889,6 +896,24 @@ async fn match_installed(app: AppHandle) -> CmdResult<HashMap<String, String>> {
     .await
 }
 
+/// 卸载前先分析：这个软件的数据、快捷方式、设置和开机启动项在哪、多大。只读。
+/// 软件本身（安装文件夹、卸载项）不在里面，交给卸载程序；卸载完再用 `scan_leftovers` 找它没删干净的。
+#[tauri::command]
+async fn analyze_uninstall(app: AppHandle, id: String) -> CmdResult<LeftoverScan> {
+    blocking(app, move |_app, state| {
+        let app = find_installed(&state, &id)?;
+        let target = Target::of(&app);
+        let others: Vec<InstalledApp> = state.installed.lock().map(|list| list.iter().filter(|other| other.id != id).cloned().collect()).unwrap_or_default();
+        let items = leftovers::scan_before(&target, &others);
+        if let Ok(mut sessions) = state.uninstall.lock() {
+            sessions.insert(id.clone(), UninstallSession { target, found: items.clone() });
+        }
+        let app_path = app.uninstall_command.clone().filter(|_| app.source == "registry").or_else(|| (!app.location.is_empty()).then(|| app.location.clone()));
+        Ok(LeftoverScan { items, still_installed: false, app_path })
+    })
+    .await
+}
+
 /// 卸载。Windows 上启动系统登记的卸载程序；macOS 上把 .app 移到废纸篓。
 #[tauri::command]
 async fn uninstall_installed(app: AppHandle, id: String) -> CmdResult<()> {
@@ -897,9 +922,9 @@ async fn uninstall_installed(app: AppHandle, id: String) -> CmdResult<()> {
         if !app.uninstallable {
             return Err("not_uninstallable".into());
         }
-        // 卸载以后就查不到它的安装位置、发布者了，先记下来，找残留时用
-        if let Ok(mut session) = state.uninstall.lock() {
-            *session = Some(UninstallSession { id: id.clone(), target: Target::of(&app), found: Vec::new() });
+        // 卸载以后就查不到它的安装位置、发布者了，先记下来，找残留时用；分析过的话留着分析的结果
+        if let Ok(mut sessions) = state.uninstall.lock() {
+            sessions.entry(id.clone()).or_insert_with(|| UninstallSession { target: Target::of(&app), found: Vec::new() });
         }
         if installed::run_uninstaller(&app).map_err(|e| e.to_string())? {
             return Ok(());
@@ -916,7 +941,7 @@ async fn uninstall_installed(app: AppHandle, id: String) -> CmdResult<()> {
 #[tauri::command]
 async fn uninstall_status(app: AppHandle, id: String) -> bool {
     blocking(app, move |_app, state| {
-        let target = state.uninstall.lock().ok().and_then(|s| s.as_ref().filter(|s| s.id == id).map(|s| s.target.clone()));
+        let target = state.uninstall.lock().ok().and_then(|s| s.get(&id).map(|s| s.target.clone()));
         target.is_some_and(|target| leftovers::still_installed(&target))
     })
     .await
@@ -926,21 +951,14 @@ async fn uninstall_status(app: AppHandle, id: String) -> bool {
 #[tauri::command]
 async fn scan_leftovers(app: AppHandle, id: String) -> CmdResult<LeftoverScan> {
     blocking(app, move |_app, state| {
-        let target = state
-            .uninstall
-            .lock()
-            .ok()
-            .and_then(|s| s.as_ref().filter(|s| s.id == id).map(|s| s.target.clone()))
-            .ok_or_else(|| "not_found".to_string())?;
+        let target = state.uninstall.lock().ok().and_then(|s| s.get(&id).map(|s| s.target.clone())).ok_or_else(|| "not_found".to_string())?;
         let others: Vec<InstalledApp> = state.installed.lock().map(|list| list.iter().filter(|app| app.id != id).cloned().collect()).unwrap_or_default();
         let still_installed = leftovers::still_installed(&target);
         let items = leftovers::scan(&target, &others, still_installed);
-        if let Ok(mut session) = state.uninstall.lock() {
-            if let Some(session) = session.as_mut().filter(|s| s.id == id) {
-                session.found = items.clone();
-            }
+        if let Some(session) = state.uninstall.lock().ok().as_mut().and_then(|s| s.get_mut(&id)) {
+            session.found = items.clone();
         }
-        Ok(LeftoverScan { items, still_installed })
+        Ok(LeftoverScan { items, still_installed, app_path: None })
     })
     .await
 }
@@ -951,8 +969,8 @@ async fn scan_leftovers(app: AppHandle, id: String) -> CmdResult<LeftoverScan> {
 async fn remove_leftovers(app: AppHandle, id: String, indices: Vec<usize>, elevated: bool) -> CmdResult<RemoveReport> {
     blocking(app, move |app, state| {
         let items: Vec<Leftover> = {
-            let session = state.uninstall.lock().map_err(|_| "internal".to_string())?;
-            let session = session.as_ref().filter(|s| s.id == id).ok_or_else(|| "not_found".to_string())?;
+            let sessions = state.uninstall.lock().map_err(|_| "internal".to_string())?;
+            let session = sessions.get(&id).ok_or_else(|| "not_found".to_string())?;
             indices.iter().filter_map(|i| session.found.get(*i).cloned()).collect()
         };
         let backups = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("uninstall-backups");
@@ -961,6 +979,19 @@ async fn remove_leftovers(app: AppHandle, id: String, indices: Vec<usize>, eleva
         } else {
             Ok(leftovers::remove(&items, &backups))
         }
+    })
+    .await
+}
+
+/// 在文件管理器里显示分析或查找到的某一项（按序号；注册表项没法显示）。
+#[tauri::command]
+async fn reveal_leftover(app: AppHandle, id: String, index: usize) -> CmdResult<()> {
+    blocking(app, move |app, state| {
+        let item = state.uninstall.lock().ok().and_then(|s| s.get(&id).and_then(|s| s.found.get(index).cloned())).ok_or_else(|| "not_found".to_string())?;
+        if !matches!(item.kind, leftovers::LeftoverKind::Folder | leftovers::LeftoverKind::File) || !Path::new(&item.path).exists() {
+            return Err("file_missing".into());
+        }
+        app.opener().reveal_item_in_dir(&item.path).map_err(|e| e.to_string())
     })
     .await
 }
@@ -989,6 +1020,63 @@ async fn reveal_installed(app: AppHandle, id: String) -> CmdResult<()> {
         app.opener().reveal_item_in_dir(&target.location).map_err(|e| e.to_string())
     })
     .await
+}
+
+// ── 主页：系统状态和进程 ─────────────────────────────────────
+
+/// 用（第一次时建）读系统状态的 `Monitor`。
+fn with_monitor<T>(state: &State<AppState>, f: impl FnOnce(&mut shibapack_core::system::Monitor) -> CmdResult<T>) -> CmdResult<T> {
+    let mut guard = state.monitor.lock().map_err(|_| "internal".to_string())?;
+    if guard.is_none() {
+        *guard = Some(shibapack_core::system::Monitor::new()?);
+    }
+    f(guard.as_mut().expect("monitor just created"))
+}
+
+/// 电脑名、系统、处理器、内存总量、开机时间。
+#[tauri::command]
+async fn system_overview(app: AppHandle) -> CmdResult<shibapack_core::system::Overview> {
+    blocking(app, move |_app, state| with_monitor(&state, |monitor| Ok(monitor.overview()))).await
+}
+
+/// 此刻的 CPU、内存、系统盘和所有进程。主页开着时每 2 秒要一次。
+#[tauri::command]
+async fn system_sample(app: AppHandle) -> CmdResult<shibapack_core::system::Sample> {
+    blocking(app, move |_app, state| with_monitor(&state, |monitor| Ok(monitor.sample()))).await
+}
+
+/// 这些进程的图标（按可执行文件）：在某个 .app 里的用那个 .app 的图标，Windows 从 exe 里取。取不到的不在结果里。
+#[tauri::command]
+async fn process_icons(app: AppHandle, exes: Vec<String>) -> CmdResult<HashMap<String, String>> {
+    blocking(app, move |_app, state| {
+        let known: HashMap<String, Option<String>> = state.process_icons.lock().map(|m| m.clone()).unwrap_or_default();
+        let mut out = HashMap::new();
+        let mut found = Vec::new();
+        for exe in exes {
+            let icon = match known.get(&exe) {
+                Some(icon) => icon.clone(),
+                None => {
+                    let icon = shibapack_core::system::process_icon(Path::new(&exe), &state.icon_cache);
+                    found.push((exe.clone(), icon.clone()));
+                    icon
+                }
+            };
+            if let Some(icon) = icon {
+                out.insert(exe, icon);
+            }
+        }
+        if let Ok(mut cache) = state.process_icons.lock() {
+            cache.extend(found);
+        }
+        Ok(out)
+    })
+    .await
+}
+
+/// 结束一个进程：`force` 为假时请它正常退出。ShibaPack 自己、系统进程、别的用户的不行。
+#[tauri::command]
+async fn end_process(app: AppHandle, pid: u32, force: bool) -> CmdResult<()> {
+    blocking(app, move |_app, state| with_monitor(&state, |monitor| monitor.end(pid, force))).await
 }
 
 // ── 启动项与服务 ─────────────────────────────────────────────
@@ -2167,7 +2255,9 @@ pub fn run() {
                 ai_cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
                 measured: Mutex::new(HashMap::new()),
                 measure_turn: Mutex::new(()),
-                uninstall: Mutex::new(None),
+                uninstall: Mutex::new(HashMap::new()),
+                monitor: Mutex::new(None),
+                process_icons: Mutex::new(HashMap::new()),
                 startup: Mutex::new(Vec::new()),
                 startup_turn: Mutex::new(()),
                 ai_cache_turn: Mutex::new(()),
@@ -2214,10 +2304,16 @@ pub fn run() {
             list_installed,
             measure_installed,
             match_installed,
+            analyze_uninstall,
+            system_overview,
+            system_sample,
+            process_icons,
+            end_process,
             uninstall_installed,
             uninstall_status,
             scan_leftovers,
             remove_leftovers,
+            reveal_leftover,
             open_uninstall_backup,
             reveal_installed,
             list_startup,

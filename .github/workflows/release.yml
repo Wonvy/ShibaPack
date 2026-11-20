@@ -1,8 +1,9 @@
 # 在三个系统上打包安装包和更新包。
 #
 # 推送形如 v0.2.0 的标签时运行（标签要和 package.json 里的 version 一致），也可以在 Actions 页面手动运行。
-# 结果是一个草稿 Release，里面有各系统的安装包，以及（有签名私钥时）带签名的更新包和 latest.json。
-# 检查无误后在 GitHub 上点“发布”，已安装的 ShibaPack 就会收到这次更新。
+# 三个系统各自打包，传到同一个草稿 Release 里：各系统的安装包，以及（有签名私钥时）带签名的更新包和 latest.json。
+# 三个系统全部打包成功后，最后一步自动把草稿发布出去，已安装的 ShibaPack 就会收到这次更新。
+# 有任何一个系统失败，就停在草稿、不发布：修好后重新打包，或者在 GitHub 上检查后手动发布。
 #
 # 更新包的签名私钥放在仓库的 Settings → Secrets and variables → Actions 里：
 #   TAURI_SIGNING_PRIVATE_KEY   ~/.tauri/shibapack-updater.key 的内容
@@ -98,3 +99,19 @@ jobs:
           prerelease: false
           includeUpdaterJson: ${{ steps.signing.outputs.signed == 'true' }}
           args: ${{ matrix.args }} ${{ env.UNSIGNED_ARGS }}
+
+  # 三个系统都打包成功了才走到这里（有一个失败，这一步就不会运行，草稿留着不发布）。
+  # 一发布，已安装的 ShibaPack 就会自动更新到这个版本。
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 发布草稿 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 和打包时一样，标签按 package.json 里的版本号来（手动运行时也对得上）
+          tag="v$(node -p "require('./package.json').version")"
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          echo "已发布 $tag"

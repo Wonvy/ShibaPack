@@ -164,8 +164,8 @@ npm run bundle
    git tag v0.2.0 && git push origin main --tags
    ```
 
-3. `.github/workflows/release.yml` 会在三个系统上构建，生成一个**草稿** Release，里面有安装包；设好了签名私钥时，还有带签名的更新包和 `latest.json`。
-4. 在 GitHub 上检查这个草稿，点“Publish release”。之后已安装的用户启动时就会收到更新。
+3. `.github/workflows/release.yml` 会在三个系统上构建，把安装包传到一个草稿 Release 里；设好了签名私钥时，还有带签名的更新包和 `latest.json`。
+4. 三个系统全部构建成功后，流程会自己把它发布出去，已安装的 ShibaPack 随后收到更新。有任何一个系统失败，就停在草稿、不发布：修好后重新构建，或者在 GitHub 上检查草稿后自己点“Publish release”。
 
 #### 更新包签名私钥
 

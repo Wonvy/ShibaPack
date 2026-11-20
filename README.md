@@ -164,8 +164,8 @@ Installed copies of ShibaPack update themselves from GitHub Releases. To publish
    git tag v0.2.0 && git push origin main --tags
    ```
 
-3. `.github/workflows/release.yml` builds on macOS, Windows and Linux and creates a **draft** release with the installers and, if the signing key is set up, the signed update bundles and `latest.json`.
-4. Check the draft on GitHub and click **Publish release**. Installed copies receive the update the next time they start.
+3. `.github/workflows/release.yml` builds on macOS, Windows and Linux and uploads the installers and, if the signing key is set up, the signed update bundles and `latest.json` to a draft release.
+4. When all three builds succeed, the workflow publishes the release by itself, and installed copies pick up the update. If any build fails, the release stays a draft and is not published: fix the problem and build again, or check the draft on GitHub and click **Publish release** yourself.
 
 #### Update signing key
 

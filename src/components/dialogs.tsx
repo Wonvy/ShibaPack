@@ -19,6 +19,8 @@ interface PromptOptions {
   label: string;
   initial?: string;
   placeholder?: string;
+  /** 多行输入（写一段描述）：Enter 换行，⌘ / Ctrl + Enter 确定。 */
+  multiline?: boolean;
 }
 
 type Request =
@@ -67,7 +69,7 @@ export function DialogHost() {
         open
         onClose={() => finish(null)}
         title={request.title}
-        width={360}
+        width={request.multiline ? 440 : 360}
         footer={
           <>
             <Button variant="ghost" onClick={() => finish(null)}>
@@ -80,13 +82,25 @@ export function DialogHost() {
         }
       >
         <Field label={request.label}>
-          <TextInput
-            autoFocus
-            value={text}
-            placeholder={request.placeholder}
-            onChange={(event) => setText(event.target.value)}
-            onKeyDown={(event) => event.key === "Enter" && finish(text.trim())}
-          />
+          {request.multiline ? (
+            <textarea
+              autoFocus
+              rows={4}
+              value={text}
+              placeholder={request.placeholder}
+              onChange={(event) => setText(event.target.value)}
+              onKeyDown={(event) => event.key === "Enter" && (event.metaKey || event.ctrlKey) && finish(text.trim())}
+              className="selectable block w-full resize-y rounded-md border border-line-strong bg-bg px-2.5 py-1.5 text-[13px] leading-relaxed outline-none placeholder:text-fg-4 focus:border-accent"
+            />
+          ) : (
+            <TextInput
+              autoFocus
+              value={text}
+              placeholder={request.placeholder}
+              onChange={(event) => setText(event.target.value)}
+              onKeyDown={(event) => event.key === "Enter" && finish(text.trim())}
+            />
+          )}
         </Field>
       </Modal>
     );

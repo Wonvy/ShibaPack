@@ -24,6 +24,7 @@ import type {
   Software,
   SoftwareEdit,
   SourceKind,
+  StartupItem,
   Stats,
   Status,
   Storage,
@@ -350,6 +351,109 @@ let installedApps: InstalledApp[] = [
   app("DataGrip", "2024.3", "JetBrains s.r.o", 2260, 45),
   app("VLC", "3.0.21", "VideoLAN", 148, 320),
 ];
+// ── 启动项与服务 ─────────────────────────────────────────────
+
+/** 预览里的启动项和服务。Windows 上（或地址后加 ?windows）看到的是 Windows 的样子，别的系统看到 macOS 的样子。 */
+function startupItem(partial: Partial<StartupItem> & Pick<StartupItem, "id" | "kind" | "source" | "name">): StartupItem {
+  return {
+    label: partial.name,
+    description: "",
+    publisher: "",
+    command: "",
+    location: "",
+    scope: "user",
+    system: false,
+    enabled: true,
+    canToggle: true,
+    startType: null,
+    startTypes: [],
+    running: null,
+    pid: null,
+    canControl: false,
+    needsAdmin: false,
+    app: "",
+    icon: null,
+    triggers: [],
+    account: "",
+    ...partial,
+  };
+}
+
+const WIN_TYPES = ["auto", "delayed", "manual", "disabled"];
+
+function winService(name: string, display: string, description: string, start: string, running: boolean, system: boolean, path: string): StartupItem {
+  return startupItem({
+    id: `service:${name}`,
+    kind: "service",
+    source: "service",
+    name: display,
+    label: name,
+    description,
+    publisher: system ? "Microsoft" : "",
+    command: path,
+    location: `HKLM\\SYSTEM\\CurrentControlSet\\Services\\${name}`,
+    scope: "machine",
+    system,
+    enabled: start !== "disabled",
+    startType: start,
+    startTypes: WIN_TYPES,
+    running,
+    pid: running ? 1000 + name.length * 37 : null,
+    canControl: true,
+    needsAdmin: true,
+    account: "LocalSystem",
+  });
+}
+
+let startupItems: StartupItem[] = navigator.userAgent.includes("Windows") || new URLSearchParams(location.search).has("windows")
+  ? [
+      startupItem({ id: "run:HKCU:Run:Steam", kind: "startup", source: "registry", name: "Steam", description: "Steam Client Bootstrapper", publisher: "Valve Corporation", command: '"C:\\Program Files (x86)\\Steam\\steam.exe" -silent', location: "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", triggers: ["login"] }),
+      startupItem({ id: "run:HKCU:Run:Discord", kind: "startup", source: "registry", name: "Discord", description: "Discord", publisher: "Discord Inc.", command: '"C:\\Users\\demo\\AppData\\Local\\Discord\\Update.exe" --processStart Discord.exe', location: "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", enabled: false, triggers: ["login"] }),
+      startupItem({ id: "run:HKLM:Run:SecurityHealth", kind: "startup", source: "registry", name: "SecurityHealth", description: "Windows Security notification icon", publisher: "Microsoft Corporation", command: "%windir%\\system32\\SecurityHealthSystray.exe", location: "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", scope: "machine", system: true, needsAdmin: true, triggers: ["login"] }),
+      startupItem({ id: "folder:user:Everything.lnk", kind: "startup", source: "startupFolder", name: "Everything", label: "Everything.lnk", description: "Everything", publisher: "voidtools", command: "C:\\Program Files\\Everything\\Everything.exe", location: "C:\\Users\\demo\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\Everything.lnk", triggers: ["login"] }),
+      winService("wuauserv", "Windows Update", "启用检测、下载和安装 Windows 和其他程序的更新。如果此服务被禁用，这台计算机的用户将无法使用 Windows 更新或其自动更新功能。", "manual", true, true, "C:\\WINDOWS\\system32\\svchost.exe -k netsvcs -p"),
+      winService("Spooler", "Print Spooler", "该服务在后台执行打印作业并处理与打印机的交互。如果关闭该服务，则无法进行打印或查看打印机。", "auto", true, true, "C:\\WINDOWS\\System32\\spoolsv.exe"),
+      winService("AnyDesk", "AnyDesk Service", "", "delayed", true, false, '"C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe" --service'),
+      winService("MozillaMaintenance", "Mozilla Maintenance Service", "Mozilla 维护服务确保您的计算机上安装了最新、最安全的 Mozilla Firefox 版本。", "manual", false, false, '"C:\\Program Files (x86)\\Mozilla Maintenance Service\\maintenanceservice.exe"'),
+      winService("AdobeARMservice", "Adobe Acrobat Update Service", "Adobe Acrobat Updater 使您的 Adobe 软件保持最新。", "disabled", false, false, '"C:\\Program Files (x86)\\Common Files\\Adobe\\ARM\\1.0\\armsvc.exe"'),
+    ]
+  : [
+      startupItem({ id: "login:/Applications/Docker.app", kind: "startup", source: "loginItem", name: "Docker", publisher: "Docker Inc", app: "Docker", command: "/Applications/Docker.app", location: "/Applications/Docker.app", triggers: ["login"] }),
+      startupItem({ id: "login:/Applications/Obsidian.app", kind: "startup", source: "loginItem", name: "Obsidian", publisher: "Dynalist Inc", app: "Obsidian", command: "/Applications/Obsidian.app", location: "/Applications/Obsidian.app", enabled: false, triggers: ["login", "hidden"] }),
+      startupItem({ id: "/Users/demo/Library/LaunchAgents/com.microsoft.EdgeUpdater.wake.plist", kind: "startup", source: "launchAgent", name: "com.microsoft.EdgeUpdater.wake", publisher: "Microsoft", app: "EdgeUpdater", command: '"/Users/demo/Library/Application Support/Microsoft/EdgeUpdater/Current/EdgeUpdater.app/Contents/MacOS/EdgeUpdater" --wake-all', location: "/Users/demo/Library/LaunchAgents/com.microsoft.EdgeUpdater.wake.plist", running: false, canControl: true, triggers: ["interval:3600"] }),
+      startupItem({ id: "/Library/LaunchAgents/com.carriez.RustDesk_server.plist", kind: "startup", source: "launchAgent", name: "com.carriez.RustDesk_server", publisher: "Purslane Ltd", app: "RustDesk", command: "/Applications/RustDesk.app/Contents/MacOS/RustDesk --server", location: "/Library/LaunchAgents/com.carriez.RustDesk_server.plist", scope: "machine", running: true, pid: 1107, canControl: true, triggers: ["load", "keepAlive"] }),
+      startupItem({ id: "/Library/LaunchAgents/com.google.keystone.agent.plist", kind: "startup", source: "launchAgent", name: "com.google.keystone.agent", publisher: "Google", command: "/Library/Google/GoogleSoftwareUpdate/GoogleSoftwareUpdate.bundle/Contents/Resources/GoogleSoftwareUpdateAgent.app/Contents/MacOS/GoogleSoftwareUpdateAgent -runMode ifneeded", location: "/Library/LaunchAgents/com.google.keystone.agent.plist", scope: "machine", enabled: false, running: false, canControl: true, triggers: ["load", "interval:3623"] }),
+      startupItem({ id: "/System/Library/LaunchAgents/com.apple.Siri.agent.plist", kind: "startup", source: "launchAgent", name: "com.apple.Siri.agent", publisher: "Apple", command: "/System/Library/PrivateFrameworks/AssistantServices.framework/Versions/A/Support/siriactionsd", location: "/System/Library/LaunchAgents/com.apple.Siri.agent.plist", scope: "machine", system: true, enabled: false, running: false, canControl: true, triggers: ["demand"] }),
+      startupItem({ id: "/Library/LaunchDaemons/com.carriez.RustDesk_service.plist", kind: "service", source: "launchDaemon", name: "com.carriez.RustDesk_service", publisher: "Purslane Ltd", app: "RustDesk", command: "/bin/sh -c /Applications/RustDesk.app/Contents/MacOS/service", location: "/Library/LaunchDaemons/com.carriez.RustDesk_service.plist", scope: "machine", running: true, pid: 345, canControl: true, needsAdmin: true, triggers: ["load", "keepAlive"], account: "root" }),
+      startupItem({ id: "/Library/LaunchDaemons/com.cloudflare.cloudflared.plist", kind: "service", source: "launchDaemon", name: "com.cloudflare.cloudflared", publisher: "Cloudflare", command: '/usr/local/bin/cloudflared tunnel run --token-file "/Library/Application Support/com.cloudflare.cloudflared/token"', location: "/Library/LaunchDaemons/com.cloudflare.cloudflared.plist", scope: "machine", running: true, pid: 399, canControl: true, needsAdmin: true, account: "root" }),
+      startupItem({ id: "/Library/LaunchDaemons/com.docker.vmnetd.plist", kind: "service", source: "launchDaemon", name: "com.docker.vmnetd", publisher: "Docker Inc", app: "Docker", command: "/Library/PrivilegedHelperTools/com.docker.vmnetd", location: "/Library/LaunchDaemons/com.docker.vmnetd.plist", scope: "machine", running: false, canControl: true, needsAdmin: true, triggers: ["demand"], account: "root" }),
+      startupItem({ id: "/System/Library/LaunchDaemons/com.openssh.sshd.plist", kind: "service", source: "launchDaemon", name: "com.openssh.sshd", publisher: "Apple", command: "/usr/libexec/sshd-keygen-wrapper", location: "/System/Library/LaunchDaemons/com.openssh.sshd.plist", scope: "machine", system: true, running: false, canControl: true, needsAdmin: true, triggers: ["demand"], account: "root" }),
+      startupItem({ id: "/System/Library/LaunchDaemons/com.apple.ftpd.plist", kind: "service", source: "launchDaemon", name: "com.apple.ftpd", publisher: "Apple", command: "/usr/libexec/ftpd -l", location: "/System/Library/LaunchDaemons/com.apple.ftpd.plist", scope: "machine", system: true, enabled: false, running: false, canControl: true, needsAdmin: true, triggers: ["demand"], account: "root" }),
+    ];
+
+/** 预览里按操作改一下假数据：停用的同时停下，启用的同时跑起来（launchd、systemd 就是这样）。 */
+function mockStartupAction(id: string, action: string) {
+  startupItems = startupItems.map((item) => {
+    if (item.id !== id) return item;
+    const launchd = item.source === "launchAgent" || item.source === "launchDaemon";
+    switch (action) {
+      case "enable":
+        return { ...item, enabled: true, running: launchd ? true : item.running, pid: launchd ? 4242 : item.pid };
+      case "disable":
+        return { ...item, enabled: false, running: launchd ? false : item.running, pid: launchd ? null : item.pid };
+      case "start":
+      case "restart":
+        return { ...item, running: true, pid: 4000 + Math.floor(Math.random() * 900) };
+      case "stop":
+        return { ...item, running: false, pid: null };
+      default: {
+        const type = action.replace("type:", "");
+        return { ...item, startType: type, enabled: type !== "disabled" };
+      }
+    }
+  });
+}
+
 let configured = !location.search.includes("setup") && !location.search.includes("offline");
 // 地址后加 ?empty：仓库是空的，用来看欢迎页
 if (location.search.includes("empty")) {
@@ -410,7 +514,7 @@ async function importPaths(paths: string[], mode: Storage, hint?: ImportHint) {
     emit({ phase: "import", current: i + 1, total: files.length, file: base });
     await sleep(450);
     const match = base.match(/^(.*?)[-_ ](?:win64[-_ ])?v?(\d+(?:\.\d+)+)/);
-    // 拖到某个软件上导入时，名字以那个软件为准
+    // 在详情栏里给某个软件添加版本时，名字以那个软件为准
     const name = hint?.name ?? (match?.[1] ?? base.replace(/\.\w+$/, "")).replace(/[-_]/g, " ").trim();
     const version = match?.[2] ?? "";
     let target = lib.software.find((s) => s.name.toLowerCase() === name.toLowerCase());
@@ -437,6 +541,10 @@ async function importPaths(paths: string[], mode: Storage, hint?: ImportHint) {
     library: snapshot(),
   };
 }
+
+/** 预览里的 AI 缓存：启动项的解释、分类建议。 */
+const explainCache: Record<string, { text: string; model: string; at: string; cached: boolean }> = {};
+const classifyCache: Record<string, Suggestion> = {};
 
 export async function mockCall(command: string, args: Record<string, unknown>): Promise<unknown> {
   await sleep(40);
@@ -569,6 +677,20 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       await sleep(500);
       if ((args.reference as string).includes("nothing")) throw "source_not_found";
       return fakeRelease(args.kind as SourceKind, args.reference as string);
+    case "release_notes":
+      await sleep(400);
+      return "## 0.4.0\n\n### 中文\n- 新增：启动与服务\n- 新增：顶栏搜索可以在 GitHub、Homebrew 上找\n\n### English\n- New: startup items and services\n- New: search GitHub and Homebrew from the top bar\n\n---\n\nDownload the installer for your system from the assets below.";
+    case "github_search": {
+      await sleep(700);
+      const query = String(args.query).trim();
+      const slug = query.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+      if (!slug) return [];
+      return [
+        { reference: `${slug}/${slug}`, name: slug, description: tr(`${query} 的官方仓库（预览里的假数据）`, `Official ${query} repository (preview data)`), url: `https://github.com/${slug}/${slug}`, stars: 48213, archived: false },
+        { reference: `${slug}-community/${slug}-desktop`, name: `${slug}-desktop`, description: tr(`${query} 桌面客户端`, `${query} desktop client`), url: `https://github.com/${slug}-community/${slug}-desktop`, stars: 2310, archived: false },
+        { reference: `someone/awesome-${slug}`, name: `awesome-${slug}`, description: tr(`${query} 相关资源合集`, `A list of ${query} resources`), url: `https://github.com/someone/awesome-${slug}`, stars: 815, archived: true },
+      ];
+    }
     case "source_search": {
       await sleep(350);
       const query = (args.query as string).toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -681,6 +803,43 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
     }
     case "open_uninstall_backup":
       return null;
+    case "list_startup":
+      await sleep(500);
+      return { items: startupItems, notes: [] };
+    case "startup_action": {
+      // 预览里假装要输入管理员密码，等一会儿
+      const target = startupItems.find((item) => item.id === args.id);
+      await sleep(target?.needsAdmin ? 1200 : 450);
+      mockStartupAction(args.id as string, args.action as string);
+      return { items: startupItems, notes: [] };
+    }
+    case "ai_explain_startup": {
+      // 和真的一样：记下来的直接给，`cached` 只看记下的，`refresh` 才重新“问 AI”
+      const id = args.id as string;
+      const mode = args.mode as string;
+      if (mode !== "refresh" && explainCache[id]) return { ...explainCache[id], cached: true };
+      if (mode === "cached") return null;
+      await sleep(1100);
+      const target = startupItems.find((item) => item.id === id);
+      const name = target?.app || target?.name || "";
+      explainCache[id] = {
+        text: tr(
+          `这是 ${name} 的后台组件，用来在后台检查更新或保持连接。停用后 ${name} 本身还能正常打开，只是不会在后台自动做这些事。（预览里的 AI 解释）`,
+          `This is a background component of ${name} that checks for updates or keeps a connection open. If you disable it, ${name} still opens normally but stops doing this in the background. (AI explanation in preview)`,
+        ),
+        model: lib.settings.ai.model || "deepseek-chat",
+        at: new Date().toISOString(),
+        cached: false,
+      };
+      return explainCache[id];
+    }
+    case "set_summary": {
+      const name = args.name as string;
+      const text = String(args.text).trim();
+      if (!text) delete lib.summaries[name];
+      else lib.summaries[name] = { text, source: "manual", fetchedAt: new Date().toISOString(), lang: english ? "en" : "zh" };
+      return snapshot();
+    }
     case "fill_icons":
       return { library: null, more: false };
     case "fetch_icon":
@@ -725,16 +884,19 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       return snapshot();
     }
     case "ai_suggest_categories": {
-      const ids = args.softwareIds as string[];
+      // 问过的直接用上次的建议（预览里不比较指纹），点“重新分析”才重新问
+      const all = args.softwareIds as string[];
+      const ids = args.refresh ? all : all.filter((id) => !(id in classifyCache));
       aiCancelled = false;
       const emit = (done: number) => aiListeners.forEach((handler) => handler({ done, total: ids.length }));
-      emit(0);
+      if (ids.length > 0) emit(0);
       for (let done = 0; done < ids.length; done = Math.min(ids.length, done + 4)) {
         await sleep(500);
         if (aiCancelled) throw "cancelled";
         emit(Math.min(ids.length, done + 4));
       }
-      return ids.map(aiSuggest);
+      for (const id of ids) classifyCache[id] = aiSuggest(id);
+      return { suggestions: all.map((id) => classifyCache[id]), cached: all.length - ids.length };
     }
     case "cancel_ai":
       aiCancelled = true;

@@ -201,7 +201,8 @@ pub struct NewCategory {
 }
 
 /// 对一个软件的分类建议。`category_id` 和 `new_category` 至多有一个；都没有表示判断不出来。
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// 能读回来：AI 给的建议记在缓存里（见 `aicache`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Suggestion {
     pub software_id: String,
@@ -214,7 +215,7 @@ pub struct Suggestion {
     /// 发布者和简介里命中的词，给用户看推荐的依据。
     pub evidence: Vec<String>,
     /// AI 给的一句依据（它认为这是个什么软件）。内置规则给的建议没有。
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reason: String,
 }
 

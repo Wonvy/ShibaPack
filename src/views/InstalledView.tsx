@@ -3,6 +3,7 @@
 import {
   ArrowDown,
   ArrowUp,
+  CheckSquare,
   FolderOpen,
   LayoutGrid,
   LayoutList,
@@ -12,9 +13,11 @@ import {
   MousePointerClick,
   PackageCheck,
   PackageX,
+  Pencil,
   RefreshCw,
   SearchX,
   Trash2,
+  WandSparkles,
 } from "lucide-react";
 import { type ReactNode, useContext, useEffect, useMemo, useState } from "react";
 import { DetailToggle } from "../components/chrome";
@@ -22,11 +25,11 @@ import { type ColumnDef, type Columns, ColumnsContext, TableHeader, useTableColu
 import { SoftwareIcon } from "../components/SoftwareIcon";
 import { SummaryText } from "../components/SummaryText";
 import { Button, Chip, ContextMenu, EmptyState, FilterMenu, IconButton, type MenuEntry, ViewMenu, cx } from "../components/ui";
-import { uninstallApp } from "../lib/actions";
+import { editSummary, uninstallApp } from "../lib/actions";
 import { api } from "../lib/api";
-import { compareVersions, formatDate, formatSize, primaryVersion, summaryName } from "../lib/library";
+import { compareVersions, formatDate, formatSize, primaryVersion, shownSummary, summaryName } from "../lib/library";
 import { type InstalledView as InstalledViewKind, usePrefs } from "../lib/prefs";
-import { useApp, useLanguage, useT } from "../lib/store";
+import { useAiReady, useApp, useLanguage, useT } from "../lib/store";
 import type { InstalledApp, Software } from "../lib/types";
 
 type Column = "name" | "version" | "date" | "size";
@@ -51,7 +54,9 @@ export function InstalledView() {
   const loading = useApp((state) => state.installedLoading);
   const sizes = useApp((state) => state.sizes);
   const selectedId = useApp((state) => state.selectedInstalledId);
-  const patch = useApp((state) => state.patch);
+  const selectedIds = useApp((state) => state.selectedInstalledIds);
+  const selectInstalled = useApp((state) => state.selectInstalled);
+  const setInstalledSelection = useApp((state) => state.setInstalledSelection);
   const reload = useApp((state) => state.loadInstalled);
   const search = useApp((state) => state.search);
   const links = useApp((state) => state.links);
@@ -93,6 +98,43 @@ export function InstalledView() {
     };
     return items.sort((a, b) => compare[sort.column](a, b) * (sort.asc ? 1 : -1));
   }, [installed, search, sort, sizes, stored, repoFilter]);
+
+  // 选中的：多选时是 selectedIds，单选时就是 selectedId 那一个
+  const chosen = selectedIds.length > 0 ? selectedIds : selectedId ? [selectedId] : [];
+
+  /** 点一行：⌘ / Ctrl 加选或取消，Shift 从上次点的那一行连选到这一行，否则单选。 */
+  const clickRow = (id: string, event: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) => {
+    if (event.metaKey || event.ctrlKey) {
+      const next = chosen.includes(id) ? chosen.filter((x) => x !== id) : [...chosen, id];
+      setInstalledSelection(next, next.includes(id) ? id : (next[0] ?? null));
+    } else if (event.shiftKey && selectedId && list.some((app) => app.id === selectedId)) {
+      const from = list.findIndex((app) => app.id === selectedId);
+      const to = list.findIndex((app) => app.id === id);
+      setInstalledSelection(list.slice(Math.min(from, to), Math.max(from, to) + 1).map((app) => app.id), selectedId);
+    } else {
+      selectInstalled(id);
+    }
+  };
+
+  // ⌘ / Ctrl + A 全选当前列出来的，Esc 取消选择。焦点在输入框、或者开着对话框和菜单时不管
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable=true]")) return;
+      if (document.querySelector('[role="dialog"],[role="menu"]')) return;
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        setInstalledSelection(
+          list.map((app) => app.id),
+          selectedId ?? list[0]?.id ?? null,
+        );
+      } else if (event.key === "Escape" && chosen.length > 1) {
+        selectInstalled(selectedId);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [list, selectedId, chosen.length, setInstalledSelection, selectInstalled]);
 
   const header = (column: Column, label: string, className?: string) => {
     const Arrow = sort.asc ? ArrowUp : ArrowDown;
@@ -187,19 +229,21 @@ export function InstalledView() {
                 <InstalledRow
                   key={app.id}
                   app={app}
-                  selected={app.id === selectedId}
+                  selected={chosen.includes(app.id)}
+                  group={chosen.length > 1 && chosen.includes(app.id) ? chosen : null}
                   size={sizeOf(app)}
                   software={stored.get(app.id)}
-                  onSelect={() => patch({ selectedInstalledId: app.id })}
+                  onSelect={(event) => clickRow(app.id, event)}
                   onOpen={(id) => reveal(id)}
                 />
               ) : (
                 <InstalledTile
                   key={app.id}
                   app={app}
-                  selected={app.id === selectedId}
+                  selected={chosen.includes(app.id)}
+                  group={chosen.length > 1 && chosen.includes(app.id) ? chosen : null}
                   software={stored.get(app.id)}
-                  onSelect={() => patch({ selectedInstalledId: app.id })}
+                  onSelect={(event) => clickRow(app.id, event)}
                 />
               ),
             )}
@@ -210,14 +254,63 @@ export function InstalledView() {
   );
 }
 
-/** 已安装软件的右键菜单：打开所在文件夹，能卸载的可以卸载。 */
-function useInstalledMenu(app: InstalledApp): MenuEntry[] {
+/** 简介按什么名字存：仓库里有它就用仓库里那个软件的名字，否则用去掉版本号、架构之后的名字。 */
+function useSummaryKey(app: InstalledApp): string {
+  return useApp((state) => {
+    const softwareId = Object.keys(state.links).find((id) => state.links[id] === app.id);
+    const linked = softwareId ? state.library?.software.find((s) => s.id === softwareId) : undefined;
+    return linked?.name ?? summaryName(app.name);
+  });
+}
+
+/** 一组已安装软件各自的简介名字和发布者（给“获取简介”“AI 写简介”用）。 */
+function summaryTargets(ids: string[]): { name: string; publisher: string }[] {
+  const state = useApp.getState();
+  return ids.flatMap((id) => {
+    const app = state.installedIndex[id];
+    if (!app) return [];
+    const softwareId = Object.keys(state.links).find((key) => state.links[key] === id);
+    const linked = softwareId ? state.library?.software.find((s) => s.id === softwareId) : undefined;
+    return [{ name: linked?.name ?? summaryName(app.name), publisher: app.publisher }];
+  });
+}
+
+/**
+ * 已安装软件的右键菜单：写描述、联网取简介、让 AI 写简介，打开所在文件夹，能卸载的可以卸载。
+ * 右键的是多选里的一个时，作用于全部选中的软件（不能卸载、不能定位）。
+ */
+function useInstalledMenu(app: InstalledApp, group: string[] | null): MenuEntry[] {
   const t = useT();
   const attempt = useApp((state) => state.attempt);
+  const requestSummary = useApp((state) => state.requestSummary);
+  const describeWithAi = useApp((state) => state.describeWithAi);
+  const aiReady = useAiReady();
+  const key = useSummaryKey(app);
+  if (group) {
+    return [
+      { label: t("installed.fetchSummaries", { n: group.length }), icon: RefreshCw, onSelect: () => summaryTargets(group).forEach((target) => requestSummary(target.name, true)) },
+      ...(aiReady ? [{ label: t("installed.aiSummaries", { n: group.length }), icon: WandSparkles, onSelect: () => void describeWithAi(summaryTargets(group)) }] : []),
+    ];
+  }
   return [
-    { label: t("menu.openFolder"), icon: FolderOpen, disabled: !app.location, onSelect: () => void attempt(() => api.revealInstalled(app.id)) },
+    { label: t("summary.editMenu"), icon: Pencil, onSelect: () => void editSummary(key) },
+    { label: t("summary.fetch"), icon: RefreshCw, onSelect: () => requestSummary(key, true) },
+    ...(aiReady ? [{ label: t("ai.describe"), icon: WandSparkles, onSelect: () => void describeWithAi([{ name: key, publisher: app.publisher }]) }] : []),
+    { label: t("menu.openFolder"), icon: FolderOpen, separated: true, disabled: !app.location, onSelect: () => void attempt(() => api.revealInstalled(app.id)) },
     ...(app.uninstallable ? [{ label: t("installed.uninstall"), icon: Trash2, danger: true, separated: true, onSelect: () => void uninstallApp(app) }] : []),
   ];
+}
+
+/** 列表里名字下面那一行：有简介时写简介（看得出它是干什么的），没有时写发布者。 */
+function useSubtitle(app: InstalledApp): { text: string; described: boolean } {
+  const t = useT();
+  const language = useLanguage();
+  const key = useSummaryKey(app);
+  const summary = useApp((state) => state.library?.summaries[key]);
+  const translate = useApp((state) => state.library?.settings.translateSummaries ?? true);
+  const shown = shownSummary(summary, language, translate);
+  if (shown) return { text: shown.text, described: true };
+  return { text: app.publisher || t(`source.${app.source}`), described: false };
 }
 
 /** 卸载按钮：鼠标停上去或选中时才出现，一直占着位置，列不会跳。 */
@@ -243,6 +336,7 @@ function UninstallButton({ app, selected }: { app: InstalledApp; selected: boole
 function InstalledRow({
   app,
   selected,
+  group,
   size,
   software,
   onSelect,
@@ -250,14 +344,16 @@ function InstalledRow({
 }: {
   app: InstalledApp;
   selected: boolean;
+  group: string[] | null;
   size: number | null;
   software?: Software;
-  onSelect: () => void;
+  onSelect: (event: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) => void;
   onOpen: (id: string) => void;
 }) {
-  const t = useT();
   const language = useLanguage();
-  const menu = useInstalledMenu(app);
+  const menu = useInstalledMenu(app, group);
+  const subtitle = useSubtitle(app);
+  const selectInstalled = useApp((state) => state.selectInstalled);
   const columns = useContext(ColumnsContext) as Columns<InstalledColumn>;
   const show = (key: InstalledColumn) => columns.visible.includes(key);
   return (
@@ -267,7 +363,9 @@ function InstalledRow({
         tabIndex={0}
         aria-pressed={selected}
         onClick={onSelect}
-        onKeyDown={(event) => event.key === "Enter" && onSelect()}
+        // 右键的不在多选里时，先单选它，菜单作用于它自己
+        onContextMenu={() => !group && !selected && selectInstalled(app.id)}
+        onKeyDown={(event) => event.key === "Enter" && onSelect(event)}
         style={{ gridTemplateColumns: columns.template }}
         className={cx("group grid min-h-[52px] items-center gap-x-3 rounded-md py-1.5 pr-3 pl-2.5 transition-colors", selected ? "bg-active" : "hover:bg-hover")}
       >
@@ -275,7 +373,9 @@ function InstalledRow({
           <SoftwareIcon name={app.name} icon={app.icon} />
           <div className="min-w-0">
             <div className="truncate text-[13px] font-medium">{app.name}</div>
-            <div className="truncate text-[12px] text-fg-3">{app.publisher || t(`source.${app.source}`)}</div>
+            <div className={cx("truncate text-[12px]", subtitle.described ? "text-fg-2" : "text-fg-3")} title={subtitle.described ? `${subtitle.text}\n${app.publisher}` : undefined}>
+              {subtitle.text}
+            </div>
           </div>
         </div>
         {show("version") && <div className="tabular truncate text-[12px] text-fg-2">{app.version}</div>}
@@ -297,17 +397,33 @@ function InstalledRow({
 }
 
 /** 网格视图里的一个：居中的大图标，下面是名字和版本。仓库里有它的安装包时，图标角上有个小标记。 */
-function InstalledTile({ app, selected, software, onSelect }: { app: InstalledApp; selected: boolean; software?: Software; onSelect: () => void }) {
+function InstalledTile({
+  app,
+  selected,
+  group,
+  software,
+  onSelect,
+}: {
+  app: InstalledApp;
+  selected: boolean;
+  group: string[] | null;
+  software?: Software;
+  onSelect: (event: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) => void;
+}) {
   const t = useT();
-  const menu = useInstalledMenu(app);
+  const menu = useInstalledMenu(app, group);
+  const subtitle = useSubtitle(app);
+  const selectInstalled = useApp((state) => state.selectInstalled);
   return (
     <ContextMenu items={menu}>
       <div
         role="button"
         tabIndex={0}
         aria-pressed={selected}
+        title={subtitle.described ? subtitle.text : undefined}
         onClick={onSelect}
-        onKeyDown={(event) => event.key === "Enter" && onSelect()}
+        onContextMenu={() => !group && !selected && selectInstalled(app.id)}
+        onKeyDown={(event) => event.key === "Enter" && onSelect(event)}
         className={cx(
           "group flex min-w-0 flex-col items-center rounded-lg px-2 pt-4 pb-2 text-center transition-colors",
           selected ? "bg-accent-soft" : "hover:bg-hover",
@@ -356,6 +472,62 @@ function RepoCell({ software, onOpen }: { software?: Software; onOpen: (id: stri
 }
 
 export function InstalledDetail() {
+  const many = useApp((state) => state.selectedInstalledIds.length > 1);
+  return many ? <InstalledBatch /> : <InstalledSingle />;
+}
+
+/** 多选时的详情栏：一起取简介、让 AI 写简介。 */
+function InstalledBatch() {
+  const t = useT();
+  const ids = useApp((state) => state.selectedInstalledIds);
+  const index = useApp((state) => state.installedIndex);
+  // 不能在选择器里拼新数组：每次都是新的，界面会一直重画
+  const apps = useMemo(() => ids.map((id) => index[id]).filter(Boolean), [ids, index]);
+  const requestSummary = useApp((state) => state.requestSummary);
+  const describeWithAi = useApp((state) => state.describeWithAi);
+  const selectInstalled = useApp((state) => state.selectInstalled);
+  const aiReady = useAiReady();
+  const writing = useApp((state) => summaryTargets(ids).some((target) => state.aiBusy[target.name]));
+  const fetching = useApp((state) => summaryTargets(ids).some((target) => state.summaryBusy[target.name]));
+  return (
+    <div className="flex h-full flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-4">
+        <div className="flex items-center gap-2">
+          <CheckSquare size={18} strokeWidth={1.75} aria-hidden className="text-accent" />
+          <span className="text-[15px] font-semibold">{t("batch.title", { n: apps.length })}</span>
+        </div>
+        <p className="mt-1.5 mb-0 text-[12px] leading-relaxed text-fg-3">{t("batch.keys")}</p>
+        <div className="mt-4 flex flex-col gap-2">
+          <Button className="w-full" busy={fetching} onClick={() => summaryTargets(ids).forEach((target) => requestSummary(target.name, true))}>
+            <RefreshCw size={14} strokeWidth={1.75} aria-hidden />
+            {t("installed.fetchSummaries", { n: apps.length })}
+          </Button>
+          {aiReady && (
+            <Button className="w-full" busy={writing} onClick={() => void describeWithAi(summaryTargets(ids))}>
+              <WandSparkles size={14} strokeWidth={1.75} aria-hidden />
+              {t("installed.aiSummaries", { n: apps.length })}
+            </Button>
+          )}
+        </div>
+        <div className="mt-4 rounded-lg border border-line">
+          {apps.map((app) => (
+            <div key={app.id} className="flex h-9 items-center gap-2 border-b border-line px-2.5 last:border-b-0">
+              <SoftwareIcon name={app.name} icon={app.icon} size={20} />
+              <span className="min-w-0 flex-1 truncate text-[13px]">{app.name}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="shrink-0 border-t border-line p-3">
+        <Button variant="ghost" className="w-full" onClick={() => selectInstalled(null)}>
+          {t("batch.clear")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function InstalledSingle() {
   const t = useT();
   const language = useLanguage();
   const app = useApp((state) => (state.selectedInstalledId ? state.installedIndex[state.selectedInstalledId] : undefined));
@@ -400,6 +572,7 @@ export function InstalledDetail() {
           busy={summaryBusy}
           onFetch={() => requestSummary(summaryKey, true)}
           ai={summaryKey ? { name: summaryKey, publisher: app.publisher } : undefined}
+          name={summaryKey || undefined}
         />
 
         <div

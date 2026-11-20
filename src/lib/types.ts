@@ -85,6 +85,32 @@ export interface Candidate {
   version: string;
 }
 
+/** AI 对一个启动项的解释。`cached` 为真时是以前记下的，这次没有问 AI。 */
+export interface Explanation {
+  text: string;
+  model: string;
+  at: string;
+  cached: boolean;
+}
+
+/** AI 分类的建议。`cached` 是其中有几个用的是上次 AI 的建议（这次没有问）。 */
+export interface AiSuggestions {
+  suggestions: Suggestion[];
+  cached: number;
+}
+
+/** 顶栏搜索在 GitHub 上搜到的一个仓库。 */
+export interface RepoHit {
+  /** `owner/repo`，关联 GitHub Releases 时用的标识。 */
+  reference: string;
+  name: string;
+  description: string;
+  url: string;
+  stars: number;
+  /** 已经归档、不再维护。 */
+  archived: boolean;
+}
+
 export interface SubscribeResult {
   library: Library;
   softwareId: string;
@@ -174,6 +200,58 @@ export interface InstalledApp {
   /** 图标文件的绝对路径。 */
   icon: string | null;
 }
+
+/** 一个启动项或服务。 */
+export interface StartupItem {
+  /** 稳定的标识：plist 的路径、注册表位置、服务名、单元名。 */
+  id: string;
+  /** startup：登录时自动运行的程序；service：后台服务。 */
+  kind: "startup" | "service";
+  /** 登记在哪一类地方。 */
+  source: "loginItem" | "launchAgent" | "launchDaemon" | "registry" | "startupFolder" | "service" | "autostart" | "systemd";
+  name: string;
+  /** 系统内部的名字：launchd 的 Label、Windows 的服务名、systemd 的单元名、注册表的值名。 */
+  label: string;
+  /** 系统或程序自带的说明，没有时为空。 */
+  description: string;
+  publisher: string;
+  command: string;
+  /** 登记在哪：plist 文件、注册表键、快捷方式、单元文件。 */
+  location: string;
+  /** user：只对当前用户；machine：所有用户。 */
+  scope: "user" | "machine";
+  /** 系统自带的（Apple、Microsoft、发行版的核心服务）。 */
+  system: boolean;
+  /** 会不会自动运行。 */
+  enabled: boolean;
+  canToggle: boolean;
+  /** 服务的启动方式。Windows：auto / delayed / manual / disabled；systemd：enabled / disabled / static / masked … */
+  startType: string | null;
+  /** 可以改成哪几种启动方式（只有 Windows 的服务有，别的用开关）。 */
+  startTypes: string[];
+  /** 正在运行；不知道时为 null。 */
+  running: boolean | null;
+  pid: number | null;
+  canControl: boolean;
+  /** 改动它要管理员权限，系统会弹出授权提示。 */
+  needsAdmin: boolean;
+  /** 它属于哪个应用。 */
+  app: string;
+  icon: string | null;
+  /** 什么时候运行：login、load、keepAlive、interval:<秒>、calendar、watch、demand、hidden。 */
+  triggers: string[];
+  /** 以哪个账户运行。 */
+  account: string;
+}
+
+/** 列启动项的结果。`notes` 是列的时候遇到的问题，比如 `login_items_denied`。 */
+export interface StartupListing {
+  items: StartupItem[];
+  notes: string[];
+}
+
+/** 对启动项做的事。 */
+export type StartupAction = "enable" | "disable" | "start" | "stop" | "restart" | `type:${"auto" | "delayed" | "manual" | "disabled"}`;
 
 /** 卸载后找到的一项残留。 */
 export interface Leftover {

@@ -42,6 +42,7 @@ jobs:
       contents: write
     outputs:
       tag: ${{ steps.draft.outputs.tag }}
+      body: ${{ steps.draft.outputs.body }}
     steps:
       - uses: actions/checkout@v5
       - name: 准备草稿 Release
@@ -54,14 +55,29 @@ jobs:
             在下面的附件里下载对应系统的安装包。安装包还没有做系统级签名，首次打开的方法见 [README](https://github.com/Wonvy/ShibaPack/blob/main/README.zh-CN.md#下载)。
         run: |
           # 标签按 package.json 里的版本号来，和打包时 tauri-action 用的一致（手动运行时也对得上）
-          tag="v$(node -p "require('./package.json').version")"
+          version="$(node -p "require('./package.json').version")"
+          tag="v$version"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          # 这个版本的更新说明：CHANGELOG.md 里“## 版本号”那一节。放在 Release 说明的最前面，
+          # 也交给 tauri-action 写进 latest.json，ShibaPack 的“软件更新”窗口显示的就是它。下载说明放在 --- 后面
+          changes="$(awk -v v="$version" '$0 == "## " v {on = 1; next} /^## / {if (on) exit} on' CHANGELOG.md)"
+          if [ -n "$(printf '%s' "$changes" | tr -d '[:space:]')" ]; then
+            body="$(printf '%s\n\n---\n\n%s' "$changes" "$NOTES")"
+          else
+            echo "::warning title=没有更新说明::CHANGELOG.md 里没有“## $version”这一节，Release 和软件更新窗口里不会有这次的更新内容。"
+            body="$NOTES"
+          fi
+          {
+            echo "body<<__RELEASE_BODY__"
+            printf '%s\n' "$body"
+            echo "__RELEASE_BODY__"
+          } >> "$GITHUB_OUTPUT"
           # 重新运行时草稿已经在了，接着用
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             echo "已有 $tag 的 Release，接着用"
             exit 0
           fi
-          if ! gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" --title "ShibaPack $tag" --notes "$NOTES"; then
+          if ! gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" --title "ShibaPack $tag" --notes "$body"; then
             echo "::error title=GitHub 不让这个工作流创建 Release::多半是工作流的 GITHUB_TOKEN 只有读权限。到仓库的 Settings → Actions → General → Workflow permissions，选“Read and write permissions”并保存，然后重新运行。已经是读写还不行，就按 release.yml 开头的说明加一个 RELEASE_TOKEN。"
             exit 1
           fi
@@ -128,9 +144,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # CI 上 Tauri 默认跳过给 DMG 窗口摆图标、放背景图（要用 AppleScript 控制访达）。打开它，磁盘映像才有背景图
+          TAURI_BUNDLER_DMG_IGNORE_CI: "true"
         with:
           tagName: ${{ needs.release.outputs.tag }}
           releaseName: ShibaPack ${{ needs.release.outputs.tag }}
+          # 写进 latest.json 的 notes：软件更新窗口里显示的更新说明
+          releaseBody: ${{ needs.release.outputs.body }}
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: ${{ steps.signing.outputs.signed == 'true' }}

@@ -54,7 +54,7 @@ pub fn list_installed(icon_cache: &Path) -> Vec<InstalledApp> {
 }
 
 /// 图标按“来源路径 + 修改时间”缓存：软件升级后图标文件变了会重新取。
-fn icon_for(source: &Path, cache: &Path) -> Option<String> {
+pub(crate) fn icon_for(source: &Path, cache: &Path) -> Option<String> {
     let meta = std::fs::metadata(source).ok()?;
     let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
     let key = hex::encode(Sha256::digest(format!("{}|{modified}|{}", source.display(), meta.len())));
@@ -276,6 +276,19 @@ pub fn parse_desktop(content: &str) -> Option<DesktopEntry> {
     (is_app && !entry.name.is_empty()).then_some(entry)
 }
 
+/// .app 的图标文件：Info.plist 里写的 CFBundleIconFile，没写的在资源目录里找一个 .icns。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn bundle_icon(bundle: &Path, declared: Option<&str>) -> Option<PathBuf> {
+    let resources = bundle.join("Contents/Resources");
+    let declared = declared.map(|file| {
+        let path = resources.join(file);
+        if path.extension().is_some() { path } else { path.with_extension("icns") }
+    });
+    declared.filter(|path| path.is_file()).or_else(|| {
+        std::fs::read_dir(&resources).ok()?.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|ext| ext == "icns"))
+    })
+}
+
 #[cfg(target_os = "macos")]
 mod platform {
     use super::*;
@@ -325,15 +338,7 @@ mod platform {
             .map(|time| chrono::DateTime::<chrono::Local>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
             .unwrap_or_default();
 
-        let resources = contents.join("Resources");
-        let declared = text("CFBundleIconFile").map(|file| {
-            let path = resources.join(file);
-            if path.extension().is_some() { path } else { path.with_extension("icns") }
-        });
-        let icon_source = declared.filter(|path| path.is_file()).or_else(|| {
-            // 没写图标文件名的，在资源目录里找一个 .icns
-            std::fs::read_dir(&resources).ok()?.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|ext| ext == "icns"))
-        });
+        let icon_source = super::bundle_icon(bundle, text("CFBundleIconFile"));
 
         // 系统自带的应用受系统保护，删不掉。有的看起来在 /Applications，实际链接到系统分区
         let protected = std::fs::canonicalize(bundle).unwrap_or_else(|_| bundle.to_path_buf()).starts_with("/System");
@@ -529,7 +534,7 @@ pub fn desktop_apps(roots: &[(PathBuf, &str)], icon_dirs: &[PathBuf]) -> Vec<Ins
 
 /// Icon= 可能是绝对路径，也可能只是图标主题里的名字。
 /// `icon_dirs` 里是图标主题的根目录（下面有 256x256/apps 这样的子目录）和直接放图标的目录（pixmaps）。
-fn find_desktop_icon(icon: &str, icon_dirs: &[PathBuf]) -> Option<PathBuf> {
+pub(crate) fn find_desktop_icon(icon: &str, icon_dirs: &[PathBuf]) -> Option<PathBuf> {
     if icon.is_empty() {
         return None;
     }

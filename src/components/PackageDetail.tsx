@@ -3,7 +3,7 @@
 
 import * as DropdownPrimitive from "@radix-ui/react-dropdown-menu";
 import {
-  ArrowUp,
+  ArrowUpCircle,
   ChevronRight,
   CircleCheck,
   CircleHelp,
@@ -38,6 +38,7 @@ import {
   deleteSoftwareMany,
   deleteVersion,
   deleteVersions,
+  editSummary,
   installSoftware,
   installerFor,
   installerIn,
@@ -70,7 +71,7 @@ import { prompt } from "./dialogs";
 import { PlatformIcon } from "./PlatformIcon";
 import { SoftwareIcon, useSoftwareIcon } from "./SoftwareIcon";
 import { SourceSection } from "./SourcePanel";
-import { Button, Checkbox, Chip, Dropdown, IconButton, MiddleTruncate, Modal, Select, cx, menuClass } from "./ui";
+import { Button, Checkbox, Chip, Dropdown, IconButton, type MenuEntry, MiddleTruncate, Modal, Select, cx, menuClass } from "./ui";
 
 export function PackageDetail() {
   const multi = useApp((state) => state.selectedIds.length > 1);
@@ -363,18 +364,13 @@ function BatchPanel() {
 
 function Detail({ software }: { software: Software }) {
   const t = useT();
-  const language = useLanguage();
   const library = useApp((state) => state.library)!;
   const apply = useApp((state) => state.apply);
   const attempt = useApp((state) => state.attempt);
-  const moreOpen = usePrefs((state) => state.detailMoreOpen);
-  const setPrefs = usePrefs((state) => state.set);
   const icon = useSoftwareIcon(software);
   const summary = library.summaries[software.name];
   const summaryBusy = useApp((state) => Boolean(state.summaryBusy[software.name]));
   const requestSummary = useApp((state) => state.requestSummary);
-  // 从系统拖文件进来、停在详情栏上时：作为这个软件的新版本导入
-  const dropping = useApp((state) => state.dropSoftwareId === software.id);
   const installedApp = useApp((state) => {
     const id = state.links[software.id];
     return id ? state.installedIndex[id] : undefined;
@@ -394,24 +390,11 @@ function Detail({ software }: { software: Software }) {
     return apply(() => api.updateSoftware(software.id, edit));
   };
 
-  /** 失焦时保存；内容没变就不动。保存失败（比如重名）时恢复原值。 */
-  const commit = (field: "name" | "publisher" | "homepage" | "note") => async (event: { currentTarget: HTMLInputElement | HTMLTextAreaElement }) => {
-    const input = event.currentTarget;
-    const value = field === "note" ? input.value : input.value.trim();
-    if (value === software[field]) return;
-    if (!(await save({ [field]: value }))) input.value = software[field];
-  };
-  const blurOnEnter = (event: React.KeyboardEvent<HTMLInputElement>) => event.key === "Enter" && event.currentTarget.blur();
-
   const homepage = /^https?:\/\//i.test(software.homepage) ? software.homepage : null;
   const plain = "w-full rounded-md border border-transparent bg-transparent px-1.5 outline-none transition-colors hover:border-line-strong focus:border-accent focus:bg-bg";
-  const field = "selectable w-full rounded-md border border-line-strong bg-bg px-2.5 text-[13px] outline-none placeholder:text-fg-4 focus:border-accent";
 
   return (
-    <div
-      data-software-id={software.id}
-      className={cx("h-full overflow-y-auto px-4 pt-4 pb-8 transition-colors", dropping && "bg-accent-soft ring-2 ring-accent ring-inset")}
-    >
+    <div className="h-full overflow-y-auto px-4 pt-4 pb-8">
       {/* 头部：图标、名字、发布者；右边是收藏和更多操作 */}
       <div className="flex items-start gap-3">
         <SoftwareIcon name={software.name} icon={icon} size={44} />
@@ -423,12 +406,15 @@ function Detail({ software }: { software: Software }) {
             key={`p:${software.publisher}`}
             placeholder={t("detail.publisher")}
             spellCheck={false}
-            onBlur={commit("publisher")}
-            onKeyDown={blurOnEnter}
-            className={cx(plain, "-ml-1.5 h-6 text-[12px] text-fg-2 placeholder:text-fg-4")}
+            onBlur={(event) => {
+              const value = event.currentTarget.value.trim();
+              if (value !== software.publisher) void save({ publisher: value });
+            }}
+            onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
+            className={cx(plain, "-ml-1.5 h-6 text-[12px] text-fg-3 placeholder:text-fg-4")}
           />
         </div>
-        <div className="flex shrink-0 items-center">
+        <div className="-mr-1 flex shrink-0 items-center">
           <IconButton
             label={software.starred ? t("star.remove") : t("star.add")}
             className={software.starred ? "text-warning hover:text-warning" : ""}
@@ -438,6 +424,7 @@ function Detail({ software }: { software: Software }) {
           </IconButton>
           <Dropdown
             items={[
+              { label: t("summary.editMenu"), icon: Pencil, onSelect: () => void editSummary(software.name) },
               { label: t("classify.menu"), icon: Sparkles, onSelect: () => classify([software.id]) },
               { label: t("detail.openHomepage"), icon: ExternalLink, disabled: !homepage, onSelect: () => homepage && void attempt(() => api.openUrl(homepage)) },
               ...(installedApp?.uninstallable
@@ -459,82 +446,35 @@ function Detail({ software }: { software: Software }) {
         busy={summaryBusy}
         onFetch={() => requestSummary(software.name, true)}
         ai={{ name: software.name }}
+        name={software.name}
       />
 
       <StatusBlock software={software} />
 
       <Versions software={software} />
 
-      {/* 更多信息：不常改的都在这里 */}
-      <button
-        type="button"
-        aria-expanded={moreOpen}
-        onClick={() => setPrefs({ detailMoreOpen: !moreOpen })}
-        className="mt-5 flex h-7 w-full items-center gap-1 rounded-md text-[12px] font-medium text-fg-3 hover:text-fg-2"
-      >
-        <ChevronRight size={14} strokeWidth={2} aria-hidden className={cx("transition-transform", moreOpen && "rotate-90")} />
-        {t("detail.more")}
-        <span className="ml-2 h-px flex-1 bg-line" />
-      </button>
-      {moreOpen && (
-        <div className="flex flex-col gap-4 pt-2">
-          <Labeled label={t("detail.category")}>
-            <Select value={software.categoryId ?? ""} onChange={(event) => void save({ categoryId: event.target.value || null })}>
-              <option value="">{t("nav.uncategorized")}</option>
-              {flattenTree(library.categories).map(({ category, depth }) => (
-                <option key={category.id} value={category.id}>
-                  {"　".repeat(depth) + category.name}
-                </option>
-              ))}
-            </Select>
-          </Labeled>
-          <Labeled label={t("source.title")}>
-            <SourceSection software={software} />
-          </Labeled>
-          <Labeled label={t("detail.homepage")}>
-            <div className="flex gap-1">
-              <input
-                aria-label={t("detail.homepage")}
-                defaultValue={software.homepage}
-                key={`h:${software.homepage}`}
-                placeholder="https://"
-                spellCheck={false}
-                onBlur={commit("homepage")}
-                onKeyDown={blurOnEnter}
-                className={cx(field, "h-7")}
-              />
-              {homepage && (
-                <IconButton label={t("detail.openHomepage")} onClick={() => void attempt(() => api.openUrl(homepage))}>
-                  <ExternalLink size={14} strokeWidth={1.75} />
-                </IconButton>
-              )}
-            </div>
-          </Labeled>
-          <Labeled label={t("detail.note")}>
-            <textarea
-              aria-label={t("detail.note")}
-              defaultValue={software.note}
-              key={`n:${software.note}`}
-              rows={3}
-              placeholder={t("detail.notePlaceholder")}
-              onBlur={commit("note")}
-              className={cx(field, "resize-y py-1.5 leading-relaxed")}
-            />
-          </Labeled>
-          <div className="flex items-center justify-between text-[12px] text-fg-3">
-            <span>{t("detail.addedAt")}</span>
-            <span className="tabular">{formatDate(software.addedAt, language)}</span>
-          </div>
-        </div>
-      )}
+      <InfoSection software={software} onSave={save} />
+    </div>
+  );
+}
+
+/** 每一块的标题：小号灰字，右边放这一块的按钮。块与块之间一样的间距。 */
+function SectionHeader({ title, count, children }: { title: string; count?: number; children?: React.ReactNode }) {
+  return (
+    <div className="mb-1.5 flex h-7 items-center gap-0.5">
+      <h3 className="m-0 flex-1 text-[12px] font-medium text-fg-3">
+        {title}
+        {count !== undefined && <span className="tabular ml-1.5 font-normal text-fg-4">{count}</span>}
+      </h3>
+      {children}
     </div>
   );
 }
 
 /**
- * 安装状态，至多两行，都没有就不显示：
- * 第一行是本机的情况（没装给“安装”，比仓库旧给“升级”，装着的是最新就只显示版本）；
- * 第二行是在线源上的新版本。每行只放一个往前走的按钮，卸载在头部的 ⋯ 菜单里。文字折行，不截断。
+ * 安装状态：一张表，至多两行，都没有就不显示。
+ * 第一行是这台电脑上的情况（没装给“安装”，比仓库旧给“升级”，装着的是最新就只写版本）；第二行是在线源上的新版本。
+ * 每行左边一个图标（只有图标带颜色），中间两行字，右边至多一个按钮，按钮一样大。卸载在头部的 ⋯ 菜单里。
  */
 function StatusBlock({ software }: { software: Software }) {
   const t = useT();
@@ -552,63 +492,70 @@ function StatusBlock({ software }: { software: Software }) {
   if (!installedApp && !installer && !update) return null;
 
   const percent = download?.total ? Math.min(100, Math.round((download.received / download.total) * 100)) : null;
-  const row = "flex min-h-8 items-center gap-2";
-  const text = "flex min-w-0 flex-1 items-start gap-1.5 text-[13px] leading-snug";
-  const icon = "mt-[2px] shrink-0";
   const unknown = t("detail.unknownVersion");
+  const action = "min-w-16 shrink-0";
   return (
-    <div className="mt-4 flex flex-col gap-1 rounded-lg bg-hover px-3 py-2">
+    <div className="mt-4 overflow-hidden rounded-lg border border-line">
       {installedApp && upgrade ? (
-        <div className={row}>
-          <span className={cx(text, "text-warning")}>
-            <ArrowUp size={15} strokeWidth={2.25} aria-hidden className={icon} />
-            <span>{t("link.localUpgrade", { installed: installedApp.version || unknown, version: upgrade.version.version || unknown })}</span>
-          </span>
-          <Button variant="primary" className="shrink-0" title={upgrade.file.name} onClick={() => void installSoftware(software, true)}>
+        <StatusRow
+          icon={<ArrowUpCircle size={16} strokeWidth={1.75} className="text-warning" />}
+          title={t("status.upgradeTo", { version: upgrade.version.version || unknown })}
+          detail={t("status.installedNow", { version: installedApp.version || unknown })}
+        >
+          <Button variant="primary" size="sm" className={action} title={upgrade.file.name} onClick={() => void installSoftware(software, true)}>
             {t("link.upgrade")}
           </Button>
-        </div>
+        </StatusRow>
       ) : installedApp ? (
-        <div className={row}>
-          <span className={cx(text, "text-success")}>
-            <CircleCheck size={15} strokeWidth={2} aria-hidden className={icon} />
-            <span>{installedApp.version ? t("link.installedVersion", { version: installedApp.version }) : t("link.installed")}</span>
-          </span>
-        </div>
+        <StatusRow
+          icon={<CircleCheck size={16} strokeWidth={1.75} className="text-success" />}
+          title={installedApp.version ? t("link.installedVersion", { version: installedApp.version }) : t("link.installed")}
+          detail={t("status.onThisComputer")}
+        />
       ) : (
         installer && (
-          <div className={row}>
-            <span className={cx(text, "text-fg-3")}>
-              <CircleDashed size={15} strokeWidth={2} aria-hidden className={icon} />
-              <span>{t("link.missing")}</span>
-            </span>
-            <Button variant="primary" className="shrink-0" title={installer.file.name} onClick={() => void installSoftware(software)}>
-              <Download size={14} strokeWidth={2} aria-hidden />
+          <StatusRow icon={<CircleDashed size={16} strokeWidth={1.75} className="text-fg-3" />} title={t("link.missing")} detail={t("status.notOnThisComputer")}>
+            <Button variant="primary" size="sm" className={action} title={installer.file.name} onClick={() => void installSoftware(software)}>
               {t("link.installVersion", { version: installer.version.version || unknown })}
             </Button>
-          </div>
+          </StatusRow>
         )
       )}
       {update && (
-        <div className={row}>
-          <span className={cx(text, "text-accent")}>
-            <CloudDownload size={15} strokeWidth={1.75} aria-hidden className={icon} />
-            <span>{t("source.updateTo", { version: update.version })}</span>
-          </span>
+        <StatusRow
+          icon={<CloudDownload size={16} strokeWidth={1.75} className="text-accent" />}
+          title={t("status.onlineVersion", { version: update.version })}
+          detail={software.subscription ? `${t(`source.${software.subscription.source}`)} · ${software.subscription.reference}` : ""}
+        >
           {download ? (
-            <>
-              <span className="tabular shrink-0 text-[12px] text-accent">{percent !== null ? `${percent}%` : t("source.queued")}</span>
-              <IconButton label={t("source.cancel")} onClick={() => void api.cancelDownload(asset!.url).catch(() => {})}>
-                <X size={15} strokeWidth={1.75} />
+            <span className="flex shrink-0 items-center gap-1">
+              <span className="tabular text-[12px] text-accent">{percent !== null ? `${percent}%` : t("source.queued")}</span>
+              <IconButton label={t("source.cancel")} className="size-6" onClick={() => void api.cancelDownload(asset!.url).catch(() => {})}>
+                <X size={14} strokeWidth={1.75} />
               </IconButton>
-            </>
+            </span>
           ) : asset ? (
-            <Button className="shrink-0" title={asset.name} onClick={() => void startDownload(software.id, asset)}>
+            <Button size="sm" className={action} title={asset.name} onClick={() => void startDownload(software.id, asset)}>
               {t("source.download")}
             </Button>
           ) : null}
-        </div>
+        </StatusRow>
       )}
+    </div>
+  );
+}
+
+function StatusRow({ icon, title, detail, children }: { icon: React.ReactNode; title: string; detail?: string; children?: React.ReactNode }) {
+  return (
+    <div className="flex min-h-12 items-center gap-2.5 border-b border-line px-3 py-2 last:border-b-0">
+      <span aria-hidden className="flex shrink-0">
+        {icon}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="text-[13px] leading-snug break-words">{title}</div>
+        {detail && <div className="text-[12px] leading-snug break-words text-fg-3">{detail}</div>}
+      </div>
+      {children}
     </div>
   );
 }
@@ -654,18 +601,9 @@ function EditableTitle({ value, label, onCommit }: { value: string; label: strin
   );
 }
 
-function Labeled({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <div className="mb-1.5 text-[12px] text-fg-3">{label}</div>
-      {children}
-    </div>
-  );
-}
-
 /**
- * 版本：多于一个时上面一排版本号，点一个只看那个版本的安装包。
- * 一开始选中默认版本；“默认”和“本机”（本机装着的就是这个版本）直接标在版本号上。
+ * 版本：一张表，每个版本一行（版本号、默认、本机、文件数和大小），点一行展开它的安装包。
+ * 一开始只展开默认版本。设为默认、安装这个版本、备注、改版本号、删除都在每行的 ⋯ 菜单里。
  */
 function Versions({ software }: { software: Software }) {
   const t = useT();
@@ -674,11 +612,16 @@ function Versions({ software }: { software: Software }) {
     return id ? state.installedIndex[id]?.version : undefined;
   });
   const importPaths = useApp((state) => state.importPaths);
-  const [picked, setPicked] = useState<string | null>(null);
   const [pruning, setPruning] = useState(false);
   const versions = sortedVersions(software);
   const main = primaryVersion(software);
-  const current = versions.find((v) => v.id === picked) ?? main ?? versions[0];
+  const [open, setOpen] = useState<Set<string>>(() => new Set(main ? [main.id] : []));
+  const toggle = (id: string) => {
+    const next = new Set(open);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setOpen(next);
+  };
 
   // 选的文件都归到这个软件下，版本号从文件名里认
   const addFiles = async () => {
@@ -687,50 +630,34 @@ function Versions({ software }: { software: Software }) {
   };
 
   return (
-    <section className="mt-5">
-      <div className="mb-2 flex min-h-7 items-center gap-0.5">
-        <h3 className="m-0 flex-1 text-[12px] font-medium text-fg-3">{`${t("detail.versions")} · ${versions.length}`}</h3>
-        <Button variant="ghost" size="sm" title={t("version.addHint", { name: software.name })} onClick={() => void addFiles()}>
-          <Plus size={13} strokeWidth={2} aria-hidden />
-          {t("version.add")}
-        </Button>
+    <section className="mt-6">
+      <SectionHeader title={t("detail.versions")} count={versions.length}>
+        <IconButton label={t("version.addHint", { name: software.name })} className="size-6" onClick={() => void addFiles()}>
+          <Plus size={15} strokeWidth={1.75} />
+        </IconButton>
         {versions.length > 1 && (
-          <Button variant="ghost" size="sm" onClick={() => setPruning(true)}>
-            <Eraser size={13} strokeWidth={1.75} aria-hidden />
-            {t("version.prune")}
-          </Button>
+          <IconButton label={t("version.prune")} className="size-6" onClick={() => setPruning(true)}>
+            <Eraser size={14} strokeWidth={1.75} />
+          </IconButton>
         )}
-      </div>
-      {versions.length === 0 && <div className="text-[12px] text-fg-4">{t("detail.noFiles")}</div>}
-      {versions.length > 1 && (
-        <div role="tablist" aria-label={t("detail.versions")} className="mb-2 flex flex-wrap gap-1.5">
-          {versions.map((version) => {
-            const selected = version.id === current?.id;
-            const isMain = version.id === main?.id;
-            const local = installed !== undefined && sameVersion(version.version, installed);
-            return (
-              <button
-                key={version.id}
-                type="button"
-                role="tab"
-                aria-selected={selected}
-                title={[local ? t("version.localHint") : "", version.note].filter(Boolean).join("\n") || undefined}
-                onClick={() => setPicked(version.id)}
-                className={cx(
-                  "tabular inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[12px] transition-colors",
-                  selected ? "border-accent bg-accent-soft text-accent" : "border-line-strong text-fg-2 hover:bg-hover hover:text-fg",
-                )}
-              >
-                {version.version || t("detail.unknownVersion")}
-                {isMain && <span className="opacity-70">· {t("detail.default")}</span>}
-                {local && <span className="text-success">· {t("version.local")}</span>}
-              </button>
-            );
-          })}
+      </SectionHeader>
+      {versions.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-line-strong px-3 py-4 text-center text-[12px] text-fg-3">{t("detail.noFiles")}</div>
+      ) : (
+        <div className="overflow-hidden rounded-lg border border-line">
+          {versions.map((version) => (
+            <VersionItem
+              key={version.id}
+              software={software}
+              version={version}
+              isMain={version.id === main?.id}
+              installed={installed}
+              open={open.has(version.id)}
+              onToggle={() => toggle(version.id)}
+            />
+          ))}
         </div>
       )}
-      {/* 按版本 id 重建：换版本时正在编辑的备注不会串到别的版本上 */}
-      {current && <VersionBlock key={current.id} software={software} version={current} isMain={current.id === main?.id} installed={installed} />}
       {pruning && <PruneDialog software={software} installed={installed} onClose={() => setPruning(false)} />}
     </section>
   );
@@ -826,7 +753,21 @@ function PruneDialog({ software, installed, onClose }: { software: Software; ins
   );
 }
 
-function VersionBlock({ software, version, isMain, installed }: { software: Software; version: Version; isMain: boolean; installed?: string }) {
+function VersionItem({
+  software,
+  version,
+  isMain,
+  installed,
+  open,
+  onToggle,
+}: {
+  software: Software;
+  version: Version;
+  isMain: boolean;
+  installed?: string;
+  open: boolean;
+  onToggle: () => void;
+}) {
   const t = useT();
   const root = useApp((state) => state.status?.repoRoot);
   const language = useLanguage();
@@ -850,50 +791,50 @@ function VersionBlock({ software, version, isMain, installed }: { software: Soft
     }
   };
 
+  const menu: MenuEntry[] = [
+    ...(pinned
+      ? [{ label: t("version.auto"), icon: PinOff, onSelect: () => void setDefaultVersion(software, null) }]
+      : isMain
+        ? []
+        : [{ label: t("detail.setDefault"), icon: Pin, onSelect: () => void setDefaultVersion(software, version.id) }]),
+    // 默认版本的安装和升级在上面的状态表里，这里只给别的版本
+    ...(!isMain && installer && !local
+      ? [{ label: t("version.installThis"), icon: Download, onSelect: () => void installSoftware(software, false, version) }]
+      : []),
+    { label: version.note ? t("version.editNote") : t("version.addNote"), icon: StickyNote, separated: true, onSelect: () => setEditingNote(true) },
+    { label: t("detail.editVersion"), icon: Pencil, onSelect: () => void rename() },
+    { label: t("detail.deleteVersion"), icon: Trash2, danger: true, separated: true, onSelect: () => void deleteVersion(software, version) },
+  ];
+
   return (
-    <div className="rounded-lg border border-line">
-      <div className="border-b border-line pt-1 pr-1 pb-1.5 pl-2.5">
-        <div className="flex h-7 items-center gap-1.5">
-          <span className="tabular truncate text-[13px] font-medium" title={versionPaths(version, root)}>
-            {version.version || t("detail.unknownVersion")}
-          </span>
-          {isMain && <Chip className={pinned ? "bg-accent-soft text-accent" : ""}>{t("detail.default")}</Chip>}
-          {local && <Chip className="text-success">{t("version.local")}</Chip>}
-          <div className="ml-auto">
-            <Dropdown
-              items={[
-                ...(pinned
-                  ? [{ label: t("version.auto"), icon: PinOff, onSelect: () => void setDefaultVersion(software, null) }]
-                  : [{ label: t("detail.setDefault"), icon: Pin, onSelect: () => void setDefaultVersion(software, version.id) }]),
-                { label: version.note ? t("version.editNote") : t("version.addNote"), icon: StickyNote, onSelect: () => setEditingNote(true) },
-                { label: t("detail.editVersion"), icon: Pencil, onSelect: () => void rename() },
-                { label: t("detail.deleteVersion"), icon: Trash2, danger: true, separated: true, onSelect: () => void deleteVersion(software, version) },
-              ]}
-            >
-              <IconButton label={t("common.edit")} className="size-6">
-                <Ellipsis size={15} strokeWidth={1.75} />
-              </IconButton>
-            </Dropdown>
-          </div>
-        </div>
-        <div className="flex min-h-6 items-center gap-1.5">
-          <span className="tabular min-w-0 flex-1 truncate text-[12px] text-fg-3" title={t("version.addedAt", { date: formatDate(version.addedAt, language) })}>
-            {t("lib.files", { n: version.files.length })} · {formatSize(size)}
-          </span>
-          {/* 默认版本的安装和升级在上面的状态卡片里，这里只给别的版本 */}
-          {!isMain && (
-            <Button variant="ghost" size="sm" onClick={() => void setDefaultVersion(software, version.id)}>
-              {t("version.makeDefault")}
-            </Button>
-          )}
-          {!isMain && installer && !local && (
-            <Button variant="soft" size="sm" title={installer.name} onClick={() => void installSoftware(software, false, version)}>
-              {t("version.installThis")}
-            </Button>
-          )}
-        </div>
-        {/* 版本备注：点一下就能改，失焦保存，Esc 放弃 */}
-        {editingNote ? (
+    <div className="border-b border-line last:border-b-0">
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={onToggle}
+        onKeyDown={(event) => event.target === event.currentTarget && event.key === "Enter" && onToggle()}
+        title={[versionPaths(version, root), t("version.addedAt", { date: formatDate(version.addedAt, language) })].filter(Boolean).join("\n")}
+        className="group flex h-10 cursor-default items-center gap-1.5 pr-1 pl-2 transition-colors hover:bg-hover"
+      >
+        <ChevronRight size={14} strokeWidth={2} aria-hidden className={cx("shrink-0 text-fg-3 transition-transform", open && "rotate-90")} />
+        <span className="tabular max-w-[55%] shrink-0 truncate text-[13px] font-medium">{version.version || t("detail.unknownVersion")}</span>
+        {isMain && <Chip className={cx("h-[18px] px-1", pinned && "bg-accent-soft text-accent")}>{t("detail.default")}</Chip>}
+        {local && <Chip className="h-[18px] px-1 text-success">{t("version.local")}</Chip>}
+        <span className="tabular ml-auto min-w-0 truncate pl-2 text-[12px] text-fg-3">
+          {t("lib.files", { n: version.files.length })} · {formatSize(size)}
+        </span>
+        <span onClick={(event) => event.stopPropagation()} className="flex">
+          <Dropdown items={menu}>
+            <IconButton label={t("common.edit")} className="size-6">
+              <Ellipsis size={15} strokeWidth={1.75} />
+            </IconButton>
+          </Dropdown>
+        </span>
+      </div>
+      {/* 版本备注：点一下就能改，失焦保存，Esc 放弃 */}
+      {editingNote ? (
+        <div className="px-3 pb-2">
           <textarea
             autoFocus
             rows={2}
@@ -907,29 +848,33 @@ function VersionBlock({ software, version, isMain, installed }: { software: Soft
                 setEditingNote(false);
               }
             }}
-            className="selectable mt-1 mr-1.5 block w-[calc(100%-6px)] resize-y rounded-md border border-line-strong bg-bg px-2 py-1 text-[12px] leading-relaxed outline-none placeholder:text-fg-4 focus:border-accent"
+            className="selectable block w-full resize-y rounded-md border border-line-strong bg-bg px-2 py-1 text-[12px] leading-relaxed outline-none placeholder:text-fg-4 focus:border-accent"
           />
-        ) : (
-          version.note && (
-            <button
-              type="button"
-              title={t("version.editNote")}
-              onClick={() => setEditingNote(true)}
-              className="mt-0.5 mr-1.5 flex w-[calc(100%-6px)] items-start gap-1.5 rounded-md px-1 py-0.5 -ml-1 text-left text-[12px] leading-relaxed whitespace-pre-wrap text-fg-2 hover:bg-hover"
-            >
-              <StickyNote size={12} strokeWidth={1.75} aria-hidden className="mt-[3px] shrink-0 text-fg-3" />
-              <span className="min-w-0">{version.note}</span>
-            </button>
-          )
-        )}
-      </div>
-      {version.files.map((file) => (
-        <FileRow key={file.id} software={software} version={version} file={file} />
-      ))}
+        </div>
+      ) : (
+        version.note && (
+          <button
+            type="button"
+            title={t("version.editNote")}
+            onClick={() => setEditingNote(true)}
+            className="mx-2 mb-1.5 flex w-[calc(100%-16px)] items-start gap-1.5 rounded-md px-[22px] py-0.5 text-left text-[12px] leading-relaxed whitespace-pre-wrap text-fg-2 hover:bg-hover"
+          >
+            <span className="min-w-0">{version.note}</span>
+          </button>
+        )
+      )}
+      {open && (
+        <div className="pb-1">
+          {version.files.map((file) => (
+            <FileRow key={file.id} software={software} version={version} file={file} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
+/** 一个安装包：一行，平台图标、文件名（太长从中间省略）、架构和大小。运行、定位、更多在鼠标停上去时出现。 */
 function FileRow({ software, version, file }: { software: Software; version: Version; file: PackageFile }) {
   const t = useT();
   const root = useApp((state) => state.status?.repoRoot);
@@ -949,23 +894,26 @@ function FileRow({ software, version, file }: { software: Software; version: Ver
   };
 
   return (
-    <div className="group relative border-b border-line py-1.5 pr-2 pl-2.5 last:border-b-0">
-      <MiddleTruncate text={file.name} title={fullPath(file, root)} className="selectable text-[12px]" />
-      <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] text-fg-3">
-        <PlatformIcon platform={file.platform} size={12} />
-        <span className="tabular truncate">{[platform, file.arch, formatSize(file.size)].filter(Boolean).join(" · ")}</span>
-      </div>
+    // 文件名和上面的版本号对齐：左边留出展开箭头的位置
+    <div className="group relative flex h-8 items-center gap-2 overflow-hidden pr-3 pl-[30px] hover:bg-hover">
+      {/* 平台和架构写在图标的提示里，这一行只放文件名和大小，窄的时候也不挤 */}
+      <span title={[platform, file.arch].filter(Boolean).join(" · ")} className="flex shrink-0 text-fg-3">
+        <PlatformIcon platform={file.platform} size={13} />
+      </span>
+      <MiddleTruncate text={file.name} tail={12} title={fullPath(file, root)} className="selectable min-w-0 flex-1 text-[12px]" />
+      <span className="tabular shrink-0 text-[12px] text-fg-3">{formatSize(file.size)}</span>
       {/* 菜单开着时（data-state=open）也保持显示，不然菜单会失去定位 */}
       <div className="absolute top-1/2 right-1 hidden -translate-y-1/2 items-center gap-0.5 rounded-md bg-panel p-0.5 shadow-pop group-focus-within:flex group-hover:flex group-has-[[data-state=open]]:flex">
         <IconButton
           label={runnable ? t("detail.run") : t("detail.runOther", { platform })}
+          className="size-6"
           disabled={!runnable}
           onClick={() => void attempt(() => api.runFile(ref))}
         >
-          <Play size={15} strokeWidth={1.75} />
+          <Play size={14} strokeWidth={1.75} />
         </IconButton>
-        <IconButton label={t("detail.reveal")} onClick={() => void attempt(() => api.revealFile(ref))}>
-          <FolderOpen size={15} strokeWidth={1.75} />
+        <IconButton label={t("detail.reveal")} className="size-6" onClick={() => void attempt(() => api.revealFile(ref))}>
+          <FolderOpen size={14} strokeWidth={1.75} />
         </IconButton>
         <Dropdown
           items={[
@@ -973,11 +921,111 @@ function FileRow({ software, version, file }: { software: Software; version: Ver
             { label: t("detail.deleteFile"), icon: Trash2, danger: true, separated: true, onSelect: () => void deleteFile(software, version, file) },
           ]}
         >
-          <IconButton label={t("common.edit")}>
-            <Ellipsis size={15} strokeWidth={1.75} />
+          <IconButton label={t("common.edit")} className="size-6">
+            <Ellipsis size={14} strokeWidth={1.75} />
           </IconButton>
         </Dropdown>
       </div>
+    </div>
+  );
+}
+
+/**
+ * 更多信息（默认收起）：分类、主页、备注、添加时间排成一张两列的表，左边是名字、右边是值，点值就能改；
+ * 下面是在线源。
+ */
+function InfoSection({ software, onSave }: { software: Software; onSave: (patch: Partial<SoftwareEdit>) => Promise<boolean> }) {
+  const t = useT();
+  const language = useLanguage();
+  const categories = useApp((state) => state.library!.categories);
+  const attempt = useApp((state) => state.attempt);
+  const moreOpen = usePrefs((state) => state.detailMoreOpen);
+  const setPrefs = usePrefs((state) => state.set);
+  const homepage = /^https?:\/\//i.test(software.homepage) ? software.homepage : null;
+  const field =
+    "selectable w-full rounded-md border border-transparent bg-transparent px-1.5 text-[13px] outline-none transition-colors placeholder:text-fg-4 hover:border-line-strong focus:border-accent focus:bg-bg";
+
+  /** 失焦时保存；内容没变就不动。保存失败时恢复原值。 */
+  const commit = (key: "homepage" | "note") => async (event: { currentTarget: HTMLInputElement | HTMLTextAreaElement }) => {
+    const input = event.currentTarget;
+    const value = key === "note" ? input.value : input.value.trim();
+    if (value === software[key]) return;
+    if (!(await onSave({ [key]: value }))) input.value = software[key];
+  };
+
+  return (
+    <section className="mt-6">
+      <button
+        type="button"
+        aria-expanded={moreOpen}
+        onClick={() => setPrefs({ detailMoreOpen: !moreOpen })}
+        className="mb-1.5 flex h-7 w-full items-center gap-1 text-[12px] font-medium text-fg-3 hover:text-fg-2"
+      >
+        {t("detail.more")}
+        <ChevronRight size={13} strokeWidth={2} aria-hidden className={cx("transition-transform", moreOpen && "rotate-90")} />
+      </button>
+      {moreOpen && (
+        <>
+          <dl className="m-0 overflow-hidden rounded-lg border border-line">
+            <InfoRow label={t("detail.category")}>
+              <Select compact className="w-full" value={software.categoryId ?? ""} onChange={(event) => void onSave({ categoryId: event.target.value || null })}>
+                <option value="">{t("nav.uncategorized")}</option>
+                {flattenTree(categories).map(({ category, depth }) => (
+                  <option key={category.id} value={category.id}>
+                    {"　".repeat(depth) + category.name}
+                  </option>
+                ))}
+              </Select>
+            </InfoRow>
+            <InfoRow label={t("detail.homepage")}>
+              <div className="flex items-center gap-0.5">
+                <input
+                  aria-label={t("detail.homepage")}
+                  defaultValue={software.homepage}
+                  key={`h:${software.homepage}`}
+                  placeholder="https://"
+                  spellCheck={false}
+                  onBlur={commit("homepage")}
+                  onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
+                  className={cx(field, "h-7")}
+                />
+                {homepage && (
+                  <IconButton label={t("detail.openHomepage")} className="size-6" onClick={() => void attempt(() => api.openUrl(homepage))}>
+                    <ExternalLink size={13} strokeWidth={1.75} />
+                  </IconButton>
+                )}
+              </div>
+            </InfoRow>
+            <InfoRow label={t("detail.note")} top>
+              <textarea
+                aria-label={t("detail.note")}
+                defaultValue={software.note}
+                key={`n:${software.note}`}
+                rows={2}
+                placeholder={t("detail.notePlaceholder")}
+                onBlur={commit("note")}
+                className={cx(field, "block resize-y py-1 leading-relaxed")}
+              />
+            </InfoRow>
+            <InfoRow label={t("detail.addedAt")}>
+              <span className="tabular px-1.5 text-[13px] text-fg-2">{formatDate(software.addedAt, language)}</span>
+            </InfoRow>
+          </dl>
+          <div className="mt-4">
+            <SectionHeader title={t("source.title")} />
+            <SourceSection software={software} />
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function InfoRow({ label, top, children }: { label: string; top?: boolean; children: React.ReactNode }) {
+  return (
+    <div className={cx("flex gap-2 border-b border-line py-1 pr-1.5 pl-3 last:border-b-0", top ? "items-start" : "items-center")}>
+      <dt className={cx("w-14 shrink-0 text-[12px] text-fg-3", top && "pt-1.5")}>{label}</dt>
+      <dd className="m-0 min-w-0 flex-1">{children}</dd>
     </div>
   );
 }

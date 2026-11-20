@@ -40,6 +40,10 @@ function Dialog({ ids }: { ids: string[] }) {
   const [choices, setChoices] = useState<Record<string, Choice>>({});
   const [checked, setChecked] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
+  /** 这次有几个用的是上次 AI 的建议。 */
+  const [cachedCount, setCachedCount] = useState(0);
+  /** 点了“重新分析”：加一，重新问 AI（不用缓存）。 */
+  const [rerun, setRerun] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -49,7 +53,14 @@ function Dialog({ ids }: { ids: string[] }) {
     const useAi = mode === "ai";
     let stopListening: (() => void) | null = null;
     if (useAi) void onAiProgress((progress) => alive && setAiProgress(progress)).then((stop) => (alive ? (stopListening = stop) : stop()));
-    const request = useAi ? api.aiSuggestCategories(ids) : api.suggestCategories(ids);
+    setCachedCount(0);
+    // 没变过的软件直接用上次 AI 的建议，不再问；点了“重新分析”才全部重新问
+    const request = useAi
+      ? api.aiSuggestCategories(ids, rerun > 0).then((result) => {
+          if (alive) setCachedCount(result.cached);
+          return result.suggestions;
+        })
+      : api.suggestCategories(ids);
     request.then(
       (list) => {
         if (!alive) return;
@@ -76,7 +87,7 @@ function Dialog({ ids }: { ids: string[] }) {
       // 关掉窗口或换回内置规则时，后面几批不用再问 AI 了
       if (useAi) void api.cancelAi();
     };
-  }, [ids, mode]);
+  }, [ids, mode, rerun]);
 
   // 下拉框里可选的新建分类：所有建议里提到过的（一批里可能有好几个）
   const newNames = useMemo(
@@ -137,9 +148,19 @@ function Dialog({ ids }: { ids: string[] }) {
             {mode === "ai" ? t("classify.aiLoading", { done: aiProgress?.done ?? 0, total: aiProgress?.total ?? ids.length }) : t("classify.loading")}
           </div>
         ) : (
-          <p className={cx("m-0 min-h-7 flex-1 pt-1 text-[13px] leading-relaxed", failure ? "text-danger" : "text-fg-2")}>
-            {failure ?? (found > 0 ? t("classify.summary", { n: found }) : t("classify.none"))}
-          </p>
+          <div className="min-h-7 flex-1 pt-1">
+            <p className={cx("m-0 text-[13px] leading-relaxed", failure ? "text-danger" : "text-fg-2")}>
+              {failure ?? (found > 0 ? t("classify.summary", { n: found }) : t("classify.none"))}
+            </p>
+            {mode === "ai" && cachedCount > 0 && !failure && (
+              <p className="m-0 mt-0.5 flex flex-wrap items-center gap-x-2 text-[12px] text-fg-3">
+                {t("classify.cached", { n: cachedCount })}
+                <button type="button" className="font-medium text-accent hover:underline" onClick={() => setRerun(rerun + 1)}>
+                  {t("classify.rerun")}
+                </button>
+              </p>
+            )}
+          </div>
         )}
         {aiReady && (
           <Segmented<Mode>

@@ -19,6 +19,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Rocket,
   Settings,
   Sparkles,
   Star,
@@ -31,6 +32,7 @@ import { beginDrag, useDrag } from "../lib/drag";
 import { CATEGORY_COLORS, CATEGORY_ICONS, categoryIcon } from "../lib/icons";
 import { childrenOf, flattenTree, hasUpdate, newId, withDescendants } from "../lib/library";
 import { RAIL_WIDTH, usePrefs } from "../lib/prefs";
+import { useStartup } from "../lib/startup";
 import { type Scope, useApp, useT } from "../lib/store";
 import type { Category } from "../lib/types";
 import { confirm } from "./dialogs";
@@ -51,6 +53,8 @@ export function Sidebar() {
   const checkUpdates = useApp((state) => state.checkUpdates);
   const checking = useApp((state) => state.checking !== null);
   const installedCount = useApp((state) => state.installed?.length);
+  // 第三方的、开着的启动项：开机慢时最想知道的那个数
+  const startupCount = useStartup((state) => state.items?.filter((i) => i.kind === "startup" && i.enabled && !i.system).length);
   const width = usePrefs((state) => state.sidebarWidth);
   const collapsed = usePrefs((state) => state.sidebarCollapsed);
   const setPrefs = usePrefs((state) => state.set);
@@ -152,6 +156,9 @@ export function Sidebar() {
     return (
       <nav className="flex shrink-0 flex-col items-center border-r border-line bg-side" style={{ width: RAIL_WIDTH }}>
         <div className="flex flex-col items-center gap-1 pt-2">
+          {/* 启动与服务管的是这台电脑，不是软件库：放在最上面，用一条线和软件库的入口隔开 */}
+          <RailButton icon={Rocket} label={t("nav.startup")} count={startupCount} active={route === "startup"} onClick={() => setRoute("startup")} />
+          <span className="my-1 h-px w-6 shrink-0 bg-line" />
           <RailButton
             icon={LayoutGrid}
             label={t("nav.all")}
@@ -217,6 +224,9 @@ export function Sidebar() {
   return (
     <nav className="flex shrink-0 flex-col bg-side" style={{ width }}>
       <div className="flex flex-col gap-px p-2 pb-0">
+        {/* 启动与服务管的是这台电脑，不是软件库：放在最上面，用一条线和软件库的入口隔开 */}
+        <NavRow icon={Rocket} label={t("nav.startup")} count={startupCount} active={route === "startup"} onClick={() => setRoute("startup")} />
+        <Divider />
         <NavRow
           icon={LayoutGrid}
           label={t("nav.all")}
@@ -262,11 +272,12 @@ export function Sidebar() {
 
       <ContextMenu items={sectionMenu}>
         {/* 不写“分类”两个字：一条细线把上面的入口和分类树隔开，右端是新建分类 */}
-        <div role="group" aria-label={t("nav.categories")} className="mt-2 flex h-7 shrink-0 items-center gap-2 pr-2 pl-4">
-          <span className="h-px flex-1 bg-line" />
-          <IconButton label={t("cat.new")} className="size-6" onClick={() => setEditing({ mode: "new", parentId: null })}>
-            <Plus size={14} strokeWidth={1.75} />
-          </IconButton>
+        <div role="group" aria-label={t("nav.categories")} className="px-2">
+          <Divider>
+            <IconButton label={t("cat.new")} className="size-6" onClick={() => setEditing({ mode: "new", parentId: null })}>
+              <Plus size={14} strokeWidth={1.75} />
+            </IconButton>
+          </Divider>
         </div>
       </ContextMenu>
 
@@ -285,7 +296,6 @@ export function Sidebar() {
         {(uncategorized.length > 0 || draggingSoftware) && (
           <NavRow
             icon={Inbox}
-            inTree
             label={t("nav.uncategorized")}
             count={uncategorized.length}
             muted
@@ -390,7 +400,6 @@ function NavRow({
   dropping,
   menu,
   action,
-  inTree,
   onClick,
 }: {
   icon?: LucideIcon;
@@ -406,8 +415,6 @@ function NavRow({
   menu?: MenuEntry[];
   /** 数字左边的小按钮。 */
   action?: ReactNode;
-  /** 放在分类树里：图标和文字跟顶层分类对齐。 */
-  inTree?: boolean;
   onClick: () => void;
 }) {
   const row = (
@@ -418,8 +425,8 @@ function NavRow({
       onClick={onClick}
       onKeyDown={(event) => event.target === event.currentTarget && event.key === "Enter" && onClick()}
       className={cx(
-        "group flex h-8 w-full shrink-0 items-center rounded-md text-left text-[13px] transition-colors",
-        inTree ? "gap-1 pr-2 pl-1" : "gap-2 px-2",
+        ROW,
+        "w-full px-2",
         dropping
           ? "bg-accent-soft text-accent"
           : active
@@ -427,17 +434,35 @@ function NavRow({
             : cx(muted ? "text-fg-3" : "text-fg-2", "hover:bg-hover hover:text-fg"),
       )}
     >
-      {/* 分类树里每行前面有展开箭头的位置 */}
-      {inTree && <span className="w-4 shrink-0" />}
-      {Icon ? <Icon size={16} strokeWidth={1.75} aria-hidden className={cx("shrink-0", inTree && "mr-1")} /> : <span className="w-4 shrink-0" />}
+      {Icon ? <Icon size={16} strokeWidth={1.75} aria-hidden className="shrink-0" /> : <span className="w-4 shrink-0" />}
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {action}
-      {count !== undefined && count > 0 && (
-        <span className={cx("tabular text-[12px]", highlight ? "font-medium text-accent" : "text-fg-3")}>{count}</span>
-      )}
+      {count !== undefined && count > 0 && <Count n={count} highlight={highlight} />}
     </div>
   );
   return menu ? <ContextMenu items={menu}>{row}</ContextMenu> : row;
+}
+
+/**
+ * 侧栏里每一行的样子：入口、分类、设置都一样。左边 8px 留白，16px 图标，8px 间距，然后是名字，数字靠右。
+ * 这样所有图标在同一列、所有名字在同一列。
+ */
+const ROW = "group flex h-8 shrink-0 items-center gap-2 rounded-md text-left text-[13px] transition-colors";
+/** 下级分类缩进一个“图标加间距”：下级的图标正好在上级的名字下面。 */
+const INDENT = 24;
+
+function Count({ n, highlight }: { n: number; highlight?: boolean }) {
+  return <span className={cx("tabular shrink-0 text-[12px]", highlight ? "font-medium text-accent" : "text-fg-3")}>{n}</span>;
+}
+
+/** 分隔线：从图标那一列画到数字那一列。`children` 放在右端（新建分类的按钮）。 */
+function Divider({ children }: { children?: ReactNode }) {
+  return (
+    <div role={children ? undefined : "separator"} className={cx("flex h-6 shrink-0 items-center gap-2 pl-2", children ? "pr-px" : "pr-2")}>
+      <span className="h-px flex-1 bg-line" />
+      {children}
+    </div>
+  );
 }
 
 interface TreeProps {
@@ -482,9 +507,10 @@ function Tree(props: TreeProps) {
                     (target) => canMoveCategory(categories, category.id, target),
                   )
                 }
-                style={{ paddingLeft: 4 + depth * 14 }}
+                style={{ paddingLeft: 8 + depth * INDENT }}
                 className={cx(
-                  "flex h-8 items-center gap-1 rounded-md pr-2 text-[13px] transition-colors",
+                  ROW,
+                  "pr-2",
                   zone === "inside"
                     ? "bg-accent-soft text-accent"
                     : isActive(category.id)
@@ -494,25 +520,35 @@ function Tree(props: TreeProps) {
                   zone === "after" && "shadow-[inset_0_-2px_0_var(--accent)]",
                 )}
               >
-                <button
-                  type="button"
-                  aria-label={category.name}
-                  tabIndex={-1}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    toggle(category.id);
-                  }}
-                  className={cx("flex size-4 shrink-0 items-center justify-center rounded text-fg-3", !hasChildren && "invisible")}
-                >
-                  <ChevronRight size={12} strokeWidth={2} className={cx("transition-transform", open && "rotate-90")} />
-                </button>
                 {/* 图标默认单色；只有给分类选了颜色，图标才带那个颜色 */}
-                <Icon size={16} strokeWidth={1.75} aria-hidden className="mr-1 shrink-0" style={{ color: category.color ?? undefined }} />
-                <span className="min-w-0 flex-1 truncate">{category.name}</span>
-                {count > 0 && <span className="tabular text-[12px] text-fg-3">{count}</span>}
+                <Icon size={16} strokeWidth={1.75} aria-hidden className="shrink-0" style={{ color: category.color ?? undefined }} />
+                {/* 有下级的分类：名字后面跟一个小箭头，点它展开或折叠。放在名字后面，图标和文字才能和上面的入口对齐 */}
+                <span className="flex min-w-0 flex-1 items-center gap-0.5">
+                  <span className="truncate">{category.name}</span>
+                  {hasChildren && (
+                    <button
+                      type="button"
+                      aria-label={category.name}
+                      aria-expanded={open}
+                      tabIndex={-1}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggle(category.id);
+                      }}
+                      className="flex size-4 shrink-0 items-center justify-center rounded text-fg-4 hover:bg-active hover:text-fg-2"
+                    >
+                      <ChevronRight size={12} strokeWidth={2} className={cx("transition-transform", open && "rotate-90")} />
+                    </button>
+                  )}
+                </span>
+                {count > 0 && <Count n={count} />}
               </div>
             </ContextMenu>
-            {hasChildren && open && depth < 12 && <Tree {...props} parentId={category.id} depth={depth + 1} />}
+            {hasChildren && open && depth < 12 && (
+              <div className="mt-px">
+                <Tree {...props} parentId={category.id} depth={depth + 1} />
+              </div>
+            )}
           </div>
         );
       })}

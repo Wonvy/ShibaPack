@@ -715,6 +715,14 @@ impl Repo {
     }
 
     /// 存一条联网取回的简介。`None` 表示查过了但没有，也记下来，免得每次启动都再查。
+    /// 删掉一个名字的简介（清空自己写的描述时）。之后开着“联网获取简介”的话会再去网上找。
+    pub fn clear_summary(&mut self, name: &str) -> Result<()> {
+        if self.lib.summaries.remove(name).is_some() {
+            self.save()?;
+        }
+        Ok(())
+    }
+
     pub fn set_summary(&mut self, name: &str, summary: Option<Summary>) -> Result<()> {
         let summary = summary.unwrap_or_else(|| Summary { text: String::new(), source: "none".into(), fetched_at: crate::now(), ..Summary::default() });
         self.lib.summaries.insert(name.to_string(), summary);

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 列出和修改“登录时打开”的项目要通过“系统事件”，第一次用时系统会弹出授权提示，显示这句话 -->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>ShibaPack 需要通过“系统事件”读取和修改登录项（登录时打开的应用），以便在“启动与服务”里管理它们。</string>
+</dict>
+</plist>

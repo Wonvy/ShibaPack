@@ -409,36 +409,35 @@ export interface FilterOption<T extends string> {
 
 /**
  * 工具栏上的筛选菜单：按钮上显示当前选中的一项，点开是带图标的选项列表。
- * 第一项是“不筛选”；选了别的项时按钮用强调色，一眼能看出列表被筛过。
+ * 第一项是“不筛选”。选了别的项时不加底色、不用强调色（用户要求不高亮），按钮上写着选中的那一项就够了。
  */
 export function FilterMenu<T extends string>({
   label,
   value,
   options,
   onChange,
+  textClassName,
 }: {
   label: string;
   value: T;
   options: FilterOption<T>[];
   onChange: (value: T) => void;
+  /** 按钮上文字的样式，比如栏窄时藏起来只留图标（`hidden @[540px]:inline`）。 */
+  textClassName?: string;
 }) {
   const current = options.find((option) => option.value === value) ?? options[0];
-  const filtering = value !== options[0].value;
   return (
     <DropdownPrimitive.Root>
       <DropdownPrimitive.Trigger asChild>
         <button
           type="button"
-          aria-label={label}
-          title={label}
-          className={cx(
-            "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[13px] whitespace-nowrap transition-colors outline-none",
-            filtering ? "bg-accent-soft text-accent" : "text-fg-3 hover:bg-hover hover:text-fg data-[state=open]:bg-hover data-[state=open]:text-fg",
-          )}
+          aria-label={`${label} · ${current.label}`}
+          title={`${label} · ${current.label}`}
+          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[13px] whitespace-nowrap text-fg-3 transition-colors outline-none hover:bg-hover hover:text-fg data-[state=open]:bg-hover data-[state=open]:text-fg"
         >
           {current.icon && <span className="flex size-4 items-center justify-center">{current.icon}</span>}
-          {/* 一直显示选中的那一项，不只是图标 */}
-          <span>{current.label}</span>
+          {/* 一直显示选中的那一项，不只是图标（栏太窄时可以只留图标，名字在悬停提示里） */}
+          <span className={textClassName}>{current.label}</span>
           <ChevronDown size={12} strokeWidth={2} aria-hidden className="-ml-0.5 opacity-50" />
         </button>
       </DropdownPrimitive.Trigger>

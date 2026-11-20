@@ -10,13 +10,16 @@ import { PackageDetail } from "./components/PackageDetail";
 import { SettingsDialog, SetupGuide } from "./components/panels";
 import { Sidebar } from "./components/Sidebar";
 import { SourceDialog } from "./components/SourcePanel";
-import { type DropPoint, onFileDrop } from "./lib/api";
+import { UpdateDialog } from "./components/UpdateDialog";
+import { onFileDrop } from "./lib/api";
 import { useDrag } from "./lib/drag";
 import { RAIL_WIDTH, SIDEBAR, usePrefs } from "./lib/prefs";
+import { useStartup } from "./lib/startup";
 import { useApp, useT } from "./lib/store";
 import { scheduleUpdateChecks } from "./lib/updater";
 import { InstalledDetail, InstalledView } from "./views/InstalledView";
 import { LibraryView } from "./views/LibraryView";
+import { StartupDetail, StartupView } from "./views/StartupView";
 
 export default function App() {
   const t = useT();
@@ -24,7 +27,6 @@ export default function App() {
   const ready = useApp((state) => state.library !== null);
   const route = useApp((state) => state.route);
   const dropping = useApp((state) => state.dropping);
-  const dropName = useApp((state) => state.library?.software.find((s) => s.id === state.dropSoftwareId)?.name);
   const sidebarCollapsed = usePrefs((state) => state.sidebarCollapsed);
   // 侧栏收起时只占一列图标的宽度
   const sidebarWidth = usePrefs((state) => (state.sidebarCollapsed ? RAIL_WIDTH : state.sidebarWidth));
@@ -32,11 +34,13 @@ export default function App() {
   const detailOpen = usePrefs((state) => state.detailOpen);
   const setPrefs = usePrefs((state) => state.set);
   const windowWidth = useWindowWidth();
-  const hasSelection = useApp((state) => (state.route === "installed" ? state.selectedInstalledId : state.selectedId) !== null);
+  const startupSelected = useStartup((state) => state.selectedId !== null);
+  const softwareSelected = useApp((state) => (state.route === "installed" ? state.selectedInstalledId : state.selectedId) !== null);
+  const hasSelection = route === "startup" ? startupSelected : softwareSelected;
 
   // 存储页不需要详情栏；详情栏收起时中间栏占满。
   // 窗口太窄、中间栏放不下时，详情栏不再占一栏，选中软件时浮在列表右侧
-  const withDetail = (route === "library" || route === "installed") && detailOpen;
+  const withDetail = (route === "library" || route === "installed" || route === "startup") && detailOpen;
   const cramped = windowWidth - sidebarWidth - detailWidth < MAIN_MIN;
   const docked = withDetail && !cramped;
   const floating = withDetail && cramped && hasSelection;
@@ -49,19 +53,13 @@ export default function App() {
       // 自检时不查更新，免得两边互相干扰
       else scheduleUpdateChecks();
     });
-    // 把文件拖进窗口就导入；落在某个软件（列表里的一行或详情栏）上时，作为它的新版本导入
-    const softwareAt = (point: DropPoint | null) =>
-      point ? (document.elementFromPoint(point.x, point.y)?.closest<HTMLElement>("[data-software-id]")?.dataset.softwareId ?? null) : null;
+    // 把文件拖进窗口就导入，软件和版本按文件名认，落在哪里都一样。
+    // 不再按落点归到某个软件下：拖的时候很容易停在别的软件或详情栏上，结果成了那个软件的版本
     const off = onFileDrop(
-      (paths, point) => {
+      (paths) => void useApp.getState().importPaths(paths),
+      (over) => {
         const app = useApp.getState();
-        const target = app.library?.software.find((s) => s.id === softwareAt(point));
-        void app.importPaths(paths, undefined, target ? { name: target.name } : undefined);
-      },
-      (over, point) => {
-        const app = useApp.getState();
-        const id = over ? softwareAt(point) : null;
-        if (app.dropping !== over || app.dropSoftwareId !== id) app.patch({ dropping: over, dropSoftwareId: id });
+        if (app.dropping !== over) app.patch({ dropping: over });
       },
     );
     return () => void off.then((stop) => stop());
@@ -75,6 +73,9 @@ export default function App() {
       if (document.visibilityState === "hidden") return;
       const app = useApp.getState();
       void app.refreshLibrary();
+      // 正看着启动项时也重新列一遍：可能刚在系统设置里改过
+      const startup = useStartup.getState();
+      if (app.route === "startup" && startup.items !== null && !startup.loading && Date.now() - startup.scannedAt > 15_000) void startup.load();
       if (app.installed === null || app.installedLoading || Date.now() - app.installedScannedAt < 15_000) return;
       void app.loadInstalled();
     };
@@ -93,7 +94,8 @@ export default function App() {
       if (event.key !== "Escape" || event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
       if (document.querySelector('[role="dialog"],[role="menu"]')) return;
       const app = useApp.getState();
-      if (app.route === "installed") app.patch({ selectedInstalledId: null });
+      if (app.route === "installed") app.selectInstalled(null);
+      else if (app.route === "startup") useStartup.getState().select(null);
       else app.select(null);
     };
     window.addEventListener("keydown", onKey);
@@ -132,20 +134,11 @@ export default function App() {
           <ImportProgress />
           {route === "library" && <LibraryView />}
           {route === "installed" && <InstalledView />}
-          {dropping && !dropName && (
+          {route === "startup" && <StartupView />}
+          {dropping && (
             <div className="pointer-events-none absolute inset-2 z-20 flex animate-fade flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-accent bg-accent-soft text-accent backdrop-blur-sm">
               <Download size={28} strokeWidth={1.5} aria-hidden />
               <span className="text-[13px] font-medium">{t("import.drop")}</span>
-              <span className="text-[12px] opacity-80">{t("drop.onSoftwareHint")}</span>
-            </div>
-          )}
-          {dropping && dropName && (
-            // 停在某个软件上：那一行自己高亮，这里只在顶上说明松手后会怎样
-            <div className="pointer-events-none absolute inset-x-0 top-12 z-20 flex justify-center px-4">
-              <div className="flex max-w-full animate-pop items-center gap-1.5 truncate rounded-full bg-accent-strong px-3 py-1 text-[12px] font-medium text-white shadow-pop">
-                <Download size={13} strokeWidth={2} aria-hidden className="shrink-0" />
-                <span className="truncate">{t("drop.toSoftware", { name: dropName })}</span>
-              </div>
             </div>
           )}
           {/* 状态栏只占中间一栏，左边的侧栏和右边的详情栏一直到窗口底部 */}
@@ -155,7 +148,7 @@ export default function App() {
           <>
             <ResizeHandle edge="right" width={detailWidth} onResize={(width) => setPrefs({ detailWidth: width })} />
             <aside className="min-h-0 shrink-0" style={{ width: detailWidth }}>
-              {route === "library" ? <PackageDetail /> : <InstalledDetail />}
+              {route === "library" ? <PackageDetail /> : route === "installed" ? <InstalledDetail /> : <StartupDetail />}
             </aside>
           </>
         )}
@@ -165,7 +158,7 @@ export default function App() {
             className="absolute top-11 right-0 bottom-7 z-30 min-h-0 animate-fade border-l border-line bg-bg shadow-pop"
             style={{ width: Math.min(detailWidth, windowWidth - sidebarWidth - 48) }}
           >
-            {route === "library" ? <PackageDetail /> : <InstalledDetail />}
+            {route === "library" ? <PackageDetail /> : route === "installed" ? <InstalledDetail /> : <StartupDetail />}
           </aside>
         )}
       </div>
@@ -176,6 +169,7 @@ export default function App() {
       <DialogHost />
       <ToastView />
       <UpdateCard />
+      <UpdateDialog />
       <DragGhost />
     </div>
   );

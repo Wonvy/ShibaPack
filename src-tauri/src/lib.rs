@@ -4,12 +4,13 @@
 
 use serde::{Deserialize, Serialize};
 use shibapack_core::{
-    ai, download,
+    ai, aicache::{self, AiCache, CachedSuggestion, CachedText}, download,
     leftovers::{self, Leftover, RemoveReport, Target},
     import::{self, BatchSaver, Outcome, Plan},
     identify::same_software,
     installed,
     sources::{self, Candidate, SourceError},
+    startup::{self, Listing, StartupItem},
     summary, AiSettings, Assignment, BackupInfo, Category, ImportHint, ImportReport, InstalledApp, Library, Progress, Release, Repo, Settings,
     SoftwareEdit, SourceKind, Stats, Storage, Subscription, Suggestion, VerifyReport, VersionEdit, VersionRef, webicon,
 };
@@ -59,6 +60,12 @@ struct AppState {
     measure_turn: Mutex<()>,
     /// 正在卸载的软件：卸载前记下的样子，和找到的残留。清理时只认这里面的项，不接受界面随便给一个路径。
     uninstall: Mutex<Option<UninstallSession>>,
+    /// 最近一次列出的启动项和服务。启用、停用、定位时按 id 在这里查，不接受前端传来的路径或命令。
+    startup: Mutex<Vec<StartupItem>>,
+    /// 列启动项和改启动项一次只做一件，免得改到一半又被一次列表盖掉。
+    startup_turn: Mutex<()>,
+    /// 读改写 AI 缓存文件时一次只让一个命令做（问 AI 的时候不占着它）。
+    ai_cache_turn: Mutex<()>,
 }
 
 struct UninstallSession {
@@ -141,6 +148,14 @@ struct FillResult {
     library: Option<Library>,
     /// 还有没处理的软件，前端应当再调一次。
     more: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiSuggestions {
+    suggestions: Vec<Suggestion>,
+    /// 其中有几个用的是上次 AI 的建议（这次没有问）。
+    cached: usize,
 }
 
 #[derive(Clone, Serialize)]
@@ -801,6 +816,131 @@ async fn reveal_installed(app: AppHandle, id: String) -> CmdResult<()> {
     .await
 }
 
+// ── 启动项与服务 ─────────────────────────────────────────────
+
+/// 本机的应用数据文件夹（macOS 在这里记停用的登录项）。只和这台电脑有关，所以不放在仓库里。
+fn local_state_dir(app: &AppHandle) -> CmdResult<PathBuf> {
+    app.path().app_local_data_dir().map_err(|e| e.to_string())
+}
+
+/// 重新列出启动项和服务，记下来供之后按 id 查。
+fn relist_startup(app: &AppHandle, state: &State<AppState>) -> CmdResult<Listing> {
+    let apps = state.installed.lock().map(|list| list.clone()).unwrap_or_default();
+    // 自检时不列登录项：要通过“系统事件”，会弹出授权提示把自检卡住
+    let listing = startup::list(&state.icon_cache, &local_state_dir(app)?, &apps, state.selftest.is_none());
+    if let Ok(mut cached) = state.startup.lock() {
+        *cached = listing.items.clone();
+    }
+    Ok(listing)
+}
+
+fn find_startup(state: &State<AppState>, id: &str) -> CmdResult<StartupItem> {
+    let list = state.startup.lock().map_err(|_| "internal".to_string())?;
+    list.iter().find(|item| item.id == id).cloned().ok_or_else(|| "not_found".to_string())
+}
+
+/// 列出这台电脑上的启动项和服务。
+#[tauri::command]
+async fn list_startup(app: AppHandle) -> CmdResult<Listing> {
+    blocking(app, move |app, state| {
+        let _turn = state.startup_turn.lock().unwrap_or_else(|e| e.into_inner());
+        relist_startup(app, &state)
+    })
+    .await
+}
+
+/// 启用、停用、启动、停止、重启一项，或改服务的启动类型（`type:auto` 这样）。做完重新列一遍交回去。
+/// 需要管理员权限时会弹出系统的授权提示，用户取消时返回 `cancelled`。
+#[tauri::command]
+async fn startup_action(app: AppHandle, id: String, action: String) -> CmdResult<Listing> {
+    blocking(app, move |app, state| {
+        let _turn = state.startup_turn.lock().unwrap_or_else(|e| e.into_inner());
+        let action = startup::Action::parse(&action).ok_or_else(|| "not_supported".to_string())?;
+        let item = find_startup(&state, &id)?;
+        let result = startup::apply(&item, &action, &local_state_dir(app)?);
+        // 失败了也重新列一遍：有的改动可能做了一半（比如停用成功、停止失败）
+        let listing = relist_startup(app, &state)?;
+        result.map(|()| listing)
+    })
+    .await
+}
+
+/// 在文件管理器里定位：先找程序文件，没有就找登记它的文件（plist、快捷方式、.desktop、单元文件）。
+#[tauri::command]
+async fn reveal_startup(app: AppHandle, id: String) -> CmdResult<()> {
+    blocking(app, move |app, state| {
+        let item = find_startup(&state, &id)?;
+        let target = item
+            .program
+            .clone()
+            .filter(|path| path.exists())
+            .or_else(|| Some(PathBuf::from(&item.location)).filter(|path| path.is_absolute() && path.exists()))
+            .ok_or_else(|| "file_missing".to_string())?;
+        app.opener().reveal_item_in_dir(target).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// 打开系统自己管理启动项的设置页。`page` 是 `loginItems`（登录项）或 `automation`（允许控制“系统事件”，macOS 列登录项要用）。
+#[tauri::command]
+fn open_startup_settings(app: AppHandle, page: String) -> CmdResult<()> {
+    let url = match (page.as_str(), std::env::consts::OS) {
+        ("automation", "macos") => "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
+        ("loginItems", "macos") => "x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
+        ("loginItems", "windows") => "ms-settings:startupapps",
+        _ => return Err("not_supported".into()),
+    };
+    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Explanation {
+    text: String,
+    model: String,
+    at: String,
+    /// 用的是以前记下的解释，这次没有问 AI。
+    cached: bool,
+}
+
+/// 仓库里放缓存的文件夹（AI 的答案、Homebrew 目录）。
+fn cache_dir(state: &State<AppState>) -> CmdResult<PathBuf> {
+    with_repo(state, |repo| Ok(repo.data_dir().join("cache")))
+}
+
+/// 让 AI 解释一项启动项或服务是做什么的、能不能停用。解释记在缓存里，同一项下次直接用。
+/// `mode`：`cached` 只看缓存（没有就返回 null，不问 AI）；`auto` 有缓存用缓存，没有才问；`refresh` 一定重新问。
+#[tauri::command]
+async fn ai_explain_startup(app: AppHandle, id: String, mode: String) -> CmdResult<Option<Explanation>> {
+    blocking(app, move |_app, state| {
+        let item = find_startup(&state, &id)?;
+        let dir = cache_dir(&state)?;
+        let language = with_repo(&state, |repo| Ok(repo.lib.settings.language.clone()))?;
+        let key = aicache::explain_key(std::env::consts::OS, &item.source, &item.label, &language);
+        if mode != "refresh" {
+            let _turn = state.ai_cache_turn.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(hit) = AiCache::load(&dir).explain.get(&key) {
+                return Ok(Some(Explanation { text: hit.text.clone(), model: hit.model.clone(), at: hit.at.clone(), cached: true }));
+            }
+        }
+        if mode == "cached" {
+            return Ok(None);
+        }
+        let (service, library) = repo_ai(&state)?;
+        let text = ai::explain_startup(&service, &library.settings.language, &startup::facts(&item)).map_err(|e| e.code())?;
+        let entry = CachedText { text: text.clone(), model: service.model().to_string(), at: shibapack_core::now() };
+        {
+            let _turn = state.ai_cache_turn.lock().unwrap_or_else(|e| e.into_inner());
+            let mut cache = AiCache::load(&dir);
+            cache.explain.insert(key, entry.clone());
+            // 存不进去也照样把解释给用户，只是下次要重新问
+            let _ = cache.save(&dir);
+        }
+        Ok(Some(Explanation { text, model: entry.model, at: entry.at, cached: false }))
+    })
+    .await
+}
+
 // ── 图标与简介 ───────────────────────────────────────────────
 
 /// 给没有图标的软件补图标，一次最多 8 个，不拖慢别的操作。
@@ -899,6 +1039,25 @@ async fn source_search(app: AppHandle, query: String) -> CmdResult<Vec<Candidate
         sources::search_homebrew(&cache, &query, 30).map_err(|e| e.code().to_string())
     })
     .await
+}
+
+/// ShibaPack 自己发布在哪个 GitHub 仓库（和 tauri.conf.json 里更新地址的仓库一致）。
+const RELEASE_REPO: &str = "Wonvy/ShibaPack";
+
+/// “软件更新”窗口：某个版本的更新说明（GitHub Release 的说明原文）。
+#[tauri::command]
+async fn release_notes(app: AppHandle, version: String) -> CmdResult<String> {
+    blocking(app, move |_app, _state| {
+        let tag = format!("v{}", version.trim_start_matches('v'));
+        sources::github_release_notes(RELEASE_REPO, &tag).map_err(|e| e.code().to_string())
+    })
+    .await
+}
+
+/// 顶栏搜索：在 GitHub 上搜仓库。只读。
+#[tauri::command]
+async fn github_search(app: AppHandle, query: String) -> CmdResult<Vec<sources::RepoHit>> {
+    blocking(app, move |_app, _state| sources::search_github(&query, 8).map_err(|e| e.code().to_string())).await
 }
 
 /// 给一个软件关联在线源。`software_id` 为空时按 `name` 新建一个软件（从在线源添加）。
@@ -1151,6 +1310,26 @@ async fn ai_test(app: AppHandle, settings: AiSettings, key: Option<String>) -> C
     .await
 }
 
+/// 自己写的简介：存进 `summaries`，来源记成 `manual`，之后不会被自动取的简介盖掉。`text` 为空时删掉简介。
+#[tauri::command]
+async fn set_summary(app: AppHandle, name: String, text: String) -> CmdResult<Library> {
+    blocking(app, move |_app, state| {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err("not_found".into());
+        }
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        mutate(&state, |repo| {
+            if text.is_empty() {
+                return repo.clear_summary(&name);
+            }
+            let lang = repo.lib.settings.language.split(['-', '_']).next().unwrap_or("").to_lowercase();
+            repo.set_summary(&name, Some(shibapack_core::Summary { text, source: "manual".into(), fetched_at: shibapack_core::now(), lang, translations: Default::default() }))
+        })
+    })
+    .await
+}
+
 /// 让 AI 给一个名字写简介并存进索引（简介按名字存，仓库里的软件和只装在本机的软件都用它）。
 /// `publisher` 给只装在本机、仓库里没有的软件用。
 #[tauri::command]
@@ -1169,7 +1348,7 @@ async fn ai_describe(app: AppHandle, name: String, publisher: Option<String>) ->
 
 /// 用 AI 给一批软件推荐分类，只读。进度通过 `ai://progress` 事件发给前端。
 #[tauri::command]
-async fn ai_suggest_categories(app: AppHandle, software_ids: Vec<String>) -> CmdResult<Vec<Suggestion>> {
+async fn ai_suggest_categories(app: AppHandle, software_ids: Vec<String>, refresh: Option<bool>) -> CmdResult<AiSuggestions> {
     blocking(app, move |app, state| {
         let cancel = Arc::new(AtomicBool::new(false));
         if let Ok(mut current) = state.ai_cancel.lock() {
@@ -1177,10 +1356,42 @@ async fn ai_suggest_categories(app: AppHandle, software_ids: Vec<String>) -> Cmd
             *current = cancel.clone();
         }
         let (service, library) = repo_ai(&state)?;
-        ai::suggest_categories(&service, &library, &software_ids, &cancel, &mut |done, total| {
-            let _ = app.emit("ai://progress", AiProgress { done, total });
-        })
-        .map_err(|e| e.code())
+        let dir = cache_dir(&state)?;
+        let model = service.model().to_string();
+        let fingerprint = |id: &str| library.software.iter().find(|s| s.id == id).map(|s| aicache::classify_fingerprint(&library, s, &model));
+
+        // 软件、分类树、模型都没变的，直接用上次 AI 的建议
+        let mut known: HashMap<String, Suggestion> = HashMap::new();
+        if !refresh.unwrap_or(false) {
+            let _turn = state.ai_cache_turn.lock().unwrap_or_else(|e| e.into_inner());
+            let cache = AiCache::load(&dir);
+            for id in &software_ids {
+                let hit = cache.classify.get(id).filter(|entry| Some(&entry.fingerprint) == fingerprint(id).as_ref());
+                if let Some(entry) = hit {
+                    known.insert(id.clone(), entry.suggestion.clone());
+                }
+            }
+        }
+        let todo: Vec<String> = software_ids.iter().filter(|id| !known.contains_key(*id)).cloned().collect();
+        let cached = software_ids.len() - todo.len();
+        if !todo.is_empty() {
+            let fresh = ai::suggest_categories(&service, &library, &todo, &cancel, &mut |done, total| {
+                let _ = app.emit("ai://progress", AiProgress { done, total });
+            })
+            .map_err(|e| e.code())?;
+            let _turn = state.ai_cache_turn.lock().unwrap_or_else(|e| e.into_inner());
+            let mut cache = AiCache::load(&dir);
+            let at = shibapack_core::now();
+            for suggestion in fresh {
+                if let Some(fingerprint) = fingerprint(&suggestion.software_id) {
+                    cache.classify.insert(suggestion.software_id.clone(), CachedSuggestion { fingerprint, suggestion: suggestion.clone(), at: at.clone() });
+                }
+                known.insert(suggestion.software_id.clone(), suggestion);
+            }
+            let _ = cache.save(&dir);
+        }
+        let suggestions = software_ids.iter().filter_map(|id| known.remove(id)).collect();
+        Ok(AiSuggestions { suggestions, cached })
     })
     .await
 }
@@ -1264,6 +1475,9 @@ pub fn run() {
                 measured: Mutex::new(HashMap::new()),
                 measure_turn: Mutex::new(()),
                 uninstall: Mutex::new(None),
+                startup: Mutex::new(Vec::new()),
+                startup_turn: Mutex::new(()),
+                ai_cache_turn: Mutex::new(()),
             });
             Ok(())
         })
@@ -1308,12 +1522,19 @@ pub fn run() {
             remove_leftovers,
             open_uninstall_backup,
             reveal_installed,
+            list_startup,
+            startup_action,
+            reveal_startup,
+            open_startup_settings,
+            ai_explain_startup,
             fill_icons,
             fetch_icon,
             fetch_summary,
             selftest_report,
             source_lookup,
             source_search,
+            github_search,
+            release_notes,
             subscribe,
             unsubscribe,
             check_updates,
@@ -1330,6 +1551,7 @@ pub fn run() {
             ai_models,
             ai_test,
             ai_describe,
+            set_summary,
             ai_suggest_categories,
             cancel_ai,
         ])

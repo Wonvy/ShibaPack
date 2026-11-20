@@ -15,7 +15,9 @@ Everything lives in a folder you choose. The index is a plain `software.json` fi
 - **Several versions per app.** Pick a default version or always use the newest, see which version is installed on this computer, and clean up old versions in one step.
 - **Categories, favorites and smart categorize.** Nested categories, drag and drop to file apps, and a built-in, offline rule set that suggests a category for about 300 well-known apps. With an AI model set up, the AI can categorize instead, and write summaries for apps that have none.
 - **Installed software.** Lists the apps installed on this computer (as a list or a grid), matches them with your library, and shows which ones can be upgraded from an installer you already have. The details pane shows a short summary of what each app does. Install, upgrade and uninstall from one place; after uninstalling, ShibaPack can look for leftover folders, shortcuts and registry entries (Library files on macOS) and clean up the ones you tick. Files go to the Recycle Bin and registry entries are backed up first.
+- **Startup items and services.** Lists what runs at login and in the background (login items, LaunchAgents and LaunchDaemons on macOS; Run keys, the Startup folder and services on Windows; autostart entries and systemd units on Linux) with the system's own descriptions. Enable, disable, start and stop them, and change the startup type of Windows services. System items are hidden by default and ask for confirmation before you change them. With an AI model set up, the AI can explain what an item does and whether it is safe to disable.
 - **Online sources.** Link an app to Homebrew Cask, GitHub Releases or winget to check for new versions and download them into the library.
+- **One search box for everything.** The search box in the top bar lists matches from the library, installed apps and startup items in a dropdown, and also searches GitHub and Homebrew. Pick a scope on its right to search only one place. Click an online result to see its latest release and add it to the library.
 - **Real icons.** Icons are taken from installers and installed apps. For apps with a homepage or a GitHub repository, ShibaPack can also use the site icon or the repository owner's avatar. Apps without an icon get a plain gray letter tile.
 - **Safe by default.** The index is backed up automatically (the last 8 copies, plus one per day for two weeks) and always right before a delete, deleted files go to a trash folder for 30 days, and a check finds files that went missing or changed size.
 - **Offline catalog.** Optionally writes an `index.html` at the library root, so you can browse the library in any browser, even without ShibaPack.
@@ -86,8 +88,9 @@ ShibaPack works offline. It goes online only for these:
 
 - **Summaries and icons** (can be turned off in Settings): app names are sent to Wikipedia, Homebrew (`formulae.brew.sh`) and GitHub to look up a short description, and apps without an icon fetch one from their own homepage or their GitHub owner's avatar.
 - **Summary translation** (can be turned off in Settings): a summary that isn't in the interface language is sent to Google Translate, or to MyMemory if Google can't be reached.
-- **AI model** (only if you set one up in Settings): when you ask the AI to write a summary or to categorize, app names, publishers, homepages, installer file names, existing summaries and category names are sent to the service you chose. The API key is kept only in this computer's system keychain. Local services such as Ollama and LM Studio keep everything on this computer.
+- **AI model** (only if you set one up in Settings): when you ask the AI to write a summary or to categorize, app names, publishers, homepages, installer file names, existing summaries and category names are sent to the service you chose. When you ask it to explain a startup item, that item's name, description, command and location are sent. The API key is kept only in this computer's system keychain. Local services such as Ollama and LM Studio keep everything on this computer.
 - **Online sources**, when you link or check them: Homebrew (`formulae.brew.sh`), GitHub Releases, and the winget package list on GitHub.
+- **Top-bar search**, when its scope is All, GitHub or Homebrew: what you type is sent to GitHub's repository search. Homebrew is searched in the catalog downloaded on first use, so search terms are not sent. The Library, Installed and Startup scopes stay offline.
 - **Its own updates**: GitHub Releases of this repository (can be turned off in Settings).
 
 ## Development
@@ -159,14 +162,15 @@ The results are in `target/release/bundle/`.
 Installed copies of ShibaPack update themselves from GitHub Releases. To publish a new version:
 
 1. Set `version` in `package.json` to the new version (the app reads its version only from there).
-2. Commit, then create a tag with the same version and push it:
+2. Add a `## <version>` section to `CHANGELOG.md` with a Chinese and an English part. It becomes the release notes on GitHub and in the in-app update window (opened from the version number in the bottom-right corner).
+3. Commit, then create a tag with the same version and push it:
 
    ```bash
    git tag v0.2.0 && git push origin main --tags
    ```
 
-3. `.github/workflows/release.yml` builds on macOS, Windows and Linux and uploads the installers and, if the signing key is set up, the signed update bundles and `latest.json` to a draft release.
-4. When all three builds succeed, the workflow publishes the release by itself, and installed copies pick up the update. If any build fails, the release stays a draft and is not published: fix the problem and build again, or check the draft on GitHub and click **Publish release** yourself.
+4. `.github/workflows/release.yml` builds on macOS, Windows and Linux and uploads the installers and, if the signing key is set up, the signed update bundles and `latest.json` to a draft release.
+5. When all three builds succeed, the workflow publishes the release by itself, and installed copies pick up the update. If any build fails, the release stays a draft and is not published: fix the problem and build again, or check the draft on GitHub and click **Publish release** yourself.
 
 If the first step, preparing the draft release, fails because GitHub refuses to create the release (`Resource not accessible by integration`), the workflow's token can't write: open the repository's Settings → Actions → General → Workflow permissions, choose **Read and write permissions**, save, and run it again. If that doesn't help, add a `RELEASE_TOKEN` as described at the top of `release.yml`.
 

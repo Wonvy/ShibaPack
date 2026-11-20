@@ -6,6 +6,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type {
   AiProgress,
+  AiSuggestions,
   AiSettings,
   Assignment,
   BackupInfo,
@@ -14,6 +15,7 @@ import type {
   CheckProgress,
   CheckResult,
   DownloadProgress,
+  Explanation,
   FillResult,
   ImportHint,
   ImportResult,
@@ -24,9 +26,12 @@ import type {
   Progress,
   Release,
   RemoveReport,
+  RepoHit,
   Settings,
   SoftwareEdit,
   SourceKind,
+  StartupAction,
+  StartupListing,
   Stats,
   Status,
   Storage,
@@ -107,6 +112,18 @@ export const api = {
   /** 打开清理时备份注册表的文件夹。 */
   openUninstallBackup: (path: string) => call<void>("open_uninstall_backup", { path }),
   revealInstalled: (id: string) => call<void>("reveal_installed", { id }),
+  /** 列出启动项和服务。 */
+  listStartup: () => call<StartupListing>("list_startup"),
+  /** 启用、停用、启动、停止、重启，或改服务的启动类型。返回改完后重新列出来的结果。 */
+  startupAction: (id: string, action: StartupAction) => call<StartupListing>("startup_action", { id, action }),
+  revealStartup: (id: string) => call<void>("reveal_startup", { id }),
+  /** 打开系统自己管理启动项的设置页：`loginItems`，或 macOS 上允许控制“系统事件”的 `automation`。 */
+  openStartupSettings: (page: "loginItems" | "automation") => call<void>("open_startup_settings", { page }),
+  /**
+   * 让 AI 解释这一项是做什么的、能不能停用。解释记在仓库的缓存里：
+   * `cached` 只看缓存（没有返回 null，不问 AI）；`auto` 有就用、没有才问；`refresh` 一定重新问。
+   */
+  aiExplainStartup: (id: string, mode: "cached" | "auto" | "refresh") => call<Explanation | null>("ai_explain_startup", { id, mode }),
   fillIcons: () => call<FillResult>("fill_icons"),
   /** 联网找图标（主页的网站图标或 GitHub 头像）。返回图标的相对路径，没找到时是 null。 */
   fetchIcon: (id: string) => call<string | null>("fetch_icon", { id }),
@@ -115,6 +132,10 @@ export const api = {
   selftestReport: (line: string, done = false) => call<void>("selftest_report", { line, done }),
   sourceLookup: (kind: SourceKind, reference: string) => call<Release>("source_lookup", { kind, reference }),
   sourceSearch: (query: string) => call<Candidate[]>("source_search", { query }),
+  /** ShibaPack 某个版本的更新说明（GitHub Release 的说明原文）。 */
+  releaseNotes: (version: string) => call<string>("release_notes", { version }),
+  /** 在 GitHub 上搜仓库（不登录每分钟只能搜 10 次）。 */
+  githubSearch: (query: string) => call<RepoHit[]>("github_search", { query }),
   subscribe: (softwareId: string | null, name: string | null, kind: SourceKind, reference: string) =>
     call<SubscribeResult>("subscribe", { softwareId, name, kind, reference }),
   unsubscribe: (softwareId: string) => call<Library>("unsubscribe", { softwareId }),
@@ -139,8 +160,10 @@ export const api = {
   aiTest: (settings: AiSettings, key?: string) => call<string>("ai_test", { settings, key: key || null }),
   /** 让 AI 写简介并存进索引（按名字存）。`publisher` 给只装在本机的软件用。 */
   aiDescribe: (name: string, publisher?: string) => call<Library>("ai_describe", { name, publisher: publisher || null }),
-  /** 用 AI 推荐分类，只读。进度见 `onAiProgress`。 */
-  aiSuggestCategories: (softwareIds: string[]) => call<Suggestion[]>("ai_suggest_categories", { softwareIds }),
+  /** 用 AI 推荐分类，只读。软件和分类都没变的直接用上次的建议，`refresh` 为真时全部重新问。进度见 `onAiProgress`。 */
+  aiSuggestCategories: (softwareIds: string[], refresh = false) => call<AiSuggestions>("ai_suggest_categories", { softwareIds, refresh }),
+  /** 自己写的简介（按名字存）；空字符串表示删掉。 */
+  setSummary: (name: string, text: string) => call<Library>("set_summary", { name, text }),
   /** 停下正在进行的 AI 分类。 */
   cancelAi: () => call<void>("cancel_ai"),
 };

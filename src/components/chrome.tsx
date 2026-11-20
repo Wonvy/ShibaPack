@@ -12,7 +12,6 @@ import {
   PanelRightOpen,
   Plus,
   ScanSearch,
-  Search,
   Square,
   X,
 } from "lucide-react";
@@ -21,7 +20,8 @@ import { api, isMac, isTauri, pickFiles, pickFolder, windowControls } from "../l
 import { fileCount, formatSize, softwareSize } from "../lib/library";
 import { TOPBAR, usePrefs } from "../lib/prefs";
 import { useApp, useT } from "../lib/store";
-import { dismissUpdate, finishUpdate, showUpdate, startUpdate } from "../lib/updater";
+import { dismissUpdate, finishUpdate, openUpdateDialog, startUpdate } from "../lib/updater";
+import { SearchBox } from "./SearchBox";
 import { Button, Dropdown, ICON, IconButton, cx } from "./ui";
 
 export function Logo({ size = 18 }: { size?: number }) {
@@ -120,58 +120,6 @@ function HeightHandle() {
       className="group absolute inset-x-0 -bottom-[3px] z-20 h-1.5 cursor-row-resize"
     >
       <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 transition-colors group-hover:h-0.5 group-hover:bg-accent group-active:h-0.5 group-active:bg-accent" />
-    </div>
-  );
-}
-
-/** 顶栏中间的搜索框，软件库和已安装软件共用。Ctrl / ⌘ + F 跳到这里，Esc 清空。 */
-function SearchBox() {
-  const t = useT();
-  const route = useApp((state) => state.route);
-  const search = useApp((state) => state.search);
-  const patch = useApp((state) => state.patch);
-  const input = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
-        event.preventDefault();
-        input.current?.focus();
-        input.current?.select();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  return (
-    <div className="relative w-full max-w-[360px] min-w-[160px]">
-      <Search size={14} strokeWidth={1.75} aria-hidden className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-fg-3" />
-      <input
-        ref={input}
-        type="text"
-        value={search}
-        spellCheck={false}
-        placeholder={route === "installed" ? t("installed.search") : t("lib.search")}
-        onChange={(event) => patch({ search: event.target.value })}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            patch({ search: "" });
-            event.currentTarget.blur();
-          }
-        }}
-        className="h-7 w-full rounded-md border border-transparent bg-hover pr-7 pl-8 text-[13px] outline-none placeholder:text-fg-3 focus:border-accent"
-      />
-      {search && (
-        <button
-          type="button"
-          aria-label={t("common.close")}
-          onClick={() => patch({ search: "" })}
-          className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded text-fg-3 hover:text-fg"
-        >
-          <X size={13} strokeWidth={2} />
-        </button>
-      )}
     </div>
   );
 }
@@ -358,12 +306,15 @@ export function StatusBar() {
         <span className="truncate">{status?.repoRoot}</span>
       </button>
       <span className="h-3 w-px shrink-0 bg-line-strong" />
+      {/* 版本号：一直带下划线，点了打开“软件更新”窗口；有新版本时换成强调色，右边一个小箭头 */}
       <button
         type="button"
-        disabled={!appUpdate}
-        title={appUpdate ? t("update.appAvailable", { version: update.version }) : undefined}
-        onClick={showUpdate}
-        className={cx("tabular flex shrink-0 items-center gap-0.5 rounded px-1", appUpdate ? "text-accent hover:bg-hover" : "cursor-default")}
+        title={appUpdate ? t("update.appAvailable", { version: update.version }) : t("update.title")}
+        onClick={openUpdateDialog}
+        className={cx(
+          "tabular flex shrink-0 items-center gap-0.5 rounded px-1 underline decoration-1 underline-offset-[3px] transition-colors",
+          appUpdate ? "font-medium text-accent decoration-accent/60 hover:bg-hover" : "decoration-fg-4 hover:text-fg-2 hover:decoration-fg-3",
+        )}
       >
         v{status?.version}
         {appUpdate && <ArrowUp size={12} strokeWidth={2.25} aria-hidden />}
@@ -402,6 +353,9 @@ export function UpdateCard() {
         </div>
       ) : (
         <div className="mt-2.5 flex justify-end gap-2">
+          <Button variant="ghost" className="mr-auto" onClick={openUpdateDialog}>
+            {t("update.notesLink")}
+          </Button>
           <Button variant="ghost" onClick={dismissUpdate}>
             {t("update.later")}
           </Button>

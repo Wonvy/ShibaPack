@@ -76,6 +76,30 @@ export async function runSelftest() {
     const links = await api.matchInstalled();
     await check("对应关系可以取到", typeof links === "object", `${Object.keys(links).length} 个软件已安装`);
 
+    // 启动项与服务：只列，不改（自检不碰这台电脑的设置）。自检时不列 macOS 的登录项，免得弹出授权提示
+    try {
+      const startup = await api.listStartup();
+      const services = startup.items.filter((item) => item.kind === "service");
+      const thirdParty = startup.items.filter((item) => !item.system);
+      await check(
+        "列出启动项和服务",
+        startup.items.length > 0 && startup.notes.length === 0,
+        `${startup.items.length} 项（服务 ${services.length} 个，第三方 ${thirdParty.length} 个）${startup.notes.join(" ")}`,
+      );
+      const running = startup.items.filter((item) => item.running);
+      await check("能看出哪些在运行", running.length > 0, `${running.length} 个正在运行`);
+      const iconItem = startup.items.find((item) => item.icon);
+      if (iconItem) await check("启动项的图标能在界面里显示", await loads(iconItem.icon!), `${iconItem.name} → ${iconItem.app}`);
+      // 启用、停用、定位都按 id 找，再列一遍 id 要对得上
+      const first = thirdParty[0] ?? startup.items[0];
+      if (first) {
+        const again = await api.listStartup();
+        await check("再列一遍 id 不变", again.items.some((item) => item.id === first.id), first.id);
+      }
+    } catch (error) {
+      await check("列出启动项和服务", false, String(error));
+    }
+
     // 整理根目录：启动前在仓库根目录放了一个散落的安装包
     const tidy = await api.tidyRoot();
     await check("整理根目录", tidy.report.failed === 0, `归位 ${tidy.report.imported} 个，重复 ${tidy.report.duplicates} 个`);

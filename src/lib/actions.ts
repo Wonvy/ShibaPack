@@ -1,10 +1,10 @@
 // 多处共用的操作：带确认的删除、安装与卸载、拖拽后的归类和排序。
 
-import { confirm } from "../components/dialogs";
+import { confirm, prompt } from "../components/dialogs";
 import { api, hostPlatform } from "./api";
 import type { DropTarget } from "./drag";
 import { translate } from "./i18n";
-import { newerThan, primaryVersion, sortedVersions, withDescendants } from "./library";
+import { newerThan, primaryVersion, shownSummary, sortedVersions, withDescendants } from "./library";
 import { useApp } from "./store";
 import type { Asset, Category, InstalledApp, PackageFile, Software, SoftwareEdit, Version } from "./types";
 
@@ -72,6 +72,26 @@ export async function deleteFile(software: Software, version: Version, file: Pac
     const ref = { softwareId: software.id, versionId: version.id, fileId: file.id };
     await useApp.getState().apply(() => api.deleteFile(ref, withFiles));
   }
+}
+
+// ── 简介 ─────────────────────────────────────────────────────
+
+/** 自己写或改一个软件的描述（按名字存，仓库里的软件和只装在本机的软件都用它）。清空就删掉。 */
+export async function editSummary(name: string) {
+  const app = useApp.getState();
+  const lang = language();
+  const summary = app.library?.summaries[name];
+  const translateOn = app.library?.settings.translateSummaries ?? true;
+  const current = summary && summary.source !== "none" ? (shownSummary(summary, lang, translateOn)?.text ?? summary.text) : "";
+  const text = await prompt({
+    title: translate(lang, "summary.editTitle", { name }),
+    label: translate(lang, "summary.editLabel"),
+    placeholder: translate(lang, "summary.editPlaceholder"),
+    initial: current,
+    multiline: true,
+  });
+  if (text === null || text === current) return;
+  await app.writeSummary(name, text);
 }
 
 // ── 安装与卸载 ───────────────────────────────────────────────

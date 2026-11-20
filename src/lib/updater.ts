@@ -15,6 +15,8 @@ type DownloadEvent =
 /** 更新插件给出的“一个可用的更新”里，这里用得到的部分。 */
 interface Pending {
   version: string;
+  /** 发布时写的更新说明（latest.json 里的 notes）。 */
+  body?: string;
   download: (onEvent?: (event: DownloadEvent) => void) => Promise<void>;
   install: () => Promise<void>;
 }
@@ -48,7 +50,7 @@ export async function checkForUpdate(manual: boolean) {
       set({ phase: manual ? "upToDate" : "idle" });
       return;
     }
-    set({ phase: "available", version: pending.version, dismissed: false });
+    set({ phase: "available", version: pending.version, notes: pending.body?.trim() ?? "", dismissed: false });
     if (autoUpdate()) await download();
   } catch (error) {
     set(manual ? { phase: "error", error: String(error) } : { phase: "idle" });
@@ -116,6 +118,16 @@ export function showUpdate() {
   set({ dismissed: false });
 }
 
+/**
+ * 点了底栏的版本号：打开“软件更新”窗口。还没发现新版本时顺便查一次（结果在窗口里显示）；
+ * 已经发现了、正在下载或者等着重启时，直接显示那个状态。
+ */
+export function openUpdateDialog() {
+  useApp.setState({ updateDialog: true });
+  const phase = useApp.getState().appUpdate.phase;
+  if (phase === "idle" || phase === "upToDate" || phase === "error") void checkForUpdate(true);
+}
+
 /** 启动后过几秒查一次，之后每六小时查一次。只在开着“自动更新”时查。 */
 let scheduled = false;
 
@@ -132,7 +144,8 @@ export function scheduleUpdateChecks() {
 function previewUpdate(): Pending | null {
   if (!location.search.includes("update")) return null;
   return {
-    version: "0.2.0",
+    version: "0.5.0",
+    body: "## 0.5.0\n\n### 中文\n- 新增：软件更新窗口，点底栏的版本号打开\n- 改进：详情栏排版更整齐\n- 修复：拖进来的文件不会再变成别的软件的版本\n\n### English\n- New: an update window, opened from the version number in the status bar\n- Improved: a tidier details pane\n- Fixed: dropped files no longer become versions of another app",
     download: async (onEvent) => {
       onEvent?.({ event: "Started", data: { contentLength: 100 } });
       for (let step = 0; step < 10; step++) {

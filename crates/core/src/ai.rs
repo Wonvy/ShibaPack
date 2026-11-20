@@ -467,6 +467,39 @@ fn clean_description(answer: &str) -> Result<String, AiError> {
     Ok(clip(&joined, SUMMARY_CHARS))
 }
 
+// ── 解释启动项 ───────────────────────────────────────────────
+
+/// 解释一个启动项或服务：是什么、属于哪个软件、能不能停用。`facts` 见 `startup::facts`。只读，不存。
+pub fn explain_startup(service: &Service, language: &str, facts: &str) -> Result<String, AiError> {
+    let answer = service.chat(&explain_prompt(language), facts, false, 0.2)?;
+    let text = answer.trim().trim_matches(|c: char| matches!(c, '"' | '“' | '”' | '`') || c.is_whitespace());
+    if text.is_empty() || text.to_ascii_uppercase().starts_with("UNKNOWN") {
+        return Err(AiError::Unknown);
+    }
+    // 去掉模型爱加的 Markdown：加粗、列表符号、标题
+    let cleaned: Vec<String> = text
+        .lines()
+        .map(|line| line.trim().trim_start_matches(['#', '-', '*', '•']).trim().replace("**", ""))
+        .filter(|line| !line.is_empty())
+        .collect();
+    Ok(clip(&cleaned.join(" "), EXPLAIN_CHARS))
+}
+
+/// 解释最多留多少字。
+const EXPLAIN_CHARS: usize = 600;
+
+fn explain_prompt(language: &str) -> String {
+    let lang = language_name(language);
+    let length = if compact(language) { "at most 150 characters" } else { "at most 80 words" };
+    format!(
+        "You help people understand what runs automatically on their computer. Given a startup item or background service, \
+explain in {lang}, in two or three short plain sentences ({length}): what it is and which software it belongs to, what it does, \
+and whether it is safe to disable or stop it (say what would stop working, and warn clearly if it is needed by the operating system). \
+State only what you are confident about. If you do not recognize it, say so in one sentence and describe only what the facts show. \
+No Markdown, no headings, no lists, no quotation marks. If you have nothing useful to say, reply with exactly UNKNOWN."
+    )
+}
+
 // ── 智能分类 ─────────────────────────────────────────────────
 
 /// 模型对一个软件的回答。

@@ -304,7 +304,52 @@ pub fn candidates_from_catalog(catalog: &Value) -> Vec<Candidate> {
         .collect()
 }
 
+/// GitHub 上搜到的一个仓库（顶栏搜索的在线结果）。
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoHit {
+    /// `owner/repo`，关联 GitHub Releases 时用的标识。
+    pub reference: String,
+    pub name: String,
+    pub description: String,
+    /// 仓库的网页。
+    pub url: String,
+    pub stars: u64,
+    /// 已经归档、不再维护。
+    pub archived: bool,
+}
+
+/// `GET /search/repositories` 的回答 → 仓库列表。
+pub fn parse_github_search(body: &Value) -> Vec<RepoHit> {
+    body["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|repo| {
+            let reference = repo["full_name"].as_str()?.to_string();
+            Some(RepoHit {
+                name: repo["name"].as_str().unwrap_or(&reference).to_string(),
+                description: repo["description"].as_str().unwrap_or("").trim().to_string(),
+                url: repo["html_url"].as_str().map(str::to_string).unwrap_or_else(|| format!("https://github.com/{reference}")),
+                stars: repo["stargazers_count"].as_u64().unwrap_or(0),
+                archived: repo["archived"].as_bool().unwrap_or(false),
+                reference,
+            })
+        })
+        .collect()
+}
+
 // ── 联网 ────────────────────────────────────────────────────
+
+#[cfg(not(feature = "network"))]
+pub fn search_github(_query: &str, _limit: usize) -> Result<Vec<RepoHit>, SourceError> {
+    Err(SourceError::Unreachable)
+}
+
+#[cfg(not(feature = "network"))]
+pub fn github_release_notes(_reference: &str, _tag: &str) -> Result<String, SourceError> {
+    Err(SourceError::Unreachable)
+}
 
 #[cfg(not(feature = "network"))]
 pub fn fetch_release(_kind: SourceKind, _reference: &str) -> Result<Release, SourceError> {
@@ -376,6 +421,41 @@ pub fn fetch_release(kind: SourceKind, reference: &str) -> Result<Release, Sourc
             parse_winget(&reference, &yaml).ok_or(SourceError::NotFound)
         }
     }
+}
+
+/// 在 GitHub 上搜仓库，按 GitHub 自己的相关度排。不登录时每分钟只能搜 10 次，超了返回 `RateLimited`。
+#[cfg(feature = "network")]
+pub fn search_github(query: &str, limit: usize) -> Result<Vec<RepoHit>, SourceError> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let per_page = limit.clamp(1, 30).to_string();
+    let response = agent(15)
+        .get("https://api.github.com/search/repositories")
+        .query("q", query)
+        .query("per_page", &per_page)
+        .header("Accept", "application/vnd.github+json")
+        .call();
+    let mut response = match response {
+        Ok(response) => response,
+        Err(ureq::Error::StatusCode(403 | 429)) => return Err(SourceError::RateLimited),
+        Err(ureq::Error::StatusCode(422)) => return Ok(Vec::new()),
+        Err(_) => return Err(SourceError::Unreachable),
+    };
+    let body: Value = response.body_mut().read_json().map_err(|_| SourceError::Unreachable)?;
+    Ok(parse_github_search(&body))
+}
+
+/// 一个 GitHub Release 的说明（Markdown 原文）。ShibaPack 的“软件更新”窗口在更新包里没带说明时用它。
+#[cfg(feature = "network")]
+pub fn github_release_notes(reference: &str, tag: &str) -> Result<String, SourceError> {
+    let reference = normalize_reference(SourceKind::Github, reference)?;
+    if tag.is_empty() || !tag.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')) {
+        return Err(SourceError::Invalid);
+    }
+    let release = get_json(&agent(15), &format!("https://api.github.com/repos/{reference}/releases/tags/{tag}"))?;
+    Ok(release["body"].as_str().unwrap_or("").to_string())
 }
 
 /// 在 Homebrew 目录里搜索。目录第一次用到时下载，精简后存在 `cache_dir` 里。
@@ -498,6 +578,26 @@ mod tests {
         // 网址里看不出文件名：用标识、版本和架构拼一个
         assert_eq!(release.assets[2].name, "7zip.7zip-24.09-arm64.exe");
         assert!(parse_winget("x.y", "PackageVersion: 1.0\n").is_none());
+    }
+
+    #[test]
+    fn github_search_results() {
+        let body = serde_json::json!({
+            "total_count": 2,
+            "items": [
+                { "full_name": "obsidianmd/obsidian-releases", "name": "obsidian-releases", "description": " Community plugins list ", "html_url": "https://github.com/obsidianmd/obsidian-releases", "stargazers_count": 14000, "archived": false },
+                { "full_name": "someone/old", "name": "old", "description": null, "stargazers_count": 3, "archived": true },
+                { "name": "no-full-name" }
+            ]
+        });
+        let hits = parse_github_search(&body);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].reference, "obsidianmd/obsidian-releases");
+        assert_eq!(hits[0].description, "Community plugins list");
+        assert_eq!(hits[0].stars, 14000);
+        assert_eq!(hits[1].url, "https://github.com/someone/old");
+        assert!(hits[1].archived && hits[1].description.is_empty());
+        assert!(parse_github_search(&serde_json::json!({ "message": "API rate limit exceeded" })).is_empty());
     }
 
     #[test]

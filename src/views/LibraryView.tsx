@@ -534,7 +534,6 @@ function useItem(software: Software) {
   const group = useApp((state) =>
     state.selectedIds.length > 1 && selectionOf(state.selectedIds).has(software.id) ? state.selectedIds : null,
   );
-  const dropping = useApp((state) => state.dropSoftwareId === software.id);
   const aiReady = useAiReady();
   // 多选时作用于全部选中的软件，包括搜索后暂时不在列表里的（和详情栏的批量面板一致）
   const chosen = () => selectedSoftware(group ?? []);
@@ -566,7 +565,6 @@ function useItem(software: Software) {
     installedApp,
     upgrade: upgradeFor(software, installedApp),
     menu,
-    dropping,
     handlers: {
       "data-software-id": software.id,
       onClick: (event: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) => clickSelect(software.id, event, ordered),
@@ -944,7 +942,7 @@ const Row = memo(function Row({ software, selected }: { software: Software; sele
   const language = useLanguage();
   const columns = useContext(ColumnsContext);
   const show = (key: LibraryColumn) => columns.visible.includes(key);
-  const { installedApp, upgrade, menu, dropping, handlers } = useItem(software);
+  const { installedApp, upgrade, menu, handlers } = useItem(software);
   const icon = useSoftwareIcon(software);
   const description = useDescription(software);
   return (
@@ -957,7 +955,7 @@ const Row = memo(function Row({ software, selected }: { software: Software; sele
         style={{ gridTemplateColumns: columns.template }}
         className={cx(
           "group grid min-h-[52px] items-center gap-x-3 rounded-md py-1.5 pr-3 pl-2.5 transition-colors",
-          dropping ? "bg-accent-soft ring-2 ring-accent ring-inset" : selected ? "bg-active" : "hover:bg-hover",
+          selected ? "bg-active" : "hover:bg-hover",
         )}
       >
         <div className="flex min-w-0 items-center gap-2.5">
@@ -995,7 +993,7 @@ const Row = memo(function Row({ software, selected }: { software: Software; sele
  */
 const Card = memo(function Card({ software, selected }: { software: Software; selected: boolean }) {
   const t = useT();
-  const { installedApp, upgrade, menu, dropping, handlers } = useItem(software);
+  const { installedApp, upgrade, menu, handlers } = useItem(software);
   const icon = useSoftwareIcon(software);
   const root = useApp((state) => state.status?.repoRoot);
   const main = primaryVersion(software);
@@ -1011,7 +1009,7 @@ const Card = memo(function Card({ software, selected }: { software: Software; se
         {...handlers}
         className={cx(
           "group flex min-w-0 flex-col items-center rounded-lg px-2 pt-4 pb-2 text-center transition-colors",
-          dropping ? "bg-accent-soft ring-2 ring-accent ring-inset" : selected ? "bg-accent-soft" : "hover:bg-hover",
+          selected ? "bg-accent-soft" : "hover:bg-hover",
         )}
       >
         <span className="relative">
@@ -1046,7 +1044,7 @@ const Card = memo(function Card({ software, selected }: { software: Software; se
 function FolderNode({ software, selected }: { software: Software; selected: boolean }) {
   const t = useT();
   const attempt = useApp((state) => state.attempt);
-  const { installedApp, upgrade, menu, dropping, handlers } = useItem(software);
+  const { installedApp, upgrade, menu, handlers } = useItem(software);
   const icon = useSoftwareIcon(software);
   const [open, setOpen] = useState(false);
   const [closedVersions, setClosedVersions] = useState<string[]>([]);
@@ -1066,7 +1064,7 @@ function FolderNode({ software, selected }: { software: Software; selected: bool
             // 多选时只改选中，不展开
             if (!event.metaKey && !event.ctrlKey && !event.shiftKey) setOpen(!open);
           }}
-          className={cx(line, "group pl-1.5", dropping ? "bg-accent-soft ring-2 ring-accent ring-inset" : selected ? "bg-active" : "hover:bg-hover")}
+          className={cx(line, "group pl-1.5", selected ? "bg-active" : "hover:bg-hover")}
         >
           <ChevronRight size={13} strokeWidth={2} aria-hidden className={cx("shrink-0 text-fg-3 transition-transform", open && "rotate-90")} />
           <SoftwareIcon name={software.name} icon={icon} size={20} />

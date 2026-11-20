@@ -2,6 +2,7 @@
 
 #[cfg(feature = "network")]
 pub mod ai;
+pub mod aicache;
 pub mod catalog;
 pub mod classify;
 pub mod download;
@@ -13,6 +14,7 @@ pub mod leftovers;
 pub mod model;
 pub mod ops;
 pub mod sources;
+pub mod startup;
 pub mod store;
 pub mod summary;
 pub mod webicon;

@@ -146,10 +146,13 @@ export function UpdateMark({ software }: { software: Software }) {
 export function SourceDialog() {
   const target = useApp((state) => state.sourceDialog);
   if (!target) return null;
-  return <Dialog key={target.softwareId ?? "new"} softwareId={target.softwareId} />;
+  return <Dialog key={`${target.softwareId ?? "new"}|${target.kind ?? ""}|${target.reference ?? ""}`} softwareId={target.softwareId} initial={target} />;
 }
 
-function Dialog({ softwareId }: { softwareId: string | null }) {
+/** 从顶栏搜索的在线结果打开时带着的：哪个源、哪个标识、叫什么名字。 */
+type Initial = { kind?: SourceKind; reference?: string; name?: string };
+
+function Dialog({ softwareId, initial }: { softwareId: string | null; initial: Initial }) {
   const t = useT();
   const language = useLanguage();
   const software = useApp((state) => state.library?.software.find((s) => s.id === softwareId));
@@ -159,8 +162,8 @@ function Dialog({ softwareId }: { softwareId: string | null }) {
   const setRoute = useApp((state) => state.setRoute);
   const close = () => patch({ sourceDialog: null });
 
-  const [kind, setKind] = useState<SourceKind>("homebrew");
-  const [query, setQuery] = useState(software?.name ?? "");
+  const [kind, setKind] = useState<SourceKind>(initial.kind ?? "homebrew");
+  const [query, setQuery] = useState(software?.name ?? (initial.kind === "homebrew" ? (initial.name ?? "") : ""));
   const [results, setResults] = useState<Candidate[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [reference, setReference] = useState("");
@@ -229,6 +232,13 @@ function Dialog({ softwareId }: { softwareId: string | null }) {
       if (turn === lookups.current) setBusy(false);
     }
   };
+
+  // 从顶栏搜索的在线结果打开：直接查这一个的最新版本，等用户确认后才添加
+  useEffect(() => {
+    if (initial.reference) void lookup(initial.reference, initial.name);
+    // 只在打开时查一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const confirmLink = async () => {
     if (!preview || (!softwareId && !name.trim())) return;

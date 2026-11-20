@@ -15,6 +15,9 @@ export type PackageView = "list" | "grid" | "folder";
 
 export type InstalledView = "list" | "grid";
 
+/** 顶栏搜索的范围：下拉结果里列哪些。本机的几处之外，还可以在 GitHub、Homebrew 上找。 */
+export type SearchScope = "all" | "library" | "installed" | "startup" | "github" | "homebrew";
+
 /** 有可调列的表格：软件库的列表、已安装软件的列表。各记各的列宽和隐藏的列。 */
 export type TableId = "library" | "installed";
 export interface TableColumns {
@@ -47,6 +50,10 @@ interface Prefs {
   detailMoreOpen: boolean;
   /** 已安装软件用列表还是网格。 */
   installedView: InstalledView;
+  /** “启动与服务”页看的是启动项还是服务。 */
+  startupTab: "startup" | "service";
+  /** 顶栏搜索的范围。 */
+  searchScope: SearchScope;
   /** 各个表格的列宽和隐藏的列。 */
   tableColumns: Record<TableId, TableColumns>;
   set: (patch: Partial<Omit<Prefs, "set" | "toggleCollapsed" | "sortBy" | "toggleColumn" | "setColumnWidth" | "resetColumns">>) => void;
@@ -78,6 +85,8 @@ export const usePrefs = create<Prefs>()(
       detailOpen: true,
       detailMoreOpen: false,
       installedView: "list",
+      startupTab: "startup",
+      searchScope: "all",
       tableColumns: { library: NO_COLUMNS, installed: NO_COLUMNS },
       set: (patch) =>
         set((state) => ({

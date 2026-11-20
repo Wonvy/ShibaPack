@@ -18,12 +18,13 @@ import type {
   Platform,
   Progress,
   Settings,
+  SourceKind,
   Status,
   Storage,
 } from "./types";
 
-export type Route = "library" | "installed";
-const ROUTES: Route[] = ["library", "installed"];
+export type Route = "library" | "installed" | "startup";
+const ROUTES: Route[] = ["library", "installed", "startup"];
 
 export type Scope =
   | { kind: "all" }
@@ -46,9 +47,11 @@ export interface AppUpdate {
   error: string;
   /** 用户点了“稍后”，这次运行不再弹提示。 */
   dismissed: boolean;
+  /** 新版本的更新说明（更新包里带的；没带时“软件更新”窗口去 GitHub 上取）。 */
+  notes: string;
 }
 
-export const NO_UPDATE: AppUpdate = { phase: "idle", version: "", progress: null, error: "", dismissed: false };
+export const NO_UPDATE: AppUpdate = { phase: "idle", version: "", progress: null, error: "", dismissed: false, notes: "" };
 
 /** 一个正在下载或排队的文件。 */
 export interface DownloadState {
@@ -80,8 +83,6 @@ interface AppState {
   /** 导入进行中时又拖进来、选进来的文件，排着队等前一批导完。 */
   importQueue: { paths: string[]; mode?: Storage; hint?: ImportHint }[];
   dropping: boolean;
-  /** 从系统拖文件进来、正停在某个软件上时，那个软件的 id。 */
-  dropSoftwareId: string | null;
   /** 屏幕下方的提示，最新的在最后，最多同时 3 条。新提示不会把还没看完的出错提示挤掉。 */
   toasts: Toast[];
   dismissToast: (id: number) => void;
@@ -101,6 +102,12 @@ interface AppState {
   /** 仓库里的软件 id → 对应的已安装软件 id。 */
   links: Record<string, string>;
   selectedInstalledId: string | null;
+  /** 已安装软件里多选的；单选时只有 selectedInstalledId 一个。 */
+  selectedInstalledIds: string[];
+  /** 单选一个已安装软件（null 为不选）。 */
+  selectInstalled: (id: string | null) => void;
+  /** 多选已安装软件：`primary` 是 Shift 连选的起点。 */
+  setInstalledSelection: (ids: string[], primary: string | null) => void;
 
   /** 正在下载或排队的文件，按下载地址。 */
   downloads: Record<string, DownloadState>;
@@ -110,12 +117,17 @@ interface AppState {
   classifyIds: string[] | null;
   /** 打开着的卸载窗口：要卸载的软件。 */
   uninstallTarget: InstalledApp | null;
-  /** 打开着的“关联在线源”对话框：给哪个软件关联；null 表示从在线源新添一个软件。 */
-  sourceDialog: { softwareId: string | null } | null;
+  /**
+   * 打开着的“关联在线源”对话框：给哪个软件关联；null 表示从在线源新添一个软件。
+   * 从顶栏搜索的在线结果打开时，带着源、标识和名字，对话框直接查出最新版本等用户确认。
+   */
+  sourceDialog: { softwareId: string | null; kind?: SourceKind; reference?: string; name?: string } | null;
   /** 语言包变了就加一，让界面重新取文字。 */
   langRevision: number;
   /** ShibaPack 自己的更新进行到哪一步了。 */
   appUpdate: AppUpdate;
+  /** 开着“软件更新”窗口（点底栏的版本号打开）。 */
+  updateDialog: boolean;
 
   init: () => Promise<void>;
   setRoute: (route: Route) => void;
@@ -134,12 +146,12 @@ interface AppState {
         | "platform"
         | "installFilter"
         | "dropping"
-        | "dropSoftwareId"
         | "settingsOpen"
         | "selectedInstalledId"
         | "classifyIds"
         | "uninstallTarget"
         | "sourceDialog"
+        | "updateDialog"
       >
     >,
   ) => void;
@@ -164,9 +176,14 @@ interface AppState {
   refreshAiKey: () => Promise<void>;
   /** 正在让 AI 写简介的名字。 */
   aiBusy: Record<string, boolean>;
-  /** 让 AI 给这些名字写简介，一个一个来。只有一个时出错直接提示原因，多个时最后汇总。 */
+  /**
+   * 让 AI 给这些名字写简介，一个一个来。只有一个时出错直接提示原因，多个时最后汇总。
+   * 一次给好几个时，已经有 AI 简介的跳过，不重复花钱；只给一个（点了“AI 写简介”“用 AI 重写”）时一定重新写。
+   */
   describeWithAi: (items: { name: string; publisher?: string }[]) => Promise<void>;
-  /** `hint.name` 给了时，所有文件都归到这个软件下（拖到某个软件上导入）。 */
+  /** 自己写的描述（按名字存）。空字符串表示删掉。 */
+  writeSummary: (name: string, text: string) => Promise<boolean>;
+  /** `hint.name` 给了时，所有文件都归到这个软件下（在详情栏里给某个软件选文件添加版本）。从系统拖进来的文件不带它，一律按文件名认。 */
   importPaths: (paths: string[], mode?: Storage, hint?: ImportHint) => Promise<void>;
   /** 停下正在进行的导入（在两个文件之间停），排着队的也不导了。 */
   cancelImport: () => void;
@@ -392,7 +409,6 @@ export const useApp = create<AppState>()((set, get) => {
     aiKeySaved: false,
     aiBusy: {},
     dropping: false,
-    dropSoftwareId: null,
     toasts: [],
     settingsOpen: false,
     installed: null,
@@ -403,6 +419,9 @@ export const useApp = create<AppState>()((set, get) => {
     measuring: false,
     links: {},
     selectedInstalledId: null,
+    selectedInstalledIds: [],
+    selectInstalled: (id) => set({ selectedInstalledId: id, selectedInstalledIds: id ? [id] : [] }),
+    setInstalledSelection: (ids, primary) => set({ selectedInstalledIds: ids, selectedInstalledId: primary ?? ids[0] ?? null }),
     downloads: {},
     checking: null,
     classifyIds: null,
@@ -410,6 +429,7 @@ export const useApp = create<AppState>()((set, get) => {
     sourceDialog: null,
     langRevision: 0,
     appUpdate: NO_UPDATE,
+    updateDialog: false,
 
     init: async () => {
       if (started) return;
@@ -536,8 +556,24 @@ export const useApp = create<AppState>()((set, get) => {
       if (aiKeyCheckedFor === baseUrl) set({ aiKeySaved: saved });
     },
 
+    writeSummary: async (name, text) => {
+      try {
+        const library = await api.setSummary(name, text);
+        const current = get().library;
+        if (current) set({ library: { ...current, summaries: library.summaries } });
+        return true;
+      } catch (error) {
+        get().notify(errorText(language(), error), "error");
+        return false;
+      }
+    },
+
     describeWithAi: async (items) => {
-      const todo = items.filter((item) => item.name.trim() && !get().aiBusy[item.name]);
+      const summaries = get().library?.summaries ?? {};
+      const batch = items.length > 1;
+      const already = batch ? items.filter((item) => summaries[item.name]?.source.startsWith("AI")) : [];
+      if (already.length > 0) get().notify(translate(language(), "ai.skipped", { n: already.length }));
+      const todo = items.filter((item) => item.name.trim() && !get().aiBusy[item.name] && !already.includes(item));
       if (todo.length === 0) return;
       set({ aiBusy: { ...get().aiBusy, ...Object.fromEntries(todo.map((item) => [item.name, true])) } });
       let done = 0;
@@ -660,7 +696,14 @@ export const useApp = create<AppState>()((set, get) => {
         const selectedInstalledId = installed.some((app) => app.id === get().selectedInstalledId)
           ? get().selectedInstalledId
           : null;
-        set({ installed, installedIndex: Object.fromEntries(installed.map((app) => [app.id, app])), selectedInstalledId, installedScannedAt: Date.now() });
+        const stillThere = new Set(installed.map((app) => app.id));
+        set({
+          installed,
+          installedIndex: Object.fromEntries(installed.map((app) => [app.id, app])),
+          selectedInstalledId,
+          selectedInstalledIds: get().selectedInstalledIds.filter((id) => stillThere.has(id)),
+          installedScannedAt: Date.now(),
+        });
         void refreshLinks();
         void fillIcons();
         // 占用空间统计得慢，列表先出来，大小随后补上

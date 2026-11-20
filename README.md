@@ -149,7 +149,7 @@ mkdir -p /tmp/shibapack-selftest/repo && echo '{"repoRoot": "/tmp/shibapack-self
 SHIBAPACK_CONFIG=/tmp/shibapack-selftest/config.json SHIBAPACK_CACHE=/tmp/shibapack-selftest/cache SHIBAPACK_SELFTEST=/path/to/some-installer.exe ./target/debug/shibapack
 ```
 
-`npm run dev` must be running and `cargo build -p shibapack` must have been run first (a release build does not need `npm run dev`). `SHIBAPACK_SELFTEST` points to any installer; if a `lang.json` sits next to it, importing language packs is tested too. The online-source checks need the network. The two directory variables can also be used on their own to run the app with a separate config and cache, without touching your real data.
+`npm run dev` must be running and `cargo build -p shibapack` must have been run first (a release build does not need `npm run dev`). `SHIBAPACK_SELFTEST` points to an installer (use an exe or msi to test icons; icons are not extracted from dmg files); if a `lang.json` sits next to it, importing language packs is tested too. The cleanup checks only scan and run a cleanup with nothing selected; nothing on the computer is deleted. The online-source checks need the network. The two directory variables can also be used on their own to run the app with a separate config and cache, without touching your real data.
 
 ### Building
 

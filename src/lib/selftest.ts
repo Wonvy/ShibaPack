@@ -6,10 +6,16 @@
 //
 // 它检查的是单元测试和浏览器预览都够不着的部分：前后端之间的调用、
 // 图标文件能不能通过资源协议显示出来、已安装软件在真实窗口里能不能列出来。
+//
+// 清理只读地扫一遍、不选任何项清理一次，不删这台电脑上的任何东西；
+// 试着把仓库加成清理文件夹、往保留名单里加不像域名的东西，都应该被拦下（拦下时不写设置）。
 
-import { api, assetUrl, windowControls } from "./api";
+import { api, assetUrl, onCleanupItem, windowControls } from "./api";
+import { useCleanup } from "./cleanup";
 import { usePrefs } from "./prefs";
 import { useApp } from "./store";
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function loads(path: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -142,6 +148,62 @@ export async function runSelftest() {
       }
     } catch (error) {
       await check("列出启动项和服务", false, String(error));
+    }
+
+    // 清理：只读地扫一遍，看前后端和界面接通了
+    try {
+      let streamed = 0;
+      const stop = await onCleanupItem(() => streamed++);
+      const started = performance.now();
+      const items = await api.cleanupScan();
+      stop();
+      const seconds = ((performance.now() - started) / 1000).toFixed(1);
+      const total = items.reduce((sum, item) => sum + (item.size ?? 0), 0);
+      await check("清理扫描", items.length > 0, `${items.length} 项，共 ${(total / 1024 ** 3).toFixed(1)} GB，用时 ${seconds} 秒`);
+      await check("扫描时一项一项送到界面", streamed === items.length, `收到 ${streamed} 项`);
+      await check("每一项都有中英文名字和说明", items.every((item) => item.name.zh && item.name.en && item.about.zh && item.about.en));
+      await check("条目都是完整路径", items.every((item) => item.entries.every((entry) => /^([A-Za-z]:[\\/]|\/)/.test(entry.path))));
+      const running = [...new Set(items.filter((item) => item.running).map((item) => item.app ?? item.id))];
+      await check("认出要先关掉的程序", true, running.length > 0 ? `正在运行：${running.join("、")}` : "都没在运行");
+      const admin = items.filter((item) => item.admin).map((item) => item.id);
+      await check("列出要管理员权限的项", true, admin.length > 0 ? admin.join("、") : "这台电脑上没有");
+      const nothing = await api.cleanupRun([]);
+      await check("不选任何项时什么都不清", nothing.removed === 0 && nothing.freed === 0 && nothing.trashed === 0 && !nothing.history);
+      const before = await api.cleanupOptions();
+      try {
+        const saved = await api.cleanupSetOptions({ ...before, custom: [...before.custom, status.repoRoot ?? ""] });
+        // 不该存进去：存进去了就马上改回来
+        await api.cleanupSetOptions(before);
+        await check("仓库不能加成清理文件夹", false, `被接受了：${saved.custom.join(", ")}`);
+      } catch (error) {
+        await check("仓库不能加成清理文件夹", String(error).startsWith("cleanup_protected"), String(error));
+      }
+      try {
+        await api.cleanupSetOptions({ ...before, keepCookies: [...before.keepCookies, "not a domain"] });
+        await api.cleanupSetOptions(before);
+        await check("保留名单不收不像域名的", false, "被接受了");
+      } catch (error) {
+        await check("保留名单不收不像域名的", String(error).startsWith("cleanup_bad_domain"), String(error));
+      }
+      // 只报个数，不把网站名打出来
+      const sites = await api.cleanupCookieSites();
+      await check("读得到浏览器里有 Cookie 的网站", Array.isArray(sites), `${sites.length} 个网站`);
+      const history = await api.cleanupHistory();
+      await check("清理记录能读", Array.isArray(history), `${history.length} 次`);
+      // 清理页在真实窗口里显示出扫描结果
+      useApp.getState().setRoute("cleanup");
+      const deadline = Date.now() + 60_000;
+      await sleep(300);
+      while ((useCleanup.getState().scanning || !useCleanup.getState().items?.length) && Date.now() < deadline) await sleep(200);
+      await sleep(300);
+      const first = useCleanup.getState().items?.[0];
+      const text = document.querySelector("main")?.textContent ?? "";
+      await check("清理页显示出扫描结果", Boolean(first) && (text.includes(first!.name.zh) || text.includes(first!.name.en)), first?.id ?? "没有项");
+      const sidebar = document.querySelector("#app-sidebar")?.textContent ?? "";
+      await check("侧栏显示能清理多少", /\d(\.\d)? (B|KB|MB|GB|TB)/.test(sidebar));
+      useApp.getState().setRoute("library");
+    } catch (error) {
+      await check("清理", false, String(error));
     }
 
     // 整理根目录：启动前在仓库根目录放了一个散落的安装包

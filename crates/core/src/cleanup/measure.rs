@@ -1,6 +1,7 @@
 //! 量大小和删除。都不跟随符号链接、不跨到别的盘。
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::Path;
 use std::time::SystemTime;
 use walkdir::WalkDir;
@@ -17,12 +18,24 @@ pub struct Measured {
     pub in_use: bool,
     /// 有读不到的地方（没权限）。
     pub unreadable: bool,
+    /// 量到一半被取消了。
+    pub cancelled: bool,
 }
 
 /// 量一项。`seen` 记着已经算过的硬链接，一个根目录下共用一份。
 pub fn measure(path: &Path, seen: &mut HashSet<(u64, u64)>) -> Measured {
+    measure_until(path, seen, &AtomicBool::new(false))
+}
+
+/// 和 `measure` 一样，`cancel` 变成真时马上停下（量到一半的结果不完整，`cancelled` 为真）。
+pub fn measure_until(path: &Path, seen: &mut HashSet<(u64, u64)>, cancel: &AtomicBool) -> Measured {
     let mut out = Measured::default();
-    for entry in WalkDir::new(path).follow_links(false).follow_root_links(false).same_file_system(true) {
+    for (n, entry) in WalkDir::new(path).follow_links(false).follow_root_links(false).same_file_system(true).into_iter().enumerate() {
+        // 每 256 个看一次，几万个文件的缓存也能马上停
+        if n % 256 == 0 && cancel.load(Ordering::Relaxed) {
+            out.cancelled = true;
+            break;
+        }
         let entry = match entry {
             Ok(entry) => entry,
             Err(_) => {
@@ -184,6 +197,18 @@ mod tests {
         assert!(measured.size >= 14_000, "{}", measured.size);
         assert!(measured.newest.is_some());
         assert!(!measured.in_use && !measured.unreadable);
+    }
+
+    #[test]
+    fn measuring_stops_when_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..600 {
+            fs::write(dir.path().join(format!("{i}.bin")), b"x").unwrap();
+        }
+        let measured = measure_until(dir.path(), &mut HashSet::new(), &AtomicBool::new(true));
+        assert!(measured.cancelled);
+        assert!(measured.files < 600);
+        assert!(!measure(dir.path(), &mut HashSet::new()).cancelled);
     }
 
     #[cfg(unix)]

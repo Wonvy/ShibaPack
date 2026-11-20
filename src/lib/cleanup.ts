@@ -4,7 +4,7 @@
 // 勾选记在本机的界面偏好里（没动过的按默认：安全档勾上，别的不勾）；不要的条目只在这次扫描里有效。
 
 import { create } from "zustand";
-import { api, onCleanupItem, onCleanupProgress, onCleanupScan } from "./api";
+import { api, onAiProgress, onCleanupItem, onCleanupProgress, onCleanupScan } from "./api";
 import { type Key, errorText, translate } from "./i18n";
 import { usePrefs } from "./prefs";
 import { useApp } from "./store";
@@ -49,6 +49,10 @@ interface CleanupState {
   /** AI 的解释，按项 id。 */
   explanations: Record<string, Explanation>;
   explaining: Record<string, boolean>;
+  /** 一批让 AI 解释时的进度。 */
+  explainProgress: { done: number; total: number } | null;
+  /** 底部状态栏显示的选择情况（清理页写进来）。 */
+  summary: string;
   select: (id: string | null) => void;
   loadHistory: () => Promise<void>;
   scan: () => Promise<void>;
@@ -77,6 +81,8 @@ export const useCleanup = create<CleanupState>()((set, get) => ({
   partial: false,
   explanations: {},
   explaining: {},
+  explainProgress: null,
+  summary: "",
   select: (id) => set({ selectedId: id }),
   loadHistory: async () => {
     try {
@@ -173,6 +179,7 @@ export function isChecked(item: CleanItem, overrides: Record<string, boolean>): 
 /** 能不能清：程序没在运行、不是要到系统设置里清的、还有东西（要管理员权限的读不到也算，提权以后再量）。 */
 export function canClean(item: CleanItem): boolean {
   if (item.running || item.tool) return false;
+  // 读不到大小、项数也不知道的回收站：照样能清空（交给访达）
   return item.entryCount > 0 || item.action === "emptyTrash" || item.action === "clearClipboard" || item.admin;
 }
 
@@ -280,18 +287,49 @@ export function lastCleaned(id: string, history: CleanRun[] | null): { at: strin
 
 /** 让 AI 解释这一项：有记下的解释就直接用；`refresh` 为真（点了“重新解释”）才重新问。 */
 export async function explainCleanup(item: CleanItem, refresh = false) {
+  return explainMany([item], refresh);
+}
+
+/**
+ * 让 AI 解释一批：以前解释过的直接用，没解释过的凑成一批问（每次请求 10 项），不是一项一项问。
+ * `refresh` 为真时全部重新问。一批的时候最后提示解释了几项。
+ */
+export async function explainMany(items: CleanItem[], refresh = false) {
   const state = useCleanup.getState();
-  if (state.explaining[item.id]) return;
-  useCleanup.setState({ explaining: { ...state.explaining, [item.id]: true } });
+  const todo = items.filter((item) => !state.explaining[item.id]);
+  if (todo.length === 0) return;
+  useCleanup.setState({ explaining: { ...state.explaining, ...Object.fromEntries(todo.map((item) => [item.id, true])) } });
+  const stop = todo.length > 1 ? await onAiProgress((progress) => useCleanup.setState({ explainProgress: progress })) : null;
   try {
-    const result = await api.aiExplainCleanup([item.id], refresh ? "refresh" : "auto");
+    const result = await api.aiExplainCleanup(
+      todo.map((item) => item.id),
+      refresh ? "refresh" : "auto",
+    );
     useCleanup.setState({ explanations: { ...useCleanup.getState().explanations, ...result.explanations } });
-    if (result.missing > 0) useApp.getState().notify(errorText(language(), "ai_unknown"), "error");
+    if (todo.length > 1) {
+      const n = Object.keys(result.explanations).length;
+      const key = result.asked === 0 ? "startup.explainedCached" : result.missing > 0 ? "startup.explainedMissing" : "startup.explainedMany";
+      useApp.getState().notify(tr(key, { n, asked: result.asked, missing: result.missing }));
+    } else if (result.missing > 0) {
+      useApp.getState().notify(errorText(language(), "ai_unknown"), "error");
+    }
   } catch (error) {
     useApp.getState().notify(errorText(language(), error), "error");
   } finally {
-    const { [item.id]: _done, ...rest } = useCleanup.getState().explaining;
-    useCleanup.setState({ explaining: rest });
+    stop?.();
+    const explaining = { ...useCleanup.getState().explaining };
+    for (const item of todo) delete explaining[item.id];
+    useCleanup.setState({ explaining, explainProgress: null });
+  }
+}
+
+/** 问访达废纸篓里有几项。第一次会弹授权；不允许时提示怎么打开。 */
+export async function countTrash() {
+  try {
+    const items = await api.cleanupCountTrash();
+    useCleanup.setState({ items });
+  } catch (error) {
+    useApp.getState().notify(errorText(language(), error), "error");
   }
 }
 

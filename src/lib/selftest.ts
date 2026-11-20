@@ -11,7 +11,7 @@
 // 试着把仓库加成清理文件夹、往保留名单里加不像域名的东西，都应该被拦下（拦下时不写设置）。
 
 import { api, assetUrl, onCleanupItem, windowControls } from "./api";
-import { useCleanup } from "./cleanup";
+import { CATEGORIES, useCleanup } from "./cleanup";
 import { usePrefs } from "./prefs";
 import { useApp } from "./store";
 
@@ -196,8 +196,8 @@ export async function runSelftest() {
       const history = await api.cleanupHistory();
       await check("清理记录能读", Array.isArray(history), `${history.length} 次`);
       // 清理页在真实窗口里显示出扫描结果。类别折叠是记在本机的，先都展开，查完放回去
-      const collapsed = usePrefs.getState().cleanupCollapsed;
-      usePrefs.getState().set({ cleanupCollapsed: [] });
+      const opened = usePrefs.getState().cleanupOpen;
+      usePrefs.getState().set({ cleanupOpen: Object.fromEntries(CATEGORIES.map((c) => [c, true])) });
       useApp.getState().setRoute("cleanup");
       const deadline = Date.now() + 60_000;
       await sleep(300);
@@ -208,9 +208,9 @@ export async function runSelftest() {
       await check(
         "清理页显示出扫描结果",
         Boolean(first) && (text.includes(first!.name.zh) || text.includes(first!.name.en)),
-        `${first?.id ?? "没有项"}${collapsed.length > 0 ? `（原来折叠着 ${collapsed.join("、")}）` : ""}`,
+        first?.id ?? "没有项",
       );
-      usePrefs.getState().set({ cleanupCollapsed: collapsed });
+      usePrefs.getState().set({ cleanupOpen: opened });
       const sidebar = document.querySelector("#app-sidebar")?.textContent ?? "";
       await check("侧栏显示能清理多少", /\d(\.\d)? (B|KB|MB|GB|TB)/.test(sidebar));
       useApp.getState().setRoute("library");

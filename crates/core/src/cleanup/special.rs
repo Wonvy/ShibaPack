@@ -96,7 +96,7 @@ pub struct TrashInfo {
 /// 问访达废纸篓里有几项。没有“完全磁盘访问权限”时读不了 ~/.Trash，但访达知道。
 /// 第一次会问能不能控制“访达”；不允许、超时（最多等 20 秒）或者出错时返回 None。
 #[cfg(target_os = "macos")]
-fn finder_trash_count() -> Option<u64> {
+pub fn finder_trash_count() -> Option<u64> {
     let mut cmd = command("osascript");
     cmd.args(["-e", "tell application \"Finder\" to count items of trash"]);
     let output = crate::startup::output_within(cmd, Duration::from_secs(20))?;
@@ -627,7 +627,7 @@ const STRICT: &[&str] = &[
 
 /// 在这些文件夹（下载文件夹、桌面）和它们下面一层里找安装包，和仓库比对：大小一样的才算 SHA-256。
 /// 隐藏的文件夹、.app、里面有 .git 的项目文件夹不进去。
-pub fn loose_installers(dirs: &[PathBuf], library: &[LibraryFile], hashes: &mut HashCache) -> Vec<Loose> {
+pub fn loose_installers(dirs: &[PathBuf], library: &[LibraryFile], hashes: &mut HashCache, cancel: &std::sync::atomic::AtomicBool) -> Vec<Loose> {
     let mut by_size: HashMap<u64, Vec<&LibraryFile>> = HashMap::new();
     for file in library {
         by_size.entry(file.size).or_default().push(file);
@@ -649,6 +649,9 @@ pub fn loose_installers(dirs: &[PathBuf], library: &[LibraryFile], hashes: &mut 
             }
         }
         for folder in folders {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return found;
+            }
             for path in read_sorted(&folder) {
                 let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
                 if !meta.is_file() {
@@ -711,19 +714,19 @@ mod tests {
             LibraryFile { size: 99, sha256: "00".into(), software: "Bar".into(), version: "1.0".into() },
         ];
         let mut hashes = HashCache::default();
-        let found = loose_installers(std::slice::from_ref(&downloads), &library, &mut hashes);
+        let found = loose_installers(std::slice::from_ref(&downloads), &library, &mut hashes, &Default::default());
         assert_eq!(hashes.computed, 1, "只有大小和仓库里一样的才算哈希");
         // 存下来再读回：第二遍不用重算；文件变了才重算
         hashes.save(dir.path());
         let mut again = HashCache::load(dir.path());
-        assert_eq!(loose_installers(std::slice::from_ref(&downloads), &library, &mut again), found);
+        assert_eq!(loose_installers(std::slice::from_ref(&downloads), &library, &mut again, &Default::default()), found);
         assert_eq!(again.computed, 0);
         fs::write(downloads.join("Foo-1.2.0.dmg"), b"other data").unwrap();
         // 大小没变：把修改时间明确往后拨，免得同一毫秒里写两次看不出变化
         let file = fs::File::options().write(true).open(downloads.join("Foo-1.2.0.dmg")).unwrap();
         file.set_modified(SystemTime::now() + Duration::from_secs(5)).unwrap();
         drop(file);
-        let changed = loose_installers(std::slice::from_ref(&downloads), &library, &mut again);
+        let changed = loose_installers(std::slice::from_ref(&downloads), &library, &mut again, &Default::default());
         assert_eq!(again.computed, 1);
         assert!(changed.iter().find(|f| f.path.ends_with("Foo-1.2.0.dmg")).unwrap().same_as.is_none());
         let names: Vec<String> = found.iter().map(|f| f.path.file_name().unwrap().to_string_lossy().to_string()).collect();
@@ -743,7 +746,7 @@ mod tests {
         fs::write(dir.path().join("Tool-3.zip"), b"zip bytes").unwrap();
         let hash = crate::import::sha256_file(&dir.path().join("Tool-3.zip")).unwrap();
         let library = vec![LibraryFile { size: 9, sha256: hash, software: "Tool".into(), version: "3".into() }];
-        let found = loose_installers(&[dir.path().to_path_buf()], &library, &mut HashCache::default());
+        let found = loose_installers(&[dir.path().to_path_buf()], &library, &mut HashCache::default(), &Default::default());
         assert_eq!(found.len(), 1);
         assert!(found[0].same_as.is_some());
     }

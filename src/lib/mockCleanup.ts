@@ -114,6 +114,32 @@ function electron(id: string, app: string, base: string, sizes: number[], runnin
   });
 }
 
+/** 自己有清理功能、ShibaPack 不直接删的应用。 */
+function appTool(key: string, zh: string, en: string, location: string): CleanItem {
+  return item({
+    id: `apps.${key}-builtin`, category: "apps", risk: "recoverable", action: "delete", size: null, note: "app_tool", tool: "app", app: en,
+    name: bi(`${zh} 自带的清理`, `${en} built-in cleanup`),
+    about: bi(
+      `${zh}的缓存和聊天记录、收到的文件放在一起，没有官方说明哪些能删，所以 ShibaPack 不直接删。${zh}自己有清理缓存的功能（一般在设置里的存储空间），用它清最稳妥。`,
+      `${en} keeps its cache next to chat history and received files, and there is no official guidance on which files are safe to delete, so ShibaPack doesn't delete them. Its own cache cleanup (usually under storage in its settings) is the safe way.`,
+    ),
+    effect: bi("在应用里清理，只清缓存的话聊天记录不受影响。", "Clean it inside the app. Clearing only the cache leaves chat history alone."),
+    roots: [location], entries: [],
+  });
+}
+
+function teams(base: string): CleanItem {
+  return item({
+    id: "apps.teams", category: "apps", risk: "recoverable", action: "trash", app: "Microsoft Teams", quit: true,
+    name: bi("Microsoft Teams 缓存", "Microsoft Teams cache"),
+    about: bi("Teams 在本机存的缓存。经典版 Teams 已经停用，卸载以后这个文件夹常常还留着。", "The cache Teams keeps on this computer. Classic Teams has been retired, and this folder often stays behind after it is uninstalled."),
+    effect: bi("移到回收站。下次启动 Teams 要重建缓存，会慢一些。微软只建议在 Teams 本地出问题时清，聊天记录在服务器上，不受影响。", "Moved to the Recycle Bin/Trash. Teams rebuilds the cache on the next start, which takes longer. Microsoft suggests clearing it only for local client problems; chats live on the server and are not affected."),
+    evidence: "https://learn.microsoft.com/en-us/troubleshoot/microsoftteams/teams-administration/clear-teams-cache",
+    roots: [base],
+    entries: [[join(base, "Service Worker"), 310 * MB, 90], [join(base, "Cache"), 140 * MB, 90], [join(base, "IndexedDB"), 62 * MB, 90]],
+  });
+}
+
 function macItems(): CleanItem[] {
   return [
     item({
@@ -176,6 +202,9 @@ function macItems(): CleanItem[] {
     }),
     electron("apps.claude", "Claude", `${LIBRARY}/Application Support/Claude`, [412, 168, 15], true),
     electron("apps.slack", "Slack", `${LIBRARY}/Application Support/Slack`, [530, 96, 22]),
+    teams(`${LIBRARY}/Application Support/Microsoft/Teams`),
+    appTool("wechat", "微信", "WeChat", "/Applications/WeChat.app"),
+    appTool("feishu", "飞书", "Feishu / Lark", "/Applications/Lark.app"),
     history("privacy.edge-history", "Edge", "Microsoft Edge", `${LIBRARY}/Application Support/Microsoft Edge/Default`),
     cookies("privacy.edge-cookies", "Edge", "Microsoft Edge", `${LIBRARY}/Application Support/Microsoft Edge/Default`),
     cookies("privacy.chrome-cookies", "Chrome", "Google Chrome", `${LIBRARY}/Application Support/Google/Chrome/Default`, true),
@@ -369,6 +398,8 @@ function windowsItems(): CleanItem[] {
     }),
     ...loose(),
     electron("apps.discord", "Discord", join(ROAMING, "discord"), [640, 120, 18]),
+    teams(join(LOCAL, "Packages", "MSTeams_8wekyb3d8bbwe", "LocalCache", "Microsoft", "MSTeams")),
+    appTool("dingtalk", "钉钉", "DingTalk", "C:\\Program Files (x86)\\DingDing\\DingtalkLauncher.exe"),
     history("privacy.edge-history", "Edge", "Microsoft Edge", join(LOCAL, "Microsoft", "Edge", "User Data", "Default")),
     cookies("privacy.edge-cookies", "Edge", "Microsoft Edge", join(LOCAL, "Microsoft", "Edge", "User Data", "Default")),
     item({
@@ -516,6 +547,12 @@ export async function mockCleanupCall(command: string, args: Record<string, unkn
       }
       return found;
     }
+    case "cleanup_count_trash":
+      await sleep(600);
+      items = items.map((it) => (it.id === "trash.empty" ? { ...it, files: 27, entryCount: 27 } : it));
+      return current();
+    case "cleanup_open_tool":
+      return null;
     case "cleanup_cancel_scan":
       scanCancelled = true;
       return null;

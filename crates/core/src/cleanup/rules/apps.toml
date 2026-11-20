@@ -1,6 +1,7 @@
 # 常用应用的缓存。Slack、Discord、Notion、Obsidian、Claude 都是 Electron 应用，缓存的结构和 Chromium 一样：
 # 网页缓存（Cache）、代码缓存（Code Cache）、显卡缓存（GPUCache 等），删了会自己重新生成。登录状态、设置、聊天记录都不在这些文件夹里。
-# Spotify、Steam 没有官方说明哪些能删，不放进来。
+# Spotify、Steam 没有官方说明哪些能删，不放进来。微信、企业微信、飞书、钉钉、QQ 也没有，而且缓存和聊天记录混在一起：
+# 不写删文件的规则，只提醒用它们自带的清理（mod.rs 的 APP_TOOLS）。
 
 [[rule]]
 id = "apps.slack"
@@ -81,3 +82,18 @@ name = { zh = "ChatGPT 缓存", en = "ChatGPT cache" }
 about = { zh = "ChatGPT 桌面应用的网络缓存。", en = "Network cache of the ChatGPT desktop app." }
 effect = { zh = "下次打开会慢一点。登录状态和对话不受影响。", en = "Opens a little slower next time. Sign-in and conversations are not affected." }
 evidence = "https://developer.apple.com/library/archive/documentation/FileManagement/Conceptual/FileSystemProgrammingGuide/MacOSXDirectories/MacOSXDirectories.html"
+
+[[rule]]
+id = "apps.teams"
+category = "apps"
+# 微软只把清缓存当作修 Teams 本地问题的办法：默认不勾，移到回收站
+risk = "recoverable"
+app = "Microsoft Teams"
+processes = { macos = ["Teams", "Microsoft Teams"], windows = ["Teams.exe", "ms-teams.exe"] }
+# 经典版 Teams（两边）和 Windows 上的新版 Teams。macOS 上的新版 Teams 在应用容器里，清掉等于重置整个应用，不放进来
+roots.macos = ["${app_support}/Microsoft/Teams"]
+roots.windows = ["${roaming_app_data}/Microsoft/Teams", "${local_app_data}/Packages/MSTeams_8wekyb3d8bbwe/LocalCache/Microsoft/MSTeams"]
+name = { zh = "Microsoft Teams 缓存", en = "Microsoft Teams cache" }
+about = { zh = "Teams 在本机存的缓存。经典版 Teams 已经停用，卸载以后这个文件夹常常还留着。", en = "The cache Teams keeps on this computer. Classic Teams has been retired, and this folder often stays behind after it is uninstalled." }
+effect = { zh = "移到回收站。下次启动 Teams 要重建缓存，会慢一些。微软只建议在 Teams 本地出问题时清，聊天记录在服务器上，不受影响。", en = "Moved to the Recycle Bin/Trash. Teams rebuilds the cache on the next start, which takes longer. Microsoft suggests clearing it only for local client problems; chats live on the server and are not affected." }
+evidence = "https://learn.microsoft.com/en-us/troubleshoot/microsoftteams/teams-administration/clear-teams-cache"

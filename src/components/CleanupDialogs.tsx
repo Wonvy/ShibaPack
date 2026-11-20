@@ -1,6 +1,6 @@
 // 清理用到的几个窗口：确认、结果、清理记录、清理设置（自定义文件夹和排除）。
 
-import { CheckCircle2, FolderOpen, FolderPlus, Plus, X } from "lucide-react";
+import { CheckCircle2, FolderOpen, FolderPlus, Pencil, Plus, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, pickFolder } from "../lib/api";
 import { pickedSize, runClean, skipReason, textOf, useCleanup } from "../lib/cleanup";
@@ -308,7 +308,12 @@ function OptionsDialog() {
         <div className="flex flex-col gap-5">
           <CustomRules
             rules={options.rules}
-            onAdd={(rule) => update((current) => ({ ...current, rules: [...current.rules, rule] }))}
+            onSave={(rule, index) =>
+              update((current) => ({
+                ...current,
+                rules: index === null ? [...current.rules, rule] : current.rules.map((existing, i) => (i === index ? rule : existing)),
+              }))
+            }
             onRemove={(index) => void update((current) => ({ ...current, rules: current.rules.filter((_, i) => i !== index) }))}
           />
           <FolderList
@@ -362,11 +367,30 @@ function FolderList({ title, hint, folders, onAdd, onRemove }: { title: string; 
  * 自己加的清理规则：给别的软件加规则用。选一个文件夹，可以只清符合名字的（*.log）、只清多少天没动过的，
  * 写上清理前要先关掉的程序，选移到回收站还是直接删除。文件夹要过保护检查，受保护的加不进来。
  */
-function CustomRules({ rules, onAdd, onRemove }: { rules: CustomCleanRule[]; onAdd: (rule: CustomCleanRule) => Promise<boolean>; onRemove: (index: number) => void }) {
+function CustomRules({
+  rules,
+  onSave,
+  onRemove,
+}: {
+  rules: CustomCleanRule[];
+  /** `index` 为 null 是新加的，否则替换那一条。 */
+  onSave: (rule: CustomCleanRule, index: number | null) => Promise<boolean>;
+  onRemove: (index: number) => void;
+}) {
   const t = useT();
   const attempt = useApp((state) => state.attempt);
-  const blank = { name: "", path: "", names: "", days: "", processes: "", mode: "trash" as "trash" | "delete" };
+  const blank = { index: null as number | null, name: "", path: "", names: "", days: "", processes: "", mode: "trash" as "trash" | "delete" };
   const [form, setForm] = useState<typeof blank | null>(null);
+  const edit = (rule: CustomCleanRule, index: number) =>
+    setForm({
+      index,
+      name: rule.name,
+      path: rule.path,
+      names: rule.names.join(", "),
+      days: rule.olderThanDays ? String(rule.olderThanDays) : "",
+      processes: rule.processes.join(", "),
+      mode: rule.delete ? "delete" : "trash",
+    });
   const split = (text: string) => text.split(/[,，;；\n]/).map((x) => x.trim()).filter(Boolean);
   const pick = async () => {
     const folder = await attempt(pickFolder);
@@ -375,14 +399,14 @@ function CustomRules({ rules, onAdd, onRemove }: { rules: CustomCleanRule[]; onA
   const submit = async () => {
     if (!form?.path.trim()) return;
     const days = Number.parseInt(form.days, 10);
-    const ok = await onAdd({
+    const ok = await onSave({
       name: form.name.trim(),
       path: form.path.trim(),
       names: split(form.names),
       olderThanDays: Number.isFinite(days) && days > 0 ? days : null,
       processes: split(form.processes),
       delete: form.mode === "delete",
-    });
+    }, form.index);
     if (ok) setForm(null);
   };
   const summary = (rule: CustomCleanRule) =>
@@ -409,14 +433,20 @@ function CustomRules({ rules, onAdd, onRemove }: { rules: CustomCleanRule[]; onA
       <div className="rounded-lg border border-line">
         {rules.length === 0 && !form && <div className="px-3 py-2 text-[12px] text-fg-3">{t("cleanup.options.none")}</div>}
         {rules.map((rule, index) => (
-          <div key={`${rule.path}-${index}`} className="flex items-center gap-2 border-b border-line py-1.5 pr-1 pl-3 last:border-b-0">
-            <div className="min-w-0 flex-1">
+          <div
+            key={`${rule.path}-${index}`}
+            className={cx("flex items-center gap-2 border-b border-line py-1.5 pr-1 pl-3 last:border-b-0", form?.index === index && "bg-active")}
+          >
+            <button type="button" className="min-w-0 flex-1 text-left" title={t("cleanup.rules.edit")} onClick={() => edit(rule, index)}>
               <div className="truncate text-[13px] font-medium">{rule.name}</div>
               <div className="selectable truncate font-mono text-[12px] text-fg-2" title={rule.path}>
                 {rule.path}
               </div>
               <div className="truncate text-[12px] text-fg-3">{summary(rule)}</div>
-            </div>
+            </button>
+            <IconButton label={t("cleanup.rules.edit")} className="size-6" onClick={() => edit(rule, index)}>
+              <Pencil size={13} strokeWidth={1.75} />
+            </IconButton>
             <IconButton label={t("cleanup.options.remove")} className="size-6" onClick={() => onRemove(index)}>
               <X size={13} strokeWidth={1.75} />
             </IconButton>
@@ -461,7 +491,7 @@ function CustomRules({ rules, onAdd, onRemove }: { rules: CustomCleanRule[]; onA
                 {t("common.cancel")}
               </Button>
               <Button variant="primary" disabled={!form.path.trim()} onClick={() => void submit()}>
-                {t("cleanup.rules.save")}
+                {form.index === null ? t("cleanup.rules.save") : t("cleanup.rules.update")}
               </Button>
             </div>
           </div>

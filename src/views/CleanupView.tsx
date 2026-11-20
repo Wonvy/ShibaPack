@@ -42,7 +42,9 @@ import {
   askClean,
   cancelScan,
   canClean,
+  countTrash,
   explainCleanup,
+  explainMany,
   regrowthPerDay,
   rescanIfStale,
   importLoose,
@@ -73,12 +75,13 @@ export const CATEGORY_ICON: Record<CleanCategory, LucideIcon> = {
 };
 
 /** 这一项的图标：属于某个装着的应用时用它的图标，否则是类别的图标。 */
-export function CleanIcon({ item, size }: { item: CleanItem; size: number }) {
+export function CleanIcon({ item, size, plain }: { item: CleanItem; size: number; plain?: boolean }) {
   const app = useApp((state) => (item.app ? state.installed?.find((a) => a.name.toLowerCase() === item.app?.toLowerCase()) : undefined));
   if (app?.icon) return <SoftwareIcon name={app.name} icon={app.icon} size={size} />;
   const Icon = CATEGORY_ICON[item.category];
+  // 列表里没有应用图标的只画一个淡淡的类别图标，不加底色，免得一列灰块
   return (
-    <span className="flex shrink-0 items-center justify-center rounded-[22%] bg-hover text-fg-2" style={{ width: size, height: size }}>
+    <span className={cx("flex shrink-0 items-center justify-center rounded-[22%]", plain ? "text-fg-4" : "bg-hover text-fg-2")} style={{ width: size, height: size }}>
       <Icon size={Math.round(size * 0.55)} strokeWidth={1.75} aria-hidden />
     </span>
   );
@@ -129,7 +132,7 @@ export function CleanupView({ detailToggle }: { detailToggle: ReactNode }) {
   const scanProgress = useCleanup((state) => state.scanProgress);
   const partial = useCleanup((state) => state.partial);
   const overrides = usePrefs((state) => state.cleanupChecked);
-  const collapsed = usePrefs((state) => state.cleanupCollapsed);
+  const opened = usePrefs((state) => state.cleanupOpen);
   const setPrefs = usePrefs((state) => state.set);
   const search = useApp((state) => state.search);
   const [category, setCategory] = useState<"all" | CleanCategory>("all");
@@ -158,21 +161,60 @@ export function CleanupView({ detailToggle }: { detailToggle: ReactNode }) {
     () =>
       CATEGORIES.map((c) => ({
         category: c,
-        items: shown.filter((item) => item.category === c).sort((a, b) => (b.size ?? -1) - (a.size ?? -1)),
+        // 能清的在前、按大小排；正在运行、要到别处清的这类勾不了的沉到底，不夹在中间
+        items: shown
+          .filter((item) => item.category === c)
+          .sort((a, b) => Number(canClean(b)) - Number(canClean(a)) || (b.size ?? -1) - (a.size ?? -1)),
       })).filter((group) => group.items.length > 0),
     [shown],
   );
   const total = all.reduce((sum, item) => sum + (item.size ?? 0), 0);
   // 清理的是列出来的、勾着的
   const picked = pickedItems(shown, overrides);
-  const pickedTotal = picked.reduce((sum, item) => sum + pickedSize(item, skips), 0);
-  const recommended = pickedItems(all, overrides).filter((item) => item.risk === "safe");
-  const recommendedTotal = recommended.reduce((sum, item) => sum + pickedSize(item, skips), 0);
   const filtering = category !== "all" || risk !== "all" || search.trim() !== "";
   const busy = scanning || cleaning;
 
-  const toggleGroup = (c: CleanCategory) =>
-    setPrefs({ cleanupCollapsed: collapsed.includes(c) ? collapsed.filter((x) => x !== c) : [...collapsed, c] });
+  // 没动过的组：有勾选的展开（看得到推荐清了什么），没有的收起。手动展开、收起过就记住
+  const isOpen = (c: CleanCategory, list: CleanItem[]) => opened[c] ?? list.some((item) => isChecked(item, overrides) && canClean(item));
+  const toggleGroup = (c: CleanCategory, list: CleanItem[]) => setPrefs({ cleanupOpen: { ...opened, [c]: !isOpen(c, list) } });
+  // 全选的是列出来的、能清的；全都勾上了以后按钮变成“推荐”，点了回到默认的勾选
+  const selectable = shown.filter(canClean);
+  const allSelected = selectable.length > 0 && selectable.every((item) => isChecked(item, overrides));
+  // 按删除方式分开算：直接删除的找不回来，移到回收站的还能找回
+  const pickedDelete = picked.filter((item) => item.action !== "trash").reduce((sum, item) => sum + pickedSize(item, skips), 0);
+  const pickedTrash = picked.filter((item) => item.action === "trash").reduce((sum, item) => sum + pickedSize(item, skips), 0);
+  const pickedText = [
+    pickedDelete > 0 || picked.some((item) => item.action !== "trash") ? t("cleanup.selectedDelete", { size: formatSize(pickedDelete) }) : "",
+    pickedTrash > 0 ? t("cleanup.selectedTrash", { size: formatSize(pickedTrash) }) : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  // 选了多少写到窗口最下面的状态栏
+  const summary = cleaning && progress?.waitingAdmin
+    ? t("cleanup.waitingAdmin")
+    : cleaning && progress
+      ? t("cleanup.cleaning", { done: progress.done, total: progress.total })
+      : picked.length > 0
+        ? `${t("cleanup.selectedCount", { n: picked.length })} · ${pickedText}`
+        : t("cleanup.noneSelected");
+  useEffect(() => {
+    useCleanup.setState({ summary });
+  }, [summary]);
+
+  // 键盘：上下键在类别标题和各项之间移动（移到某一项时在详情栏打开它），空格勾选，回车展开或收起类别
+  const onListKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const rows = [...event.currentTarget.querySelectorAll<HTMLElement>("[data-nav]")];
+    const at = rows.indexOf(document.activeElement as HTMLElement);
+    const next = rows[at < 0 ? 0 : Math.min(rows.length - 1, Math.max(0, at + (event.key === "ArrowDown" ? 1 : -1)))];
+    if (!next) return;
+    event.preventDefault();
+    next.focus();
+    next.scrollIntoView({ block: "nearest" });
+    const id = next.dataset.nav;
+    if (id?.startsWith("item:")) useCleanup.getState().select(id.slice(5));
+  };
 
   return (
     <div className="@container flex min-h-0 flex-1 flex-col">
@@ -260,38 +302,42 @@ export function CleanupView({ detailToggle }: { detailToggle: ReactNode }) {
       ) : groups.length === 0 ? (
         <EmptyState icon={filtering ? SearchX : BrushCleaning} title={filtering ? t("cleanup.noMatch") : t("cleanup.empty")} />
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto px-2 pt-2 pb-3">
-          {!filtering && recommended.length > 0 && (
-            <div className="mx-1 mb-2 flex items-center gap-3 rounded-lg border border-line px-3 py-2.5">
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent-soft text-accent">
-                <BrushCleaning size={16} strokeWidth={1.75} aria-hidden />
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-[13px] font-medium">{t("cleanup.recommend.title", { size: formatSize(recommendedTotal) })}</div>
-                <div className="truncate text-[12px] text-fg-3">{t("cleanup.recommend.body", { n: recommended.length })}</div>
-              </div>
-              <Button variant="primary" disabled={busy} onClick={() => askClean(recommended.map((item) => item.id))}>
-                {t("cleanup.recommend.button")}
-              </Button>
-            </div>
-          )}
+        // 一直给滚动条留好位置（轨道是透明的，看不出来）：展开一组后列表变长、冒出滚动条时，
+        // 右边的大小和折叠箭头不会往左跳。旧版 macOS 的 WebKit 不认 scrollbar-gutter，所以用 overflow-y: scroll
+        <div className="min-h-0 flex-1 overflow-y-scroll px-2 pt-2 pb-3 [scrollbar-gutter:stable]" onKeyDown={onListKey}>
           {groups.map((group) => (
-            <Group key={group.category} category={group.category} items={group.items} open={!collapsed.includes(group.category)} onToggle={() => toggleGroup(group.category)} />
+            <Group
+              key={group.category}
+              category={group.category}
+              items={group.items}
+              open={isOpen(group.category, group.items)}
+              onToggle={() => toggleGroup(group.category, group.items)}
+            />
           ))}
         </div>
       )}
 
-      {/* 底部：选了多少，清理按钮 */}
-      <div className="flex h-12 shrink-0 items-center gap-3 border-t border-line pr-3 pl-4">
-        <span className="min-w-0 flex-1 truncate text-[12px] text-fg-2">
-          {cleaning && progress?.waitingAdmin
-            ? t("cleanup.waitingAdmin")
-            : cleaning && progress
-            ? t("cleanup.cleaning", { done: progress.done, total: progress.total })
-            : picked.length > 0
-              ? t("cleanup.selected", { n: picked.length, size: formatSize(pickedTotal) })
-              : t("cleanup.noneSelected")}
-        </span>
+      {/* 底部：全选或回到推荐、清理。选了多少写在窗口最下面的状态栏里 */}
+      <div className="flex h-12 shrink-0 items-center gap-2 border-t border-line px-3">
+        {/* 全选是复选框（全选、部分、没选三种样子，点了在全选和全不选之间切换）；全选和推荐平时只是文字，悬停才像按钮 */}
+        {/* 复选框本身是按钮，外面这一层不能再用 button（按钮不能套按钮） */}
+        <div
+          role="button"
+          tabIndex={-1}
+          aria-disabled={busy || selectable.length === 0}
+          onClick={() => !busy && selectable.length > 0 && setChecked(selectable, !allSelected)}
+          className={cx(
+            "-ml-1 inline-flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-[13px] text-fg-2 transition-colors hover:bg-hover hover:text-fg",
+            (busy || selectable.length === 0) && "pointer-events-none opacity-50",
+          )}
+        >
+          <Tick checked={allSelected ? true : picked.length > 0 ? "mixed" : false} label={allSelected ? t("cleanup.uncheckAll") : t("cleanup.selectAll")} onChange={(on) => setChecked(selectable, on)} />
+          {t("cleanup.selectAll")}
+        </div>
+        <Button variant="ghost" disabled={busy} title={t("cleanup.recommendHint")} onClick={() => usePrefs.getState().set({ cleanupChecked: {} })}>
+          {t("cleanup.recommend")}
+        </Button>
+        <span className="flex-1" />
         <Button variant="primary" busy={cleaning} disabled={busy || picked.length === 0} onClick={() => askClean(picked.map((item) => item.id))}>
           {!cleaning && <BrushCleaning size={14} strokeWidth={1.75} aria-hidden />}
           {t("cleanup.clean")}
@@ -305,7 +351,6 @@ export function CleanupView({ detailToggle }: { detailToggle: ReactNode }) {
 function Group({ category, items, open, onToggle }: { category: CleanCategory; items: CleanItem[]; open: boolean; onToggle: () => void }) {
   const t = useT();
   const overrides = usePrefs((state) => state.cleanupChecked);
-  const Icon = CATEGORY_ICON[category];
   const selectable = items.filter(canClean);
   const checkedCount = selectable.filter((item) => isChecked(item, overrides)).length;
   const state: boolean | "mixed" = checkedCount === 0 ? false : checkedCount === selectable.length ? true : "mixed";
@@ -313,24 +358,45 @@ function Group({ category, items, open, onToggle }: { category: CleanCategory; i
   // 回收站读不到大小时，合计也写“—”，不写成 0
   const known = items.some((item) => item.size !== null);
   const label = t(`cleanup.category.${category}` as Key);
+  const canAi = useApp((state) => aiUsable(state.library?.settings.ai, state.aiKeySaved));
+  const explainable = items.filter((item) => !item.tool);
+  const menu: MenuEntry[] = [
+    { label: state === true ? t("cleanup.uncheckAll") : t("cleanup.checkAll"), icon: Check, disabled: selectable.length === 0, onSelect: () => setChecked(selectable, state !== true) },
+    ...(canAi && explainable.length > 0
+      ? [{ label: t("cleanup.explainGroup", { n: explainable.length }), icon: Sparkles, separated: true, onSelect: () => void explainMany(explainable) }]
+      : []),
+  ];
   return (
-    <section className="mb-1">
-      <div
-        role="button"
-        tabIndex={0}
-        aria-expanded={open}
-        onClick={onToggle}
-        onKeyDown={(event) => event.target === event.currentTarget && event.key === "Enter" && onToggle()}
-        className="flex h-8 items-center gap-2.5 rounded-md pr-3 pl-2.5 text-[12px] text-fg-3 hover:bg-hover"
-      >
-        <Tick checked={state} disabled={selectable.length === 0} label={state === true ? t("cleanup.uncheckAll") : t("cleanup.checkAll")} onChange={(on) => setChecked(selectable, on)} />
-        <Icon size={15} strokeWidth={1.75} aria-hidden className="shrink-0" />
-        <span className="font-medium text-fg-2">{label}</span>
-        <span className="tabular">{items.length}</span>
-        <ChevronRight size={13} strokeWidth={2} aria-hidden className={cx("shrink-0 transition-transform", open && "rotate-90")} />
-        <span className="ml-auto tabular">{known ? formatSize(size) : "—"}</span>
-      </div>
-      {open && items.map((item) => <Row key={item.id} item={item} />)}
+    // 展开的组是一张卡片：标题在上、下面一条细线，子项往里缩一格；收起的组只是一行
+    // 收起时边框透明：展开、收起时边框都在，标题不会挪位置
+    <section className={cx("mt-1 rounded-lg border first-of-type:mt-0", open ? "border-line" : "border-transparent")}>
+      <ContextMenu items={menu}>
+        <div
+          role="button"
+          tabIndex={0}
+          aria-expanded={open}
+          onClick={onToggle}
+          data-nav={`group:${category}`}
+          onKeyDown={(event) => {
+            if (event.target !== event.currentTarget) return;
+            if (event.key === "Enter") onToggle();
+            if (event.key === " " && selectable.length > 0) {
+              event.preventDefault();
+              setChecked(selectable, state !== true);
+            }
+          }}
+          // 类别标题一直是按钮的样子（平时就带底色），悬停时再深一点
+          className="group/header flex h-11 items-center gap-2.5 rounded-[7px] bg-hover pr-3 pl-2.5 text-[12px] text-fg-3 transition-colors hover:bg-active"
+        >
+          <Tick checked={state} disabled={selectable.length === 0} label={state === true ? t("cleanup.uncheckAll") : t("cleanup.checkAll")} onChange={(on) => setChecked(selectable, on)} />
+          <span className="font-medium text-fg-2 group-hover/header:text-fg">{label}</span>
+          <span className="tabular text-fg-4">{items.length}</span>
+          <span className="ml-auto tabular">{known ? formatSize(size) : "—"}</span>
+          {/* 折叠箭头放在最右边，和下面各项的大小一列对齐时不挡数字 */}
+          <ChevronRight size={14} strokeWidth={2} aria-hidden className={cx("-mr-1 shrink-0 text-fg-4 transition-transform", open && "rotate-90")} />
+        </div>
+      </ContextMenu>
+      {open && <div className="border-t border-line">{items.map((item) => <Row key={item.id} item={item} />)}</div>}
     </section>
   );
 }
@@ -344,6 +410,7 @@ function Row({ item }: { item: CleanItem }) {
   const select = useCleanup((state) => state.select);
   const overrides = usePrefs((state) => state.cleanupChecked);
   const attempt = useApp((state) => state.attempt);
+  const canAi = useApp((state) => aiUsable(state.library?.settings.ai, state.aiKeySaved));
   const checked = isChecked(item, overrides) && canClean(item);
   const app = item.app ?? textOf(item.name, language);
   const menu: MenuEntry[] = [
@@ -352,6 +419,10 @@ function Row({ item }: { item: CleanItem }) {
       : { label: t("cleanup.quit", { app }), icon: ExternalLink, disabled: !item.canQuit || quitting, onSelect: () => void quitApp(item) },
     ...(item.roots.length > 0 ? [{ label: t("cleanup.reveal"), icon: FolderOpen, onSelect: () => void attempt(() => api.cleanupReveal(item.id, null)) }] : []),
     ...(item.importable ? [{ label: t("cleanup.import"), icon: Import, onSelect: () => importLoose(item) }] : []),
+    ...(canAi && !item.tool ? [{ label: t("startup.explain"), icon: Sparkles, separated: true, onSelect: () => {
+      select(item.id);
+      void explainCleanup(item);
+    } }] : []),
   ];
   const subtitle = item.running ? t("cleanup.runningShort", { app }) : item.note ? t(`cleanup.note.${item.note}` as Key) : textOf(item.about, language);
   return (
@@ -362,20 +433,30 @@ function Row({ item }: { item: CleanItem }) {
         aria-pressed={selected}
         onClick={() => select(item.id)}
         onContextMenu={() => select(item.id)}
-        onKeyDown={(event) => event.target === event.currentTarget && event.key === "Enter" && select(item.id)}
-        className={cx("flex min-h-[50px] items-center gap-2.5 rounded-md py-1.5 pr-3 pl-2.5 transition-colors", selected ? "bg-active" : "hover:bg-hover")}
+        data-nav={`item:${item.id}`}
+        onKeyDown={(event) => {
+          if (event.target !== event.currentTarget) return;
+          if (event.key === "Enter") select(item.id);
+          if (event.key === " ") {
+            event.preventDefault();
+            if (canClean(item)) setChecked([item], !checked);
+          }
+        }}
+        // 往里缩一格（勾选框加间距的宽度），看得出属于上面那个类别
+        className={cx("flex h-11 items-center gap-2.5 rounded-[7px] pr-3 pl-[36px] transition-colors", selected ? "bg-active" : "hover:bg-hover")}
       >
-        <Tick checked={checked} disabled={!canClean(item)} label={checked ? t("cleanup.uncheck") : t("cleanup.check")} onChange={(on) => setChecked([item], on)} />
-        <span className={cx("flex", item.running && "opacity-50 grayscale")}>
-          <CleanIcon item={item} size={28} />
-        </span>
         <div className="min-w-0 flex-1">
+          {/* 复选框和项目名放在同一行，紧挨着名字；说明那一行和名字对齐 */}
           <div className="flex min-w-0 items-center gap-1.5">
+            <span className="mr-1 flex shrink-0">
+              <Tick checked={checked} disabled={!canClean(item)} label={checked ? t("cleanup.uncheck") : t("cleanup.check")} onChange={(on) => setChecked([item], on)} />
+            </span>
             <span className={cx("truncate text-[13px] font-medium", item.running && "text-fg-3")}>{textOf(item.name, language)}</span>
-            {item.risk !== "safe" && <Chip className="h-[18px] px-1">{t(`cleanup.risk.${item.risk}` as Key)}</Chip>}
+            {/* 列表里只标两种要留意的：删了找不回来的、要管理员权限的；“可恢复”在详情栏里看 */}
+            {item.risk === "high" && !item.tool && <Chip className="h-[18px] px-1">{t("cleanup.risk.high")}</Chip>}
             {item.admin && <Chip className="h-[18px] px-1">{t("cleanup.admin")}</Chip>}
           </div>
-          <div className={cx("flex min-w-0 items-center gap-1.5 text-[12px]", item.running ? "text-warning" : "text-fg-3")}>
+          <div className={cx("flex min-w-0 items-center gap-1.5 pl-[26px] text-[12px]", item.running ? "text-warning" : "text-fg-3")}>
             <span className="truncate">{subtitle}</span>
             {item.running && item.canQuit && (
               <button
@@ -393,6 +474,8 @@ function Row({ item }: { item: CleanItem }) {
           </div>
         </div>
         <span className={cx("tabular shrink-0 text-[13px]", checked ? "text-fg" : "text-fg-3")}>{sizeText(item, checked ? pickedSize(item, skips) : undefined)}</span>
+        {/* 给类别标题行最右边的折叠箭头留位置，大小和类别合计对齐 */}
+        <span aria-hidden className="w-2.5 shrink-0" />
       </div>
     </ContextMenu>
   );
@@ -432,7 +515,7 @@ export function CleanupDetail() {
           </div>
         </div>
         <div className="mt-2.5 flex flex-wrap gap-1">
-          <Chip>{t(`cleanup.risk.${item.risk}` as Key)}</Chip>
+          {!item.tool && <Chip>{t(`cleanup.risk.${item.risk}` as Key)}</Chip>}
           {!item.tool && <Chip>{t(`cleanup.action.${item.action}` as Key)}</Chip>}
           {item.admin && <Chip>{t("cleanup.admin")}</Chip>}
         </div>
@@ -445,7 +528,7 @@ export function CleanupDetail() {
               <div className="text-[12px] text-fg-3">
                 {item.size !== null && `${t("cleanup.filesCount", { n: item.files.toLocaleString() })} · `}
                 {item.size === null && item.files > 0 && `${t("cleanup.itemsCount", { n: item.files.toLocaleString() })} · `}
-                {t(`cleanup.riskHint.${item.risk}` as Key)}
+                {!item.tool && t(`cleanup.riskHint.${item.risk}` as Key)}
               </div>
             </div>
             <Switch checked={checked && canClean(item)} disabled={!canClean(item)} label={checked ? t("cleanup.uncheck") : t("cleanup.check")} onChange={(on) => setChecked([item], on)} />
@@ -470,9 +553,16 @@ export function CleanupDetail() {
           <div className="mt-3 rounded-lg bg-hover px-3 py-2 text-[12px] leading-relaxed text-fg-2">
             <div>{t(`cleanup.note.${item.note}` as Key)}</div>
             {item.note === "full_disk_access" && isMac && (
-              <Button size="sm" className="mt-2" onClick={() => void attempt(() => api.openStartupSettings("fullDiskAccess"))}>
-                {t("cleanup.openFullDisk")}
-              </Button>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {item.files === 0 && (
+                  <Button size="sm" onClick={() => void countTrash()}>
+                    {t("cleanup.countTrash")}
+                  </Button>
+                )}
+                <Button size="sm" variant="ghost" onClick={() => void attempt(() => api.openStartupSettings("fullDiskAccess"))}>
+                  {t("cleanup.openFullDisk")}
+                </Button>
+              </div>
             )}
           </div>
         )}
@@ -533,9 +623,9 @@ export function CleanupDetail() {
           </Button>
         )}
         {item.tool ? (
-          <Button variant="primary" className="flex-1" onClick={() => void attempt(() => api.openStartupSettings("storage"))}>
+          <Button variant="primary" className="flex-1" onClick={() => void attempt(() => api.cleanupOpenTool(item.id))}>
             <ExternalLink size={14} strokeWidth={1.75} aria-hidden />
-            {t("cleanup.openStorage")}
+            {item.tool === "app" ? t("cleanup.openApp") : t("cleanup.openStorage")}
           </Button>
         ) : (
           <Button variant="primary" className="flex-1" disabled={busy || !canClean(item) || (item.entryCount > 0 && picked === 0)} onClick={() => askClean([item.id])}>
@@ -653,7 +743,8 @@ function AiNote({ item }: { item: CleanItem }) {
   const explanation = useCleanup((state) => state.explanations[item.id]);
   const explaining = useCleanup((state) => Boolean(state.explaining[item.id]));
   const canAi = useApp((state) => aiUsable(state.library?.settings.ai, state.aiKeySaved));
-  if (!explanation && !canAi) return null;
+  // 要在别处清的项（Windows.old、应用自带的清理）不用解释
+  if (item.tool || (!explanation && !canAi)) return null;
   return (
     <section className="mt-3">
       {explanation && (

@@ -146,6 +146,10 @@ export const api = {
   /** 保存自定义的清理文件夹和排除的文件夹。受保护的文件夹返回 `cleanup_protected:路径` 这样的错误。 */
   cleanupSetOptions: (options: CleanOptions) => call<CleanOptions>("cleanup_set_options", { options }),
   cleanupHistory: () => call<CleanRun[]>("cleanup_history"),
+  /** 问访达废纸篓里有几项（macOS）。第一次会弹授权；允许了以后扫描时自动问。返回更新后的全部项。 */
+  cleanupCountTrash: () => call<CleanItem[]>("cleanup_count_trash"),
+  /** 打开要在别处清的那一项：系统的存储设置，或者那个应用。 */
+  cleanupOpenTool: (id: string) => call<void>("cleanup_open_tool", { id }),
   /** 停下正在进行的扫描：已经量完的照样作为结果。 */
   cleanupCancelScan: () => call<void>("cleanup_cancel_scan"),
   /** 只重新量这几项，返回更新后的全部项。 */

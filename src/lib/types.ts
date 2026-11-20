@@ -578,6 +578,8 @@ export interface CleanOptions {
   exclude: string[];
   /** 清 Cookie 时保留这些网站（域名，包括子域名）。 */
   keepCookies: string[];
+  /** 用户允许过控制访达：扫描时问访达废纸篓里有几项。 */
+  askFinder?: boolean;
   /** 自己加的清理规则。旧版本里只有文件夹的 `custom` 存的时候会并进来。 */
   rules: CustomCleanRule[];
 }

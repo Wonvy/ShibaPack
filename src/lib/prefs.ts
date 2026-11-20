@@ -60,8 +60,8 @@ interface Prefs {
   tableColumns: Record<TableId, TableColumns>;
   /** 清理页里手动勾上或取消的项（项 id → 勾没勾）。没动过的按默认：安全档勾上，别的不勾。 */
   cleanupChecked: Record<string, boolean>;
-  /** 清理页里折叠起来的类别。 */
-  cleanupCollapsed: string[];
+  /** 清理页里手动展开或收起过的类别（类别 → 展开没有）。没动过的按默认：有勾选的展开，没有的收起。 */
+  cleanupOpen: Record<string, boolean>;
   set: (patch: Partial<Omit<Prefs, "set" | "toggleCollapsed" | "sortBy" | "toggleColumn" | "setColumnWidth" | "resetColumns">>) => void;
   toggleCollapsed: (id: string) => void;
   sortBy: (key: SortKey) => void;
@@ -96,7 +96,7 @@ export const usePrefs = create<Prefs>()(
       addButtonPosition: null,
       tableColumns: { library: NO_COLUMNS, installed: NO_COLUMNS, startup: NO_COLUMNS, service: NO_COLUMNS },
       cleanupChecked: {},
-      cleanupCollapsed: [],
+      cleanupOpen: {},
       set: (patch) =>
         set((state) => {
           const { sidebarWidth = state.sidebarWidth } = patch;

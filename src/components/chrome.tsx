@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { type PointerEvent, useRef, useState } from "react";
 import { api, isMac, isTauri, pickFiles, pickFolder, windowControls } from "../lib/api";
+import { useCleanup } from "../lib/cleanup";
 import { fileCount, formatSize, softwareSize } from "../lib/library";
 import { TOPBAR, usePrefs } from "../lib/prefs";
 import { useApp, useT } from "../lib/store";
@@ -377,6 +378,9 @@ export function StatusBar() {
   const chooseRepo = useApp((state) => state.chooseRepo);
   const changeRepoLabel = t("storage.changeFolder");
   const changeRepoHover = useHoverCard(changeRepoLabel, "label");
+  const route = useApp((state) => state.route);
+  const cleanupSummary = useCleanup((state) => state.summary);
+  const cleanupBusy = useCleanup((state) => state.cleaning || state.scanning);
   if (!library) return null;
   const busy = checking !== null || downloading !== undefined;
   const percent = downloading?.total ? `${Math.round((downloading.received / downloading.total) * 100)}%` : "";
@@ -394,6 +398,13 @@ export function StatusBar() {
       {progress ? (
         <ImportProgress progress={progress} />
       ) : (
+        route === "cleanup" ? (
+          // 清理页：状态栏写选了多少、直接删除和移到回收站各多少
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className={cx("size-1.5 shrink-0 rounded-full", cleanupBusy ? "bg-accent" : "bg-success")} />
+            <span className="tabular truncate">{cleanupSummary}</span>
+          </span>
+        ) : (
         <>
           <span className="flex min-w-0 items-center gap-1.5">
             <span className={cx("size-1.5 shrink-0 rounded-full", busy ? "bg-accent" : "bg-success")} />
@@ -403,6 +414,7 @@ export function StatusBar() {
           <span className="tabular shrink-0">{t("status.files", { n: files })}</span>
           <span className="tabular shrink-0">{formatSize(size)}</span>
         </>
+        )
       )}
       <div className={cx("ml-auto flex min-w-6 items-center", progress && "max-w-[28%]")}>
         <button

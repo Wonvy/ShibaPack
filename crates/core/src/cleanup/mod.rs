@@ -123,6 +123,9 @@ pub struct Options {
     /// 用户自己加的清理规则。旧版本里只有文件夹的 `custom` 存的时候会并进来。
     #[serde(default)]
     pub rules: Vec<CustomRule>,
+    /// macOS 上用户点过“看看废纸篓”并允许了控制访达：以后扫描时直接问访达里面有几项，不再弹授权。
+    #[serde(default)]
+    pub ask_finder: bool,
 }
 
 /// 用户自己加的一条清理规则：清某个文件夹下第一层的东西。
@@ -192,6 +195,7 @@ pub fn check_options(guard: &Guard, options: Options) -> Result<Options, String>
             out.rules.push(rule);
         }
     }
+    out.ask_finder = options.ask_finder;
     for path in options.exclude {
         if !path.is_absolute() {
             return Err(format!("cleanup_missing:{}", path.display()));
@@ -227,6 +231,8 @@ pub struct Context {
     pub ask_finder: bool,
     /// 放缓存的文件夹（散落安装包算过的 SHA-256）。本机应用数据目录，不在仓库里。
     pub cache_dir: Option<PathBuf>,
+    /// 这台电脑上装的软件（名字，位置）：用来列出“用它自带的清理”的应用。
+    pub installed: Vec<(String, PathBuf)>,
 }
 
 impl Context {
@@ -247,7 +253,7 @@ impl Context {
             .flat_map(|r| r.roots.get(os).iter().flat_map(|t| vars::expand(t, &vars)))
             .collect();
         let guard = guard.with_admin_roots(&admin_roots);
-        Context { os, vars, guard, options, library, repo_downloads, elevated: false, repo_root: None, ask_finder: false, cache_dir: None }
+        Context { os, vars, guard, options, library, repo_downloads, elevated: false, repo_root: None, ask_finder: false, cache_dir: None, installed: Vec::new() }
     }
 }
 
@@ -327,7 +333,7 @@ impl Scan {
         let me = ctx.vars.get("home").and_then(owner);
         let now = SystemTime::now();
         let list = sources(ctx);
-        let loose = ids.iter().any(|id| id.starts_with("installers.") && id.ends_with("-library")).then(|| loose_found(ctx));
+        let loose = ids.iter().any(|id| id.starts_with("installers.") && id.ends_with("-library")).then(|| loose_found(ctx, &AtomicBool::new(false)));
         for id in ids {
             let fresh: Option<Found> = match id.as_str() {
                 "trash.empty" => trash_found(ctx),
@@ -578,6 +584,11 @@ fn still_ok(ctx: &Context, filter: &Filter, root: &Path, path: &Path, me: Option
 }
 
 fn measure_source(source: &Source, ctx: &Context, me: Option<u32>, now: SystemTime) -> Option<Found> {
+    measure_source_until(source, ctx, me, now, &AtomicBool::new(false))
+}
+
+/// `cancel` 变成真时马上停下，这一处不算（量到一半的大小不准）。
+fn measure_source_until(source: &Source, ctx: &Context, me: Option<u32>, now: SystemTime, cancel: &AtomicBool) -> Option<Found> {
     let scope = source.filter.scope();
     let mut seen = HashSet::new();
     let mut targets: Vec<(Target, measure::Measured)> = Vec::new();
@@ -602,7 +613,10 @@ fn measure_source(source: &Source, ctx: &Context, me: Option<u32>, now: SystemTi
             if source.filter.own_only && me.is_some() && owner(&path) != me {
                 continue;
             }
-            let measured = measure::measure(&path, &mut seen);
+            let measured = measure::measure_until(&path, &mut seen, cancel);
+            if measured.cancelled {
+                return None;
+            }
             if measured.in_use {
                 continue;
             }
@@ -723,6 +737,41 @@ fn clipboard_found() -> Option<Found> {
     Some(plain_found(item))
 }
 
+/// 自己有清理缓存功能、但没有官方说明哪些文件能删的应用：键、能认出它的名字、显示的名字。
+/// 它们的文件夹里缓存和聊天记录混在一起，ShibaPack 不直接删，只提醒用它自带的清理，并能打开它。
+const APP_TOOLS: &[(&str, &[&str], &str, &str)] = &[
+    ("wechat", &["wechat", "微信", "weixin"], "微信", "WeChat"),
+    ("wecom", &["wecom", "企业微信", "wxwork"], "企业微信", "WeCom"),
+    ("feishu", &["feishu", "飞书", "lark"], "飞书", "Feishu / Lark"),
+    ("dingtalk", &["dingtalk", "钉钉"], "钉钉", "DingTalk"),
+    ("qq", &["qq"], "QQ", "QQ"),
+];
+
+fn app_tools_found(ctx: &Context) -> Vec<Found> {
+    let mut out = Vec::new();
+    for (key, names, zh, en) in APP_TOOLS {
+        let Some((_, location)) = ctx.installed.iter().find(|(name, _)| names.contains(&name.trim().to_lowercase().as_str())) else { continue };
+        let mut item = plain_item(
+            &format!("apps.{key}-builtin"),
+            Category::Apps,
+            Risk::Recoverable,
+            Action::Delete,
+            Text::new(&format!("{zh} 自带的清理"), &format!("{en} built-in cleanup")),
+            Text::new(
+                &format!("{zh}的缓存和聊天记录、收到的文件放在一起，没有官方说明哪些能删，所以 ShibaPack 不直接删。{zh}自己有清理缓存的功能（一般在设置里的存储空间），用它清最稳妥。"),
+                &format!("{en} keeps its cache next to chat history and received files, and there is no official guidance on which files are safe to delete, so ShibaPack doesn't delete them. Its own cache cleanup (usually under storage in its settings) is the safe way."),
+            ),
+            Text::new("在应用里清理，只清缓存的话聊天记录不受影响。", "Clean it inside the app. Clearing only the cache leaves chat history alone."),
+        );
+        item.app = Some(en.split(" / ").next().unwrap_or(en).to_string());
+        item.roots = vec![location.to_string_lossy().to_string()];
+        item.tool = Some("app".into());
+        item.note = Some("app_tool".into());
+        out.push(plain_found(item));
+    }
+    out
+}
+
 /// Windows.old：升级系统后留下的旧系统。这里不删，交给系统设置里的“临时文件”清理。
 fn windows_old_found(ctx: &Context) -> Option<Found> {
     if ctx.os != Os::Windows {
@@ -779,10 +828,13 @@ fn trash_found(ctx: &Context) -> Option<Found> {
 }
 
 /// 下载文件夹和桌面上的安装包：和仓库里一模一样的一项，还没收进仓库的一项。
-fn loose_found(ctx: &Context) -> Vec<Found> {
+fn loose_found(ctx: &Context, cancel: &AtomicBool) -> Vec<Found> {
     let dirs: Vec<PathBuf> = ["downloads", "desktop"].iter().filter_map(|n| ctx.vars.get(n)).filter(|d| vars::real_dir(d)).map(Path::to_path_buf).collect();
     let mut hashes = ctx.cache_dir.as_deref().map(special::HashCache::load).unwrap_or_default();
-    let all = special::loose_installers(&dirs, &ctx.library, &mut hashes);
+    let all = special::loose_installers(&dirs, &ctx.library, &mut hashes, cancel);
+    if cancel.load(Ordering::Relaxed) {
+        return Vec::new();
+    }
     if let Some(dir) = &ctx.cache_dir {
         hashes.save(dir);
     }
@@ -891,6 +943,7 @@ fn scan_full(ctx: &Context, on_item: &(dyn Fn(&CleanItem) + Sync), on_progress: 
         Trash,
         Clipboard,
         WindowsOld,
+        AppTools,
     }
     let running = special::running_processes();
     let me = ctx.vars.get("home").and_then(owner);
@@ -900,6 +953,7 @@ fn scan_full(ctx: &Context, on_item: &(dyn Fn(&CleanItem) + Sync), on_progress: 
     tasks.push(Task::Trash);
     tasks.push(Task::Clipboard);
     tasks.push(Task::WindowsOld);
+    tasks.push(Task::AppTools);
     let next = AtomicUsize::new(0);
     let finished = AtomicUsize::new(0);
     on_progress(0, tasks.len());
@@ -914,11 +968,12 @@ fn scan_full(ctx: &Context, on_item: &(dyn Fn(&CleanItem) + Sync), on_progress: 
                 let i = next.fetch_add(1, Ordering::SeqCst);
                 let Some(task) = tasks.get(i) else { break };
                 let found = match task {
-                    Task::Source(source) => measure_source(source, ctx, me, now).into_iter().collect(),
-                    Task::Loose => loose_found(ctx),
+                    Task::Source(source) => measure_source_until(source, ctx, me, now, cancel).into_iter().collect(),
+                    Task::Loose => loose_found(ctx, cancel),
                     Task::Trash => trash_found(ctx).into_iter().collect::<Vec<_>>(),
                     Task::Clipboard => clipboard_found().into_iter().collect(),
                     Task::WindowsOld => windows_old_found(ctx).into_iter().collect(),
+                    Task::AppTools => app_tools_found(ctx),
                 };
                 for mut f in found {
                     f.item.running = special::any_running(&f.processes, &running);
@@ -1463,6 +1518,23 @@ mod tests {
         assert!(total > 10 && seen.contains(&(total, total)), "{seen:?}");
         let cancelled = scan_with(&ctx, &|_| {}, &|_, _| {}, &AtomicBool::new(true));
         assert!(cancelled.items().is_empty(), "一开始就取消：什么都不量");
+    }
+
+    #[test]
+    fn apps_with_their_own_cleanup_are_pointed_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let mut ctx = context(&home, Options::default());
+        ctx.installed = vec![("WeChat".into(), PathBuf::from("/Applications/WeChat.app")), ("Notes".into(), PathBuf::from("/Applications/Notes.app"))];
+        let found = scan(&ctx, &|_| {});
+        let item = found.item("apps.wechat-builtin").expect("微信");
+        assert_eq!(item.tool.as_deref(), Some("app"));
+        assert_eq!(item.roots, vec!["/Applications/WeChat.app".to_string()]);
+        assert!(found.item("apps.feishu-builtin").is_none(), "没装的不列");
+        // 这里不清：只能用它自己的清理
+        let (report, _) = clean(&found, &[Pick { id: item.id.clone(), skip: vec![] }], &ctx, &|_, _| {});
+        assert_eq!(report.skipped[0].reason, "not_supported");
     }
 
     /// 只读地扫一遍这台电脑，打印每一项：`cargo test -p shibapack-core scans_this_machine -- --ignored --nocapture`。

@@ -1103,9 +1103,14 @@ fn cleanup_context(app: &AppHandle, state: &State<AppState>) -> CmdResult<cleanu
     let local = local_state_dir(app)?;
     let options = cleanup::load_options(&local);
     let mut ctx = cleanup::Context::new(root.as_deref(), downloads, library, options);
-    // 自检时不问访达：会弹出授权提示把自检卡住
-    ctx.ask_finder = state.selftest.is_none();
+    // 用户点过“看看废纸篓”并允许了，扫描时才问访达（否则第一次扫描就会弹授权）；自检时不问
+    ctx.ask_finder = ctx.options.ask_finder && state.selftest.is_none();
     ctx.cache_dir = Some(local);
+    ctx.installed = state
+        .installed
+        .lock()
+        .map(|apps| apps.iter().filter(|app| !app.location.is_empty()).map(|app| (app.name.clone(), PathBuf::from(&app.location))).collect())
+        .unwrap_or_default();
     Ok(ctx)
 }
 
@@ -1188,6 +1193,60 @@ async fn cleanup_run(app: AppHandle, picks: Vec<cleanup::Pick>) -> CmdResult<cle
         // 扫描结果留着：界面接着用 `cleanup_rescan` 只重新量清过的这几项。
         // 已经不在的条目就算再传回来，删之前的复查也会当作“已经不在了”
         Ok(report)
+    })
+    .await
+}
+
+/// 问访达废纸篓里有几项（macOS 没有完全磁盘访问权限时）。第一次会弹“允许控制访达”的授权。
+/// 允许了就记下来，以后扫描时直接问；不允许时返回 `automation_denied`。返回更新后的全部项。
+#[tauri::command]
+async fn cleanup_count_trash(app: AppHandle) -> CmdResult<Vec<cleanup::CleanItem>> {
+    blocking(app, move |app, state| {
+        #[cfg(target_os = "macos")]
+        {
+            if cleanup::special::finder_trash_count().is_none() {
+                return Err("automation_denied".into());
+            }
+            let local = local_state_dir(app)?;
+            let mut options = cleanup::load_options(&local);
+            options.ask_finder = true;
+            cleanup::save_options(&local, &options).map_err(|e| e.to_string())?;
+            let _turn = state.cleanup_turn.lock().unwrap_or_else(|e| e.into_inner());
+            let ctx = cleanup_context(app, &state)?;
+            let mut cached = state.cleanup.lock().map_err(|_| "internal".to_string())?;
+            let scan = cached.as_mut().ok_or_else(|| "not_found".to_string())?;
+            scan.rescan(&ctx, &["trash.empty".to_string()]);
+            Ok(scan.items())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (app, state);
+            Err("not_supported".into())
+        }
+    })
+    .await
+}
+
+/// 这一项要在别处清：打开系统的存储设置（Windows.old），或者打开那个应用（微信、飞书……用它自带的清理）。
+#[tauri::command]
+async fn cleanup_open_tool(app: AppHandle, id: String) -> CmdResult<()> {
+    blocking(app, move |app, state| {
+        let (tool, root) = {
+            let cached = state.cleanup.lock().map_err(|_| "internal".to_string())?;
+            let item = cached.as_ref().and_then(|scan| scan.item(&id)).ok_or_else(|| "not_found".to_string())?;
+            (item.tool.clone().unwrap_or_default(), item.roots.first().cloned())
+        };
+        match tool.as_str() {
+            "storage" => {
+                let url = if cfg!(windows) { "ms-settings:storagesense" } else { "x-apple.systempreferences:com.apple.settings.Storage" };
+                app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+            }
+            "app" => {
+                let path = root.filter(|p| Path::new(p).exists()).ok_or_else(|| "file_missing".to_string())?;
+                app.opener().open_path(path, None::<&str>).map_err(|e| e.to_string())
+            }
+            _ => Err("not_supported".into()),
+        }
     })
     .await
 }
@@ -2048,6 +2107,8 @@ pub fn run() {
     #[cfg(desktop)]
     if std::env::var_os("SHIBAPACK_CONFIG").is_none() {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // 第二次启动的那个进程会悄悄退出：在这边记一句，不然在终端里只看到它“直接退回提示符”
+            eprintln!("[single-instance] 又启动了一次 ShibaPack，已经把这个窗口叫到前面（第二个进程已退出）");
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
                 let _ = window.show();
@@ -2172,6 +2233,8 @@ pub fn run() {
             cleanup_history,
             cleanup_cookie_sites,
             cleanup_cancel_scan,
+            cleanup_count_trash,
+            cleanup_open_tool,
             cleanup_rescan,
             ai_explain_cleanup,
             ai_explain_startup_many,

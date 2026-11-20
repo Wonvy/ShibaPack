@@ -8,10 +8,13 @@ One section per version, titled `## <version>`, with a Chinese and an English pa
 `.github/workflows/release.yml` puts that section into the GitHub Release notes and `latest.json`; the update window
 in ShibaPack (opened from the version number in the bottom-right corner) shows the part that matches the interface language.
 
-## 0.12.0
+## 0.13.0
 
 ### 中文
 
+- 0.12.0 没能发布出来（自动测试在 Linux 上没过），它的内容都在这个版本里。
+- 磁盘分析边扫边显示：开始扫描后马上就有图，前两层的文件夹大小一边扫一边涨，没扫完的标着斜纹和“…”；扫描中也能点进第一层的文件夹看，“最大的文件”清单也会边扫边更新。
+- 磁盘扫描更快：所有文件夹一起扫，不再等一个大文件夹扫完才开始下一个。在一个约 89 万个文件的用户文件夹上，从约 7 秒降到约 6 秒。
 - 新增“监控安装”：安装前记录系统的状态，装完列出安装程序改了什么，包括程序、数据、设置、开机启动项、后台服务、驱动、快捷方式、文件关联、环境变量和注册表（Windows）。
   - 点“安装”时勾选“监控这次安装”，或者右键安装包选“监控安装”。可以选“标准”或“深度”范围。
   - 安装时屏幕右上角有一个总在最前面的小窗，实时显示改动了哪些文件，装好后可以直接在小窗里点“完成”。
@@ -26,6 +29,9 @@ in ShibaPack (opened from the version number in the bottom-right corner) shows t
 
 ### English
 
+- 0.12.0 was never released (an automated test failed on Linux); everything from it is included in this version.
+- Disk analysis shows results while it scans: the chart appears right away and the first two levels of folders grow as they are counted, with unfinished ones striped and marked with "…". You can open first-level folders and see the Largest files list update during the scan.
+- Faster disk scans: all folders are scanned together instead of waiting for one big folder to finish before starting the next. On a home folder with about 890,000 files, a scan went from about 7 seconds to about 6.
 - New: monitor an installation. ShibaPack records the system before installing and lists what the installer changed afterwards: apps, data, settings, startup items, background services, drivers, shortcuts, file associations, environment variables and, on Windows, the registry.
   - Tick "Monitor this installation" when you click Install, or right-click an installer and choose Monitor installation. Choose a Standard or Deep scope.
   - While installing, a small always-on-top window in the top-right corner shows changed files live. Click Done right there when the installer has finished.
@@ -37,6 +43,10 @@ in ShibaPack (opened from the version number in the bottom-right corner) shows t
 - The disk treemap now draws a single level with folder icons, rounded blocks and centered labels. Hovering an item in the list on the right highlights its block, and the other way round.
 - Drag the divider to resize the list on the right of disk analysis; double-click it to reset.
 - Switch Recently installed on Home between a list and icons with the buttons in its top-right corner.
+
+## 0.12.0
+
+未发布，内容见 0.13.0。 / Not released; see 0.13.0.
 
 ## 0.11.0
 

@@ -1847,10 +1847,10 @@ fn saved_path(state: &State<AppState>, id: &str) -> CmdResult<(SavedPath, PathBu
 
 /// 收藏一批路径（拖进来的、选的、手动输入的，可以带 `~`、`%APPDATA%`、`$HOME` 这类变量）。
 #[tauri::command]
-async fn paths_add(app: AppHandle, paths: Vec<String>) -> CmdResult<PathsAdded> {
+async fn paths_add(app: AppHandle, paths: Vec<String>, convert: Option<bool>) -> CmdResult<PathsAdded> {
     blocking(app, move |_, state| {
         with_repo(&state, |repo| {
-            let added = paths::add(repo, &paths)?;
+            let added = paths::add(repo, &paths, convert.unwrap_or(true))?;
             Ok(PathsAdded { library: repo.lib.clone(), added })
         })
     })
@@ -1858,8 +1858,8 @@ async fn paths_add(app: AppHandle, paths: Vec<String>) -> CmdResult<PathsAdded> 
 }
 
 #[tauri::command]
-async fn path_edit(app: AppHandle, id: String, path: Option<String>, note: Option<String>) -> CmdResult<Library> {
-    blocking(app, move |_, state| mutate(&state, |repo| paths::edit(repo, &id, path.as_deref(), note.as_deref()))).await
+async fn path_edit(app: AppHandle, id: String, path: Option<String>, note: Option<String>, convert: Option<bool>) -> CmdResult<Library> {
+    blocking(app, move |_, state| mutate(&state, |repo| paths::edit(repo, &id, path.as_deref(), note.as_deref(), convert.unwrap_or(true)))).await
 }
 
 #[tauri::command]

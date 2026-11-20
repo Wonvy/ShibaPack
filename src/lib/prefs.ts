@@ -58,6 +58,8 @@ interface Prefs {
   installedView: InstalledView;
   /** “启动与服务”页看的是启动项还是服务。 */
   startupTab: "startup" | "service";
+  /** 收藏路径时把绝对路径自动换成变量的写法（`~`、`%APPDATA%`）。 */
+  pathsConvert: boolean;
   /** 顶栏搜索的范围。 */
   searchScope: SearchScope;
   /** 固定在搜索框里的搜索范围。 */
@@ -112,6 +114,7 @@ export const usePrefs = create<Prefs>()(
       detailMoreOpen: false,
       installedView: "list",
       startupTab: "startup",
+      pathsConvert: true,
       searchScope: "all",
       searchShortcuts: ["github", "homebrew"],
       addButtonPosition: null,

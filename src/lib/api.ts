@@ -199,8 +199,9 @@ export const api = {
   openStartupSettings: (page: "loginItems" | "automation" | "appManagement" | "fullDiskAccess" | "storage") =>
     call<void>("open_startup_settings", { page }),
   /** 收藏路径（可以带 `~`、`%APPDATA%`、`$HOME` 这类变量；绝对路径会自动换成变量的写法）。已收藏过的跳过。 */
-  pathsAdd: (paths: string[]) => call<{ library: Library; added: string[] }>("paths_add", { paths }),
-  pathEdit: (id: string, edit: { path?: string; note?: string }) => call<Library>("path_edit", { id, ...edit }),
+  pathsAdd: (paths: string[], convert: boolean) => call<{ library: Library; added: string[] }>("paths_add", { paths, convert }),
+  /** `convert` 为假时路径照写，不换成变量（切换写法时用）。 */
+  pathEdit: (id: string, edit: { path?: string; note?: string; convert?: boolean }) => call<Library>("path_edit", { id, ...edit }),
   pathsRemove: (ids: string[], deleteBackups: boolean) => call<Library>("paths_remove", { ids, deleteBackups }),
   pathStates: () => call<Record<string, PathState>>("path_states"),
   pathBackup: (id: string) => call<PathBackup>("path_backup", { id }),

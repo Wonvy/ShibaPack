@@ -347,6 +347,8 @@ export interface PathState {
   backups: number;
   lastBackup: string | null;
   backupSize: number;
+  /** 这个路径能写成的几种样子，最推荐的在前，最后是完整路径。展开不了时是空的。 */
+  forms: string[];
 }
 
 /** 一次备份。 */

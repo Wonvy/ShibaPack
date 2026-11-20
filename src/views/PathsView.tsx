@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Archive,
   CheckSquare,
+  ChevronDown,
   Copy,
   File,
   Folder,
@@ -24,9 +25,10 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { prompt } from "../components/dialogs";
-import { Button, Chip, ContextMenu, Dropdown, EmptyState, IconButton, type MenuEntry, cx } from "../components/ui";
+import { Button, Chip, ContextMenu, Dropdown, EmptyState, IconButton, type MenuEntry, Switch, cx } from "../components/ui";
 import { api, pickPaths } from "../lib/api";
 import { formatDate, formatSize } from "../lib/library";
+import { usePrefs } from "../lib/prefs";
 import { addPaths, backupPaths, deleteBackup, pathTitle, removePaths, restoreBackup, usePaths } from "../lib/paths";
 import { useApp, useLanguage, useT } from "../lib/store";
 import type { PathState, SavedPath } from "../lib/types";
@@ -160,6 +162,7 @@ export function PathsView({ detailToggle }: { detailToggle: ReactNode }) {
 function AddPathMenu({ children, align = "end" }: { children: ReactNode; align?: "start" | "end" }) {
   const t = useT();
   const attempt = useApp((state) => state.attempt);
+  const convert = usePrefs((state) => state.pathsConvert);
   const pick = async (directory: boolean) => {
     const picked = await attempt(() => pickPaths(directory));
     if (picked?.length) await addPaths(picked);
@@ -175,6 +178,7 @@ function AddPathMenu({ children, align = "end" }: { children: ReactNode; align?:
         { label: t("paths.addFolder"), icon: Folder, onSelect: () => void pick(true) },
         { label: t("paths.addFile"), icon: File, onSelect: () => void pick(false) },
         { label: t("paths.addTyped"), icon: TextCursorInput, onSelect: () => void type() },
+        { label: t("paths.autoConvert"), checked: convert, separated: true, onSelect: () => usePrefs.getState().set({ pathsConvert: !convert }) },
       ]}
     >
       {children}
@@ -219,8 +223,49 @@ async function editNote(item: SavedPath, t: T) {
 async function editPath(item: SavedPath, t: T) {
   const path = await prompt({ title: t("paths.editPath"), label: t("paths.typeLabel"), initial: item.path, placeholder: t("paths.typePlaceholder") });
   if (path === null || !path.trim() || path.trim() === item.path) return;
-  const ok = await useApp.getState().apply(() => api.pathEdit(item.id, { path: path.trim() }));
+  const ok = await useApp.getState().apply(() => api.pathEdit(item.id, { path: path.trim(), convert: usePrefs.getState().pathsConvert }));
   if (ok) await usePaths.getState().load();
+}
+
+/**
+ * 切换路径的写法：用变量（换电脑、换用户名也对得上）还是完整路径。Windows 上能用好几个变量时都列出来。
+ * 选了就照写，不再自动换。
+ */
+function FormSwitch({ item, forms }: { item: SavedPath; forms: string[] }) {
+  const t = useT();
+  const full = forms[forms.length - 1];
+  const current = forms.find((form) => form === item.path) ?? (item.path === full ? full : null);
+  const usingVar = current !== full;
+  const choose = async (form: string) => {
+    if (form === item.path) return;
+    const ok = await useApp.getState().apply(() => api.pathEdit(item.id, { path: form, convert: false }));
+    if (ok) await usePaths.getState().load();
+  };
+  // 只有两种写法（macOS 上的 ~ 和完整路径）：一个开关；Windows 上有好几个变量可选：一个菜单
+  if (forms.length === 2) {
+    return (
+      <label className="ml-auto flex cursor-pointer items-center gap-1.5 text-[12px] text-fg-3">
+        {t("paths.useVariable")}
+        <Switch checked={usingVar} label={t("paths.useVariable")} onChange={(on) => void choose(on ? forms[0] : full)} />
+      </label>
+    );
+  }
+  return (
+    <span className="ml-auto">
+      <Dropdown
+        items={forms.map((form, index) => ({
+          label: index === forms.length - 1 ? `${t("paths.fullPath")}  ${form}` : form,
+          checked: form === current,
+          onSelect: () => void choose(form),
+        }))}
+      >
+        <button type="button" className="flex items-center gap-0.5 rounded px-1 text-[12px] text-fg-3 hover:bg-hover hover:text-fg">
+          {usingVar ? t("paths.formVariable") : t("paths.fullPath")}
+          <ChevronDown size={13} strokeWidth={1.75} aria-hidden />
+        </button>
+      </Dropdown>
+    </span>
+  );
 }
 
 /** 路径的图标：文件夹、文件；不在了或者展开不了时是警告。 */
@@ -419,7 +464,10 @@ function PathSingle() {
           className="mt-1 w-full resize-y rounded-md border border-line-strong bg-bg px-2.5 py-1.5 text-[13px] leading-relaxed text-fg outline-none transition-colors placeholder:text-fg-3 focus:border-accent focus:ring-1 focus:ring-accent"
         />
 
-        <div className="mt-3 text-[12px] font-medium text-fg-2">{t("paths.path")}</div>
+        <div className="mt-3 flex items-center gap-2">
+          <span className="text-[12px] font-medium text-fg-2">{t("paths.path")}</span>
+          {state && state.forms.length > 1 && <FormSwitch item={item} forms={state.forms} />}
+        </div>
         <div className="selectable mt-1 rounded-md bg-hover px-2.5 py-1.5 font-mono text-[12px] leading-relaxed break-all">{item.path}</div>
         {portable && (
           <div className="selectable mt-1 px-0.5 text-[12px] leading-relaxed break-all text-fg-3">

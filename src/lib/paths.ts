@@ -6,6 +6,7 @@ import { confirm } from "../components/dialogs";
 import { api } from "./api";
 import { type Key, errorText, translate } from "./i18n";
 import { formatSize } from "./library";
+import { usePrefs } from "./prefs";
 import { useApp } from "./store";
 import type { PathBackup, PathState } from "./types";
 
@@ -83,7 +84,7 @@ export async function addPaths(paths: string[]): Promise<string[]> {
   const app = useApp.getState();
   let added: string[] = [];
   const ok = await app.apply(async () => {
-    const result = await api.pathsAdd(paths);
+    const result = await api.pathsAdd(paths, usePrefs.getState().pathsConvert);
     added = result.added;
     return result.library;
   });

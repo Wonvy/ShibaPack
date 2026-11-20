@@ -17,11 +17,12 @@ import {
   X,
   TriangleAlert,
 } from "lucide-react";
-import { type PointerEvent, useRef, useState } from "react";
+import { type PointerEvent, useMemo, useRef, useState } from "react";
 import { api, isMac, isTauri, pickFiles, pickFolder, windowControls } from "../lib/api";
+import { pathTitle, usePaths } from "../lib/paths";
 import { useCleanup } from "../lib/cleanup";
 import { useDisk } from "../lib/disk";
-import { fileCount, formatSize, softwareSize } from "../lib/library";
+import { categoryPath, fileCount, filterSoftware, formatSize, softwareSize } from "../lib/library";
 import { TOPBAR, usePrefs } from "../lib/prefs";
 import { useApp, useT } from "../lib/store";
 import type { Progress } from "../lib/types";
@@ -407,6 +408,8 @@ export function StatusBar() {
       ) : (
         route === "disk" ? (
           <DiskStatus />
+        ) : route === "paths" ? (
+          <PathsStatus />
         ) : route === "cleanup" ? (
           // 清理页：状态栏写选了多少、直接删除和移到回收站各多少
           <span className="flex min-w-0 items-center gap-1.5">
@@ -419,9 +422,15 @@ export function StatusBar() {
             <span className={cx("size-1.5 shrink-0 rounded-full", busy ? "bg-accent" : "bg-success")} />
             <span className="max-w-[360px] truncate">{activity}</span>
           </span>
-          <span className="tabular shrink-0">{t("status.software", { n: library.software.length })}</span>
-          <span className="tabular shrink-0">{t("status.files", { n: files })}</span>
-          <span className="tabular shrink-0">{formatSize(size)}</span>
+          {route === "library" ? (
+            <LibraryCounts />
+          ) : (
+            <>
+              <span className="tabular shrink-0">{t("status.software", { n: library.software.length })}</span>
+              <span className="tabular shrink-0">{t("status.files", { n: files })}</span>
+              <span className="tabular shrink-0">{formatSize(size)}</span>
+            </>
+          )}
         </>
         )
       )}
@@ -558,6 +567,91 @@ export function ToastView() {
 }
 
 /** 磁盘分析页的状态栏：扫描进度；扫完后写现在这一层多大、多少个文件、整个位置多大、用了多久、几个文件夹没有权限。 */
+/**
+ * 软件库的状态栏：跟着左边点的入口（所有、收藏、更新、未分类、某个分类）走，
+ * 写这个入口的名字和里面的软件数、安装包数、大小。平台、安装状态、搜索又筛掉一些时写“列出 n / 共 m 个”。多选时加上选了几个。
+ */
+function LibraryCounts() {
+  const t = useT();
+  const library = useApp((state) => state.library);
+  const scope = useApp((state) => state.scope);
+  const platform = useApp((state) => state.platform);
+  const installFilter = useApp((state) => state.installFilter);
+  const links = useApp((state) => state.links);
+  const search = useApp((state) => state.search);
+  const selected = useApp((state) => state.selectedIds.length);
+  const counts = useMemo(() => {
+    if (!library) return null;
+    const inScope = filterSoftware(library.software, library.categories, { scope, platform: "all", installFilter: "all", links, search: "" });
+    const shown = filterSoftware(inScope, library.categories, { scope: { kind: "all" }, platform, installFilter, links, search });
+    return {
+      total: inScope.length,
+      shown: shown.length,
+      files: shown.reduce((sum, s) => sum + fileCount(s), 0),
+      size: shown.reduce((sum, s) => sum + softwareSize(s), 0),
+    };
+  }, [library, scope, platform, installFilter, links, search]);
+  if (!library || !counts) return null;
+  const title =
+    scope.kind === "category"
+      ? categoryPath(library.categories, scope.id)
+      : scope.kind === "all"
+        ? ""
+        : t(scope.kind === "starred" ? "nav.starred" : scope.kind === "updates" ? "nav.updates" : "nav.uncategorized");
+  const narrowed = counts.shown !== counts.total;
+  return (
+    <>
+      {title && (
+        <span className="min-w-0 max-w-[200px] truncate font-medium text-fg-2" title={title}>
+          {title}
+        </span>
+      )}
+      <span className="tabular shrink-0">
+        {narrowed ? t("status.softwareOf", { n: counts.shown, total: counts.total }) : t("status.software", { n: counts.total })}
+      </span>
+      <span className="tabular shrink-0">{t("status.files", { n: counts.files })}</span>
+      <span className="tabular shrink-0">{formatSize(counts.size)}</span>
+      {selected > 1 && <span className="tabular shrink-0">{t("status.selected", { n: selected })}</span>}
+    </>
+  );
+}
+
+/** 路径页的状态栏：在备份或恢复哪一条；平时是收藏了多少、备份过多少、备份占多大，有不在了的也提一句。 */
+function PathsStatus() {
+  const t = useT();
+  const items = useApp((state) => state.library?.paths);
+  const states = usePaths((state) => state.states);
+  const busy = usePaths((state) => state.busy);
+  const selected = usePaths((state) => state.selectedIds.length);
+  const list = items ?? [];
+  const working = Object.entries(busy)[0];
+  const workingItem = working && list.find((item) => item.id === working[0]);
+  const activity = workingItem
+    ? t(working[1] === "backup" ? "paths.status.backingUp" : "paths.status.restoring", { name: pathTitle(workingItem), n: Object.keys(busy).length })
+    : t("status.ready");
+  const known = list.map((item) => states?.[item.id]).filter((state) => state !== undefined);
+  const backedUp = known.filter((state) => state.backups > 0).length;
+  const missing = known.filter((state) => !state.exists).length;
+  const size = known.reduce((sum, state) => sum + state.backupSize, 0);
+  return (
+    <>
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className={cx("size-1.5 shrink-0 rounded-full", workingItem ? "bg-accent" : "bg-success")} />
+        <span className="max-w-[360px] truncate">{activity}</span>
+      </span>
+      <span className="tabular shrink-0">{t("paths.status.count", { n: list.length })}</span>
+      {states && (
+        <>
+          <span className="tabular shrink-0">{t("paths.status.backedUp", { n: backedUp })}</span>
+          {size > 0 && <span className="tabular shrink-0">{t("paths.status.size", { size: formatSize(size) })}</span>}
+          {missing > 0 && <span className="tabular shrink-0 text-warning">{t("paths.status.missing", { n: missing })}</span>}
+        </>
+      )}
+      {selected > 1 && <span className="tabular shrink-0">{t("paths.selected", { n: selected })}</span>}
+    </>
+  );
+}
+
 function DiskStatus() {
   const t = useT();
   const scanning = useDisk((state) => state.scanning);

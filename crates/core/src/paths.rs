@@ -53,6 +53,8 @@ pub struct PathState {
     pub backups: usize,
     pub last_backup: Option<String>,
     pub backup_size: u64,
+    /// 这个路径能写成的几种样子（见 `forms`），在详情栏里切换。展开不了时是空的。
+    pub forms: Vec<String>,
 }
 
 // ── 路径的写法 ───────────────────────────────────────────────
@@ -125,45 +127,54 @@ fn is_var_char(c: char) -> bool {
 /// 已经带着变量（手动输入的）就原样留着。
 pub fn portable(text: &str) -> String {
     let text = text.trim().trim_matches('"');
-    if text.starts_with('~') || text.contains('%') || text.contains('$') {
+    if has_vars(text) {
         return text.to_string();
     }
-    portable_with(text, cfg!(windows), &env)
+    forms_with(text, cfg!(windows), &env).remove(0)
 }
 
-fn portable_with(text: &str, windows: bool, lookup: &dyn Fn(&str) -> Option<String>) -> String {
+fn has_vars(text: &str) -> bool {
+    text.starts_with('~') || text.contains('%') || text.contains('$')
+}
+
+/// 一个路径能写成的几种样子，最推荐的在前：用最贴近的变量、用范围大一点的变量……最后是完整路径。
+/// 比如 `%LOCALAPPDATA%\x`、`%USERPROFILE%\AppData\Local\x`、`C:\Users\demo\AppData\Local\x`。
+pub fn forms(full: &Path) -> Vec<String> {
+    forms_with(&full.to_string_lossy(), cfg!(windows), &env)
+}
+
+fn forms_with(text: &str, windows: bool, lookup: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
     let names: &[&str] = if windows {
         &["LOCALAPPDATA", "APPDATA", "PROGRAMDATA", "USERPROFILE", "ProgramFiles(x86)", "ProgramFiles", "SystemRoot"]
     } else {
         &["HOME"]
     };
     let sep = if windows { '\\' } else { '/' };
-    let mut best: Option<(&str, usize)> = None;
+    let mut found: Vec<(usize, String)> = Vec::new();
     for name in names {
         let Some(value) = lookup(name) else { continue };
         let value = value.trim_end_matches(['/', '\\']);
-        if value.is_empty() || value.len() > text.len() {
+        if value.is_empty() || value.len() > text.len() || !text.is_char_boundary(value.len()) {
             continue;
         }
         let head = &text[..value.len()];
         let same = if windows { head.eq_ignore_ascii_case(value) } else { head == value };
         let boundary = text[value.len()..].is_empty() || text[value.len()..].starts_with(['/', '\\']);
-        if same && boundary && best.is_none_or(|(_, len)| value.len() > len) {
-            best = Some((name, value.len()));
+        if !same || !boundary {
+            continue;
+        }
+        let var = if windows { format!("%{name}%") } else { "~".to_string() };
+        let tail = text[value.len()..].trim_start_matches(['/', '\\']);
+        let form = if tail.is_empty() { var } else { format!("{var}{sep}{tail}") };
+        if !found.iter().any(|(_, f)| *f == form) {
+            found.push((value.len(), form));
         }
     }
-    match best {
-        Some((name, len)) => {
-            let var = if windows { format!("%{name}%") } else { "~".to_string() };
-            let tail = text[len..].trim_start_matches(['/', '\\']);
-            if tail.is_empty() {
-                var
-            } else {
-                format!("{var}{sep}{tail}")
-            }
-        }
-        None => text.to_string(),
-    }
+    // 变量对应的文件夹越深越贴近，排在前面
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut list: Vec<String> = found.into_iter().map(|(_, form)| form).collect();
+    list.push(text.to_string());
+    list
 }
 
 /// 两个展开后的路径是不是同一个（Windows 上不分大小写）。
@@ -178,10 +189,11 @@ fn same_path(a: &Path, b: &Path) -> bool {
 // ── 收藏 ─────────────────────────────────────────────────────
 
 /// 收藏一批路径（拖进来的、选的、手动输入的）。已经收藏过的跳过。返回新加的 id。
-pub fn add(repo: &mut Repo, inputs: &[String]) -> Result<Vec<String>> {
+/// `convert` 时把绝对路径换成变量的写法（见 `portable`）；不换时原样记下。
+pub fn add(repo: &mut Repo, inputs: &[String], convert: bool) -> Result<Vec<String>> {
     let mut added = Vec::new();
     for input in inputs {
-        let text = portable(input);
+        let text = if convert { portable(input) } else { input.trim().trim_matches('"').to_string() };
         if text.is_empty() {
             continue;
         }
@@ -201,10 +213,11 @@ pub fn add(repo: &mut Repo, inputs: &[String]) -> Result<Vec<String>> {
 }
 
 /// 改路径和备注。路径改了时重新看一下是不是文件夹。
-pub fn edit(repo: &mut Repo, id: &str, path: Option<&str>, note: Option<&str>) -> Result<()> {
+/// `convert` 时把绝对路径换成变量的写法；不换时照写（切换写法时用，见 `forms`）。
+pub fn edit(repo: &mut Repo, id: &str, path: Option<&str>, note: Option<&str>, convert: bool) -> Result<()> {
     let item = repo.lib.paths.iter_mut().find(|p| p.id == id).ok_or(Error::Code("not_found"))?;
     if let Some(path) = path {
-        let text = portable(path);
+        let text = if convert { portable(path) } else { path.trim().trim_matches('"').to_string() };
         let full = expand(&text)?;
         item.path = text;
         if full.exists() {
@@ -262,6 +275,7 @@ pub fn states(items: &[SavedPath], backups_root: &Path) -> Vec<(String, PathStat
                         backups: backups.len(),
                         last_backup: backups.first().map(|b| b.created_at.clone()),
                         backup_size: backups.iter().map(|b| b.size).sum(),
+                        forms: forms(&full),
                     }
                 }
                 Err(err) => PathState {
@@ -272,6 +286,7 @@ pub fn states(items: &[SavedPath], backups_root: &Path) -> Vec<(String, PathStat
                     backups: backups.len(),
                     last_backup: backups.first().map(|b| b.created_at.clone()),
                     backup_size: backups.iter().map(|b| b.size).sum(),
+                    forms: Vec::new(),
                 },
             };
             (item.id.clone(), state)
@@ -463,6 +478,7 @@ mod tests {
 
     #[test]
     fn portable_picks_closest_variable() {
+        let portable_with = |text: &str, windows: bool, lookup: &dyn Fn(&str) -> Option<String>| forms_with(text, windows, lookup).remove(0);
         assert_eq!(portable_with("/Users/demo/Library/Prefs", false, &vars), "~/Library/Prefs");
         assert_eq!(portable_with("/Users/demo", false, &vars), "~");
         assert_eq!(portable_with("/Users/demon/x", false, &vars), "/Users/demon/x");
@@ -470,6 +486,16 @@ mod tests {
         assert_eq!(portable_with(r"C:\Users\demo\AppData\Local\x", true, &vars), r"%LOCALAPPDATA%\x");
         assert_eq!(portable_with(r"C:\Users\demo\.ssh", true, &vars), r"%USERPROFILE%\.ssh");
         assert_eq!(portable_with(r"D:\Tools", true, &vars), r"D:\Tools");
+    }
+
+    #[test]
+    fn forms_list_every_variable_then_the_full_path() {
+        assert_eq!(
+            forms_with(r"C:\Users\demo\AppData\Local\x", true, &vars),
+            [r"%LOCALAPPDATA%\x", r"%USERPROFILE%\AppData\Local\x", r"C:\Users\demo\AppData\Local\x"]
+        );
+        assert_eq!(forms_with("/Users/demo/.zshrc", false, &vars), ["~/.zshrc", "/Users/demo/.zshrc"]);
+        assert_eq!(forms_with("/opt/x", false, &vars), ["/opt/x"]);
     }
 
     #[cfg(unix)]

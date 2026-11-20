@@ -56,6 +56,7 @@ function state(item: SavedPath): PathState {
     backups: list.length,
     lastBackup: list[0]?.createdAt ?? null,
     backupSize: list.reduce((sum, b) => sum + b.size, 0),
+    forms: unknown ? [] : full.startsWith(HOME) ? [portable(full), full] : [full],
   };
 }
 
@@ -71,7 +72,7 @@ export async function mockPathsCall(command: string, args: Record<string, unknow
     case "paths_add": {
       const added: string[] = [];
       for (const raw of args.paths as string[]) {
-        const path = portable(raw.trim());
+        const path = args.convert === false ? raw.trim() : portable(raw.trim());
         if (!path.startsWith("~") && !path.startsWith("/") && !path.includes("%") && !path.includes("$")) throw "path_not_absolute";
         if (items.some((p) => expand(p.path) === expand(path))) continue;
         const id = `p${Date.now()}${added.length}`;
@@ -82,7 +83,7 @@ export async function mockPathsCall(command: string, args: Record<string, unknow
     }
     case "path_edit": {
       const item = find(args.id);
-      if (typeof args.path === "string") item.path = portable(args.path);
+      if (typeof args.path === "string") item.path = args.convert === false ? args.path.trim() : portable(args.path);
       if (typeof args.note === "string") item.note = args.note.trim();
       return snapshot();
     }

@@ -568,6 +568,9 @@ export interface CleanReport {
   skipped: CleanSkipped[];
   skippedCount: number;
   history: string | null;
+  /** 清理前后系统报告的可用空间（用户文件夹所在的盘）。量不出来时是 null。 */
+  diskBefore: number | null;
+  diskAfter: number | null;
 }
 
 export interface CleanOptions {
@@ -575,6 +578,22 @@ export interface CleanOptions {
   exclude: string[];
   /** 清 Cookie 时保留这些网站（域名，包括子域名）。 */
   keepCookies: string[];
+  /** 自己加的清理规则。旧版本里只有文件夹的 `custom` 存的时候会并进来。 */
+  rules: CustomCleanRule[];
+}
+
+/** 自己加的一条清理规则：清某个文件夹下第一层的东西。 */
+export interface CustomCleanRule {
+  name: string;
+  path: string;
+  /** 只清名字符合这些通配的（`*.log`）。空的话文件夹里的都清。 */
+  names: string[];
+  /** 只清这么多天里都没动过的。 */
+  olderThanDays: number | null;
+  /** 清理前要先关掉的程序（进程名）。 */
+  processes: string[];
+  /** 直接删除，不进回收站。 */
+  delete: boolean;
 }
 
 /** 浏览器里有 Cookie 的网站：给保留名单出主意。 */

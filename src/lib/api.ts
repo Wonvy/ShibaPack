@@ -146,6 +146,12 @@ export const api = {
   /** 保存自定义的清理文件夹和排除的文件夹。受保护的文件夹返回 `cleanup_protected:路径` 这样的错误。 */
   cleanupSetOptions: (options: CleanOptions) => call<CleanOptions>("cleanup_set_options", { options }),
   cleanupHistory: () => call<CleanRun[]>("cleanup_history"),
+  /** 停下正在进行的扫描：已经量完的照样作为结果。 */
+  cleanupCancelScan: () => call<void>("cleanup_cancel_scan"),
+  /** 只重新量这几项，返回更新后的全部项。 */
+  cleanupRescan: (ids: string[]) => call<CleanItem[]>("cleanup_rescan", { ids }),
+  /** 让 AI 解释清理项：这些文件是什么、删了会怎样。`mode` 和解释启动项一样。 */
+  aiExplainCleanup: (ids: string[], mode: "cached" | "auto" | "refresh") => call<Explanations>("ai_explain_cleanup", { ids, mode }),
   /** 浏览器里有 Cookie 的网站（按主域名合并，多的在前）。 */
   cleanupCookieSites: () => call<CookieSite[]>("cleanup_cookie_sites"),
   /** 记一条失败日志。 */
@@ -287,6 +293,13 @@ export async function onCleanupItem(handler: (item: CleanItem) => void): Promise
   if (!isTauri) return (await import("./mockCleanup")).mockOnCleanupItem(handler);
   const { listen } = await import("@tauri-apps/api/event");
   return listen<CleanItem>("cleanup://item", (event) => handler(event.payload));
+}
+
+/** 扫描进度：量完几处、一共几处。 */
+export async function onCleanupScan(handler: (progress: CleanProgress) => void): Promise<() => void> {
+  if (!isTauri) return (await import("./mockCleanup")).mockOnCleanupScan(handler);
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<CleanProgress>("cleanup://scan", (event) => handler(event.payload));
 }
 
 /** 清理进度。 */

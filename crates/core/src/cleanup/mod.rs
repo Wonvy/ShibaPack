@@ -25,7 +25,7 @@ use guard::{Guard, Scope};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 use vars::Vars;
@@ -120,6 +120,41 @@ pub struct Options {
     /// 清 Cookie 时保留这些网站（域名，包括它的子域名）。
     #[serde(default)]
     pub keep_cookies: Vec<String>,
+    /// 用户自己加的清理规则。旧版本里只有文件夹的 `custom` 存的时候会并进来。
+    #[serde(default)]
+    pub rules: Vec<CustomRule>,
+}
+
+/// 用户自己加的一条清理规则：清某个文件夹下第一层的东西。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomRule {
+    pub name: String,
+    pub path: PathBuf,
+    /// 只清名字符合这些通配的（`*.log`）。空的话文件夹里的都清。
+    #[serde(default)]
+    pub names: Vec<String>,
+    /// 只清这么多天里都没动过的。
+    #[serde(default)]
+    pub older_than_days: Option<u32>,
+    /// 清理前要先关掉的程序（进程名）。
+    #[serde(default)]
+    pub processes: Vec<String>,
+    /// 直接删除，不进回收站。
+    #[serde(default)]
+    pub delete: bool,
+}
+
+impl Options {
+    /// 全部自定义规则：旧的只有文件夹的也算（当成“里面的都清、移到回收站”的规则）。
+    pub fn all_rules(&self) -> Vec<CustomRule> {
+        let folders = self.custom.iter().map(|path| CustomRule {
+            name: path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.display().to_string()),
+            path: path.clone(),
+            ..CustomRule::default()
+        });
+        folders.chain(self.rules.iter().cloned()).collect()
+    }
 }
 
 const OPTIONS_FILE: &str = "cleanup-options.json";
@@ -136,10 +171,25 @@ pub fn save_options(dir: &Path, options: &Options) -> std::io::Result<()> {
 /// 检查用户给的设置：自定义文件夹要过保护检查（不行时返回 `cleanup_protected:路径` 这样的错误），去掉重复的。
 pub fn check_options(guard: &Guard, options: Options) -> Result<Options, String> {
     let mut out = Options::default();
-    for path in options.custom {
-        guard.custom_root(&path).map_err(|reason| format!("cleanup_{reason}:{}", path.display()))?;
-        if !out.custom.contains(&path) {
-            out.custom.push(path);
+    // 旧的只有文件夹的并进规则里
+    for mut rule in options.all_rules() {
+        guard.custom_root(&rule.path).map_err(|reason| format!("cleanup_{reason}:{}", rule.path.display()))?;
+        rule.name = rule.name.trim().to_string();
+        if rule.name.is_empty() {
+            rule.name = rule.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        }
+        rule.names = rule.names.iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();
+        for pattern in &rule.names {
+            if pattern.contains('/') || pattern.contains('\\') || pattern.chars().all(|c| c == '*' || c == '?') {
+                return Err(format!("cleanup_bad_pattern:{pattern}"));
+            }
+        }
+        if rule.older_than_days == Some(0) {
+            rule.older_than_days = None;
+        }
+        rule.processes = rule.processes.iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();
+        if !out.rules.contains(&rule) {
+            out.rules.push(rule);
         }
     }
     for path in options.exclude {
@@ -173,6 +223,10 @@ pub struct Context {
     pub elevated: bool,
     /// 仓库在哪：交给提权的进程，让它也封住仓库。
     pub repo_root: Option<PathBuf>,
+    /// macOS 上读不了废纸篓时，问访达里面有几项（第一次会弹授权提示，自检和测试时不问）。
+    pub ask_finder: bool,
+    /// 放缓存的文件夹（散落安装包算过的 SHA-256）。本机应用数据目录，不在仓库里。
+    pub cache_dir: Option<PathBuf>,
 }
 
 impl Context {
@@ -193,7 +247,7 @@ impl Context {
             .flat_map(|r| r.roots.get(os).iter().flat_map(|t| vars::expand(t, &vars)))
             .collect();
         let guard = guard.with_admin_roots(&admin_roots);
-        Context { os, vars, guard, options, library, repo_downloads, elevated: false, repo_root: None }
+        Context { os, vars, guard, options, library, repo_downloads, elevated: false, repo_root: None, ask_finder: false, cache_dir: None }
     }
 }
 
@@ -231,6 +285,8 @@ struct Filter {
     private: bool,
     /// 要管理员权限。
     admin: bool,
+    /// Firefox 的 places.sqlite：只删里面的浏览记录，不删文件。
+    history_db: bool,
 }
 
 impl Filter {
@@ -239,7 +295,7 @@ impl Filter {
     }
 
     fn scope(&self) -> Scope {
-        Scope { narrow: self.narrow(), private: self.private, admin: self.admin }
+        Scope { narrow: self.narrow(), private: self.private, admin: self.admin, history_db: self.history_db }
     }
 
     fn wants(&self, name: &str) -> bool {
@@ -263,6 +319,75 @@ impl Scan {
             Some(i) => found.targets.get(i).map(|t| t.path.clone()),
             None => found.item.roots.first().map(PathBuf::from),
         }
+    }
+
+    /// 只重新量这几项（清理完、退出程序以后），别的不动。量完没东西了的项拿掉。
+    pub fn rescan(&mut self, ctx: &Context, ids: &[String]) {
+        let running = special::running_processes();
+        let me = ctx.vars.get("home").and_then(owner);
+        let now = SystemTime::now();
+        let list = sources(ctx);
+        let loose = ids.iter().any(|id| id.starts_with("installers.") && id.ends_with("-library")).then(|| loose_found(ctx));
+        for id in ids {
+            let fresh: Option<Found> = match id.as_str() {
+                "trash.empty" => trash_found(ctx),
+                "privacy.clipboard" => clipboard_found(),
+                "system.windows-old" => windows_old_found(ctx),
+                "installers.in-library" | "installers.not-in-library" => loose.as_ref().and_then(|found| found.iter().find(|f| &f.item.id == id).cloned()),
+                _ => list.iter().find(|source| &source.id == id).and_then(|source| measure_source(source, ctx, me, now)),
+            };
+            let at = self.found.iter().position(|f| &f.item.id == id);
+            match (at, fresh) {
+                (Some(i), Some(mut f)) => {
+                    f.item.running = special::any_running(&f.processes, &running);
+                    self.found[i] = f;
+                }
+                (Some(i), None) => {
+                    self.found.remove(i);
+                }
+                (None, Some(mut f)) => {
+                    f.item.running = special::any_running(&f.processes, &running);
+                    self.found.push(f);
+                }
+                (None, None) => {}
+            }
+        }
+    }
+
+    /// 给 AI 看的这一项的情况：名字、类别、怎么清、在哪、多大、里面最大的几样。用户文件夹写成 `~`，不把用户名发出去。
+    pub fn facts(&self, id: &str, home: Option<&Path>) -> Option<String> {
+        let found = self.found.iter().find(|f| f.item.id == id)?;
+        let item = &found.item;
+        let home = home.map(|h| h.to_string_lossy().to_string()).filter(|h| h.len() > 1);
+        let short = |path: &str| match &home {
+            Some(home) if path.starts_with(home.as_str()) => format!("~{}", &path[home.len()..]),
+            _ => path.to_string(),
+        };
+        let mut lines = vec![
+            format!("name: {}", item.name.en),
+            format!("category: {}", item.category.name()),
+            format!("action: {}", if item.action == Action::Trash { "move to trash" } else { "delete" }),
+        ];
+        if let Some(app) = &item.app {
+            lines.push(format!("app: {app}"));
+        }
+        lines.push(format!("folders: {}", item.roots.iter().take(4).map(|r| short(r)).collect::<Vec<_>>().join("; ")));
+        if let Some(size) = item.size {
+            lines.push(format!("size: {} MB in {} files", size / 1_000_000, item.files));
+        }
+        let largest: Vec<String> = item
+            .entries
+            .iter()
+            .take(8)
+            .map(|e| format!("{} ({} MB)", Path::new(&e.path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), e.size / 1_000_000))
+            .collect();
+        if !largest.is_empty() {
+            lines.push(format!("largest entries: {}", largest.join(", ")));
+        }
+        if !found.filter.names.is_empty() {
+            lines.push(format!("only names matching: {}", found.filter.names.join(", ")));
+        }
+        Some(lines.join("\n"))
     }
 
     /// 要管理员权限的项。
@@ -340,6 +465,7 @@ fn sources(ctx: &Context) -> Vec<Source> {
                 own_only: rule.own_only,
                 private: rule.category == Category::Privacy,
                 admin: rule.admin,
+                history_db: rule.history_db,
             },
             action: if rule.deletes() { Action::Delete } else { Action::Trash },
             cookies: rule.cookies,
@@ -367,24 +493,32 @@ fn sources(ctx: &Context) -> Vec<Source> {
             command: None,
         });
     }
-    for (i, folder) in ctx.options.custom.iter().enumerate() {
-        if ctx.guard.custom_root(folder).is_err() {
+    for (i, custom) in ctx.options.all_rules().iter().enumerate() {
+        if ctx.guard.custom_root(&custom.path).is_err() {
             continue;
         }
-        let name = folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| folder.display().to_string());
+        let whole = custom.names.is_empty() && custom.older_than_days.is_none();
         out.push(Source {
             id: format!("custom.{i}"),
             category: Category::Custom,
             risk: Risk::Recoverable,
-            name: Text::new(&name, &name),
-            about: Text::new("你自己加的清理文件夹，里面的东西都会清掉。", "A folder you added. Everything inside it is cleaned."),
-            effect: Text::new("移到回收站，需要时可以从回收站找回来。", "Moved to the Recycle Bin/Trash, where you can restore it if needed."),
+            name: Text::new(&custom.name, &custom.name),
+            about: if whole {
+                Text::new("你自己加的清理规则，这个文件夹里的东西都会清掉。", "A rule you added. Everything inside this folder is cleaned.")
+            } else {
+                Text::new("你自己加的清理规则，只清这个文件夹里符合条件的。", "A rule you added. Only matching items in this folder are cleaned.")
+            },
+            effect: if custom.delete {
+                Text::new("直接删除，不进回收站，删了找不回来。", "Deleted directly, skipping the Recycle Bin/Trash. It cannot be recovered.")
+            } else {
+                Text::new("移到回收站，需要时可以从回收站找回来。", "Moved to the Recycle Bin/Trash, where you can restore it if needed.")
+            },
             app: None,
             evidence: None,
-            processes: Vec::new(),
-            roots: vec![folder.clone()],
-            filter: Filter::default(),
-            action: Action::Trash,
+            processes: custom.processes.clone(),
+            roots: vec![custom.path.clone()],
+            filter: Filter { names: custom.names.clone(), older_than: days(custom.older_than_days), ..Filter::default() },
+            action: if custom.delete { Action::Delete } else { Action::Trash },
             cookies: false,
             command: None,
         });
@@ -623,7 +757,7 @@ fn windows_old_found(ctx: &Context) -> Option<Found> {
 /// 回收站一项。空的时候不列。
 fn trash_found(ctx: &Context) -> Option<Found> {
     let home = ctx.vars.get("home")?;
-    let info = special::trash_info(home, ctx.vars.get("xdg_data"))?;
+    let info = special::trash_info(home, ctx.vars.get("xdg_data"), ctx.ask_finder)?;
     if info.size == Some(0) && info.items == 0 {
         return None;
     }
@@ -647,7 +781,12 @@ fn trash_found(ctx: &Context) -> Option<Found> {
 /// 下载文件夹和桌面上的安装包：和仓库里一模一样的一项，还没收进仓库的一项。
 fn loose_found(ctx: &Context) -> Vec<Found> {
     let dirs: Vec<PathBuf> = ["downloads", "desktop"].iter().filter_map(|n| ctx.vars.get(n)).filter(|d| vars::real_dir(d)).map(Path::to_path_buf).collect();
-    let loose: Vec<special::Loose> = special::loose_installers(&dirs, &ctx.library)
+    let mut hashes = ctx.cache_dir.as_deref().map(special::HashCache::load).unwrap_or_default();
+    let all = special::loose_installers(&dirs, &ctx.library, &mut hashes);
+    if let Some(dir) = &ctx.cache_dir {
+        hashes.save(dir);
+    }
+    let loose: Vec<special::Loose> = all
         .into_iter()
         .filter(|l| !ctx.guard.excluded(&l.path, &ctx.options.exclude) && ctx.guard.entry_check(&l.root, &l.path, Scope::narrow()).is_ok())
         .collect();
@@ -734,8 +873,18 @@ pub fn scan(ctx: &Context, on_item: &(dyn Fn(&CleanItem) + Sync)) -> Scan {
     scan_at(ctx, on_item, SystemTime::now())
 }
 
+/// 和 `scan` 一样，另外报进度（`on_progress(量完几处, 一共几处)`），并且可以取消：
+/// `cancel` 变成真以后不再量新的，已经量完的照样返回（结果不完整）。
+pub fn scan_with(ctx: &Context, on_item: &(dyn Fn(&CleanItem) + Sync), on_progress: &(dyn Fn(usize, usize) + Sync), cancel: &AtomicBool) -> Scan {
+    scan_full(ctx, on_item, on_progress, cancel, SystemTime::now())
+}
+
 /// `now` 是“现在”：测试里拿它代替改文件时间（Unix 上改修改时间会同时更新状态改变时间，改不旧）。
 fn scan_at(ctx: &Context, on_item: &(dyn Fn(&CleanItem) + Sync), now: SystemTime) -> Scan {
+    scan_full(ctx, on_item, &|_, _| {}, &AtomicBool::new(false), now)
+}
+
+fn scan_full(ctx: &Context, on_item: &(dyn Fn(&CleanItem) + Sync), on_progress: &(dyn Fn(usize, usize) + Sync), cancel: &AtomicBool, now: SystemTime) -> Scan {
     enum Task<'a> {
         Source(&'a Source),
         Loose,
@@ -752,11 +901,16 @@ fn scan_at(ctx: &Context, on_item: &(dyn Fn(&CleanItem) + Sync), now: SystemTime
     tasks.push(Task::Clipboard);
     tasks.push(Task::WindowsOld);
     let next = AtomicUsize::new(0);
+    let finished = AtomicUsize::new(0);
+    on_progress(0, tasks.len());
     let results: Mutex<Vec<(usize, Found)>> = Mutex::new(Vec::new());
     let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 6);
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| loop {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
                 let i = next.fetch_add(1, Ordering::SeqCst);
                 let Some(task) = tasks.get(i) else { break };
                 let found = match task {
@@ -771,6 +925,7 @@ fn scan_at(ctx: &Context, on_item: &(dyn Fn(&CleanItem) + Sync), now: SystemTime
                     on_item(&f.item);
                     results.lock().unwrap_or_else(|e| e.into_inner()).push((i, f));
                 }
+                on_progress(finished.fetch_add(1, Ordering::SeqCst) + 1, tasks.len());
             });
         }
     });
@@ -803,6 +958,11 @@ pub struct Report {
     pub skipped_count: usize,
     /// 这次的清理记录。
     pub history: Option<String>,
+    /// 清理前后，用户文件夹所在的盘系统报告的可用空间。量不出来时是 None。
+    #[serde(default)]
+    pub disk_before: Option<u64>,
+    #[serde(default)]
+    pub disk_after: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -915,6 +1075,7 @@ fn clean_at(scan: &Scan, picks: &[Pick], ctx: &Context, progress: &dyn Fn(usize,
         } else {
             // Cookie 有保留名单：只删名单以外网站的 Cookie，数据库文件留着；日志文件（-journal、-wal、-shm）不动
             let prune = found.item.cookies && !ctx.options.keep_cookies.is_empty();
+            let history_db = found.filter.history_db;
             for (index, target) in found.targets.iter().enumerate() {
                 done += 1;
                 if pick.skip.contains(&index) {
@@ -924,6 +1085,22 @@ fn clean_at(scan: &Scan, picks: &[Pick], ctx: &Context, progress: &dyn Fn(usize,
                 if let Err(reason) = still_ok(ctx, &found.filter, &target.root, &target.path, me, now) {
                     skip(&mut report, &pick.id, Some(&target.path), reason);
                     item_report.skipped += 1;
+                    progress(done, total);
+                    continue;
+                }
+                if history_db {
+                    // Firefox 的 places.sqlite：只删里面的浏览记录，文件任何时候都不删
+                    match special::prune_firefox_history(&target.path) {
+                        Ok(freed) => {
+                            item_report.freed += freed;
+                            item_report.removed += 1;
+                            run_item.push_path(&target.path);
+                        }
+                        Err(reason) => {
+                            skip(&mut report, &pick.id, Some(&target.path), &reason);
+                            item_report.skipped += 1;
+                        }
+                    }
                     progress(done, total);
                     continue;
                 }
@@ -1207,7 +1384,9 @@ mod tests {
         let ctx = context(&home, Options::default());
         assert!(check_options(&ctx.guard, Options { custom: vec![home.join("Downloads")], ..Options::default() }).unwrap_err().starts_with("cleanup_protected:"));
         let options = check_options(&ctx.guard, Options { custom: vec![mine.clone(), mine.clone()], ..Options::default() }).unwrap();
-        assert_eq!(options.custom.len(), 1);
+        assert!(options.custom.is_empty(), "旧的文件夹并进规则里");
+        assert_eq!(options.rules.len(), 1);
+        assert_eq!(options.rules[0].name, "scratch");
         let ctx = context(&home, options);
         let found = scan(&ctx, &|_| {});
         let item = found.item("custom.0").expect("自定义文件夹");
@@ -1234,6 +1413,56 @@ mod tests {
         let (report, _) = clean_at(&found, &[Pick { id: item.id.clone(), skip: vec![] }], &ctx, &|_, _| {}, later(2));
         assert_eq!(report.removed, 2);
         assert!(downloads.join("other.bin").exists());
+    }
+
+    #[test]
+    fn custom_rules_filter_and_rescan() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let logs = home.join("Work/app/logs");
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join("a.log"), vec![1u8; 5000]).unwrap();
+        fs::write(logs.join("b.log"), vec![1u8; 100]).unwrap();
+        fs::write(logs.join("keep.db"), b"data").unwrap();
+        let ctx = context(&home, Options::default());
+        assert!(check_options(&ctx.guard, Options { rules: vec![CustomRule { name: "x".into(), path: logs.clone(), names: vec!["*".into()], ..Default::default() }], ..Options::default() })
+            .unwrap_err()
+            .starts_with("cleanup_bad_pattern:"));
+        let rule = CustomRule { name: " 应用日志 ".into(), path: logs.clone(), names: vec!["*.log".into()], delete: true, ..Default::default() };
+        let options = check_options(&ctx.guard, Options { rules: vec![rule], ..Options::default() }).unwrap();
+        assert_eq!(options.rules[0].name, "应用日志");
+        let ctx = context(&home, options);
+        let mut found = scan(&ctx, &|_| {});
+        let item = found.item("custom.0").expect("自定义规则").clone();
+        assert_eq!(item.action, Action::Delete);
+        assert_eq!(item.name.zh, "应用日志");
+        assert_eq!(item.entry_count, 2, "只清 *.log");
+        // 清掉一条以后只重新量这一项
+        let (report, _) = clean(&found, &[Pick { id: item.id.clone(), skip: vec![1] }], &ctx, &|_, _| {});
+        assert_eq!(report.removed, 1);
+        found.rescan(&ctx, std::slice::from_ref(&item.id));
+        assert_eq!(found.item("custom.0").unwrap().entry_count, 1);
+        fs::remove_file(logs.join("b.log")).unwrap();
+        found.rescan(&ctx, std::slice::from_ref(&item.id));
+        assert!(found.item("custom.0").is_none(), "没东西了就拿掉");
+        assert!(logs.join("keep.db").exists());
+    }
+
+    #[test]
+    fn a_cancelled_scan_stops_early_and_reports_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        fs::create_dir_all(pip_dir(&home)).unwrap();
+        fs::write(pip_dir(&home).join("blob"), b"x").unwrap();
+        let ctx = context(&home, Options::default());
+        let seen = Mutex::new(Vec::new());
+        let full = scan_with(&ctx, &|_| {}, &|done, total| seen.lock().unwrap().push((done, total)), &AtomicBool::new(false));
+        assert!(full.item("development.pip").is_some());
+        let seen = seen.into_inner().unwrap();
+        let total = seen[0].1;
+        assert!(total > 10 && seen.contains(&(total, total)), "{seen:?}");
+        let cancelled = scan_with(&ctx, &|_| {}, &|_, _| {}, &AtomicBool::new(true));
+        assert!(cancelled.items().is_empty(), "一开始就取消：什么都不量");
     }
 
     /// 只读地扫一遍这台电脑，打印每一项：`cargo test -p shibapack-core scans_this_machine -- --ignored --nocapture`。

@@ -25,17 +25,26 @@ import {
   RefreshCw,
   SearchX,
   SlidersHorizontal,
+  Ban,
+  RotateCw,
+  Sparkles,
   Trash2,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { SoftwareIcon } from "../components/SoftwareIcon";
 import { Button, Chip, ContextMenu, EmptyState, FilterMenu, IconButton, type MenuEntry, Switch, cx } from "../components/ui";
 import { api, isMac } from "../lib/api";
+import { aiUsable } from "../lib/ai";
 import {
   CATEGORIES,
   askClean,
+  cancelScan,
   canClean,
+  explainCleanup,
+  regrowthPerDay,
+  rescanIfStale,
   importLoose,
   isChecked,
   lastCleaned,
@@ -117,6 +126,8 @@ export function CleanupView({ detailToggle }: { detailToggle: ReactNode }) {
   const error = useCleanup((state) => state.error);
   const skips = useCleanup((state) => state.skips);
   const scan = useCleanup((state) => state.scan);
+  const scanProgress = useCleanup((state) => state.scanProgress);
+  const partial = useCleanup((state) => state.partial);
   const overrides = usePrefs((state) => state.cleanupChecked);
   const collapsed = usePrefs((state) => state.cleanupCollapsed);
   const setPrefs = usePrefs((state) => state.set);
@@ -124,9 +135,13 @@ export function CleanupView({ detailToggle }: { detailToggle: ReactNode }) {
   const [category, setCategory] = useState<"all" | CleanCategory>("all");
   const [risk, setRisk] = useState<"all" | CleanRisk>("all");
 
-  // 第一次进来时扫一遍；之后靠右上角的按钮
+  // 第一次进来时扫一遍；之后回到这一页或窗口回到前台时，结果放得太久了（10 分钟）就重新扫
   useEffect(() => {
     if (useCleanup.getState().items === null) void useCleanup.getState().scan();
+    else rescanIfStale();
+    const onFocus = () => document.visibilityState !== "hidden" && rescanIfStale();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, []);
 
   const all = useMemo(() => items ?? [], [items]);
@@ -167,7 +182,11 @@ export function CleanupView({ detailToggle }: { detailToggle: ReactNode }) {
           {scanning ? (
             <>
               <LoaderCircle size={14} strokeWidth={2} className="shrink-0 animate-spin text-fg-3" aria-hidden />
-              <span className="truncate text-fg-2">{t("cleanup.scanningFound", { n: all.length })}</span>
+              <span className="truncate text-fg-2">
+                {scanProgress && scanProgress.total > 0
+                  ? t("cleanup.scanningProgress", { done: scanProgress.done, total: scanProgress.total, n: all.length })
+                  : t("cleanup.scanningFound", { n: all.length })}
+              </span>
             </>
           ) : (
             <span className="truncate">{t("cleanup.total", { size: formatSize(total) })}</span>
@@ -200,9 +219,15 @@ export function CleanupView({ detailToggle }: { detailToggle: ReactNode }) {
           />
         </div>
         <div className="col-start-2 row-start-1 flex items-center justify-end gap-0.5 @[440px]:col-start-3">
-          <IconButton label={t("cleanup.scan")} disabled={busy} onClick={() => void scan()}>
-            <RefreshCw size={15} strokeWidth={1.75} className={scanning ? "animate-spin" : ""} />
-          </IconButton>
+          {scanning ? (
+            <IconButton label={t("cleanup.cancelScan")} onClick={cancelScan}>
+              <X size={15} strokeWidth={1.75} />
+            </IconButton>
+          ) : (
+            <IconButton label={t("cleanup.scan")} disabled={busy} onClick={() => void scan()}>
+              <RefreshCw size={15} strokeWidth={1.75} />
+            </IconButton>
+          )}
           <IconButton label={t("cleanup.history")} onClick={() => useCleanup.setState({ historyOpen: true })}>
             <History size={15} strokeWidth={1.75} />
           </IconButton>
@@ -217,6 +242,16 @@ export function CleanupView({ detailToggle }: { detailToggle: ReactNode }) {
         <div className="mx-3 mt-2 flex shrink-0 items-center gap-2 rounded-lg bg-[color-mix(in_srgb,var(--danger)_12%,transparent)] px-3 py-2 text-[12px] text-danger">
           <AlertTriangle size={15} strokeWidth={1.75} aria-hidden className="shrink-0" />
           <span className="min-w-0 flex-1">{error}</span>
+        </div>
+      )}
+
+      {partial && !scanning && (
+        <div className="mx-3 mt-2 flex shrink-0 items-center gap-2 rounded-lg bg-[color-mix(in_srgb,var(--warning)_13%,transparent)] px-3 py-2 text-[12px] text-warning">
+          <AlertTriangle size={15} strokeWidth={1.75} aria-hidden className="shrink-0" />
+          <span className="min-w-0 flex-1">{t("cleanup.partial")}</span>
+          <Button size="sm" disabled={busy} onClick={() => void scan()}>
+            {t("cleanup.scan")}
+          </Button>
         </div>
       )}
 
@@ -409,6 +444,7 @@ export function CleanupDetail() {
               <div className="tabular text-[18px] font-semibold">{item.size === null ? t("cleanup.unknownSize") : formatSize(pickedSize(item, { [item.id]: skips }))}</div>
               <div className="text-[12px] text-fg-3">
                 {item.size !== null && `${t("cleanup.filesCount", { n: item.files.toLocaleString() })} · `}
+                {item.size === null && item.files > 0 && `${t("cleanup.itemsCount", { n: item.files.toLocaleString() })} · `}
                 {t(`cleanup.riskHint.${item.risk}` as Key)}
               </div>
             </div>
@@ -458,8 +494,10 @@ export function CleanupDetail() {
           <p className="selectable m-0 text-[13px] leading-relaxed">{textOf(item.effect, language)}</p>
         </section>
 
+        <AiNote item={item} />
+
         <dl className="mt-4 mb-0">
-          <Regrowth item={item} last={lastCleaned(item.id, history)} />
+          <Regrowth item={item} last={lastCleaned(item.id, history)} perDay={regrowthPerDay(item.id, history)} />
           {item.modified !== null && <Fact label={t("cleanup.fact.modified")}>{formatDate(new Date(item.modified).toISOString(), language, true)}</Fact>}
           {item.roots.length > 0 && (
             <Fact label={t("cleanup.fact.where")}>
@@ -582,20 +620,62 @@ function EntryRow({ item, entry, on, onToggle, language }: { item: CleanItem; en
           <div className={cx("truncate text-[12px]", library?.same ? "text-success" : "text-fg-3")}>{detail}</div>
         </div>
         <span className="tabular shrink-0 text-[12px] text-fg-2">{formatSize(entry.size)}</span>
+        <IconButton label={t("cleanup.excludeEntry")} className="size-6 text-fg-3" onClick={() => void exclude()}>
+          <Ban size={13} strokeWidth={1.75} />
+        </IconButton>
       </div>
     </ContextMenu>
   );
 }
 
 /** 上次清理是什么时候、清掉了多少、之后又长了多少。 */
-function Regrowth({ item, last }: { item: CleanItem; last: { at: string; size: number } | null }) {
+function Regrowth({ item, last, perDay }: { item: CleanItem; last: { at: string; size: number } | null; perDay: number | null }) {
   const t = useT();
   if (!last) return null;
+  // 清过两次以上才算得出多快长回来：一天不到 1 MB 的按周说
+  const rate = perDay === null ? null : perDay * 7 >= 1024 * 1024 ? t("cleanup.regrowthRate", { size: formatSize(perDay * 7) }) : t("cleanup.regrowthSlow");
   const days = Math.floor((Date.now() - new Date(last.at).getTime()) / 86_400_000);
   const when = days <= 0 ? t("cleanup.days.today") : t("cleanup.days.n", { n: days });
   const cleaned = formatSize(last.size);
   const text = item.size === null || item.size === 0 ? t("cleanup.regrowthGone", { when, cleaned }) : t("cleanup.regrowth", { when, cleaned, now: formatSize(item.size) });
-  return <Fact label={t("cleanup.fact.lastCleaned")}>{text}</Fact>;
+  return (
+    <Fact label={t("cleanup.fact.lastCleaned")}>
+      {text}
+      {rate && <div className="text-[12px] text-fg-3">{rate}</div>}
+    </Fact>
+  );
+}
+
+/** AI 的解释：这些文件是什么、删了会怎样。有解释就显示；配了 AI 模型时可以问、可以重新问。 */
+function AiNote({ item }: { item: CleanItem }) {
+  const t = useT();
+  const language = useLanguage();
+  const explanation = useCleanup((state) => state.explanations[item.id]);
+  const explaining = useCleanup((state) => Boolean(state.explaining[item.id]));
+  const canAi = useApp((state) => aiUsable(state.library?.settings.ai, state.aiKeySaved));
+  if (!explanation && !canAi) return null;
+  return (
+    <section className="mt-3">
+      {explanation && (
+        <div className="rounded-lg bg-accent-soft px-3 py-2">
+          <div className="mb-1 flex items-center gap-1 text-[12px] font-medium text-accent">
+            <Sparkles size={13} strokeWidth={1.75} aria-hidden />
+            {t("startup.aiLabel")}
+            <span className="ml-auto truncate font-normal opacity-70" title={explanation.model}>
+              {formatDate(explanation.at, language)}
+            </span>
+          </div>
+          <p className="selectable m-0 text-[13px] leading-relaxed">{explanation.text}</p>
+        </div>
+      )}
+      {canAi && (
+        <Button size="sm" variant="ghost" className="mt-1 -ml-2 text-accent" busy={explaining} onClick={() => void explainCleanup(item, Boolean(explanation))}>
+          {!explaining && (explanation ? <RotateCw size={13} strokeWidth={1.75} aria-hidden /> : <Sparkles size={13} strokeWidth={1.75} aria-hidden />)}
+          {explaining ? t("startup.explaining") : explanation ? t("startup.explainAgain") : t("startup.explain")}
+        </Button>
+      )}
+    </section>
+  );
 }
 
 function Fact({ label, children }: { label: string; children: ReactNode }) {

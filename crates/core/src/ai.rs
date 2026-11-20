@@ -530,12 +530,39 @@ pub fn explain_startup_many(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<Vec<(String, String)>, AiError> {
-    explain_many_with(&mut |system, user| service.chat(system, user, true, 0.2), language, items, cancel, progress)
+    explain_many_with(&mut |system, user| service.chat(system, user, true, 0.2), &explain_many_prompt(language), items, cancel, progress)
+}
+
+/// 一批清理项一起解释：这些文件是什么、删了会怎样。`items` 是（键，`cleanup::Scan::facts` 的内容）。
+pub fn explain_cleanup_many(
+    service: &Service,
+    language: &str,
+    items: &[(String, String)],
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<Vec<(String, String)>, AiError> {
+    explain_many_with(&mut |system, user| service.chat(system, user, true, 0.2), &explain_cleanup_prompt(language), items, cancel, progress)
+}
+
+fn explain_cleanup_prompt(language: &str) -> String {
+    let lang = language_name(language);
+    let length = if compact(language) { "at most 150 characters" } else { "at most 80 words" };
+    format!(
+        "You help people decide whether files on their computer are safe to delete. Each item in the list is a folder (with a few \
+of the largest things inside it) that a disk cleanup tool is about to clean. For each item, explain in {lang}, in two or three \
+short plain sentences ({length}): what these files most likely are and which software creates them, and what happens if they \
+are deleted (whether they are regenerated, need to be downloaded again, or would be lost for good). State only what you are \
+confident about, and warn clearly if they look like personal files, documents, databases or settings rather than cache. If you \
+do not recognize an item, say so in one sentence and describe only what its facts show. No Markdown, no headings, no lists, no \
+quotation marks inside the text.\n\
+Answer with JSON only, in exactly this shape, including every item once:\n\
+{{\"items\":[{{\"id\":\"e1\",\"text\":\"...\"}}]}}"
+    )
 }
 
 fn explain_many_with(
     chat: &mut dyn FnMut(&str, &str) -> Result<String, AiError>,
-    language: &str,
+    prompt: &str,
     items: &[(String, String)],
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(usize, usize),
@@ -550,7 +577,7 @@ fn explain_many_with(
         let offset = batch * EXPLAIN_BATCH;
         let lines: Vec<String> =
             chunk.iter().enumerate().map(|(i, (_, facts))| json!({ "id": format!("e{}", offset + i + 1), "facts": facts }).to_string()).collect();
-        let answer = chat(&explain_many_prompt(language), &format!("Items (one JSON object per line):\n{}", lines.join("\n")))?;
+        let answer = chat(prompt, &format!("Items (one JSON object per line):\n{}", lines.join("\n")))?;
         let texts = parse_texts(&answer);
         if texts.is_empty() {
             return Err(AiError::BadAnswer(clip(answer.trim(), 200)));
@@ -924,7 +951,7 @@ mod tests {
             Ok(format!("```json\n{}\n```", json!({ "items": answers })))
         };
         let mut steps = Vec::new();
-        let out = explain_many_with(&mut chat, "zh-CN", &items, &AtomicBool::new(false), &mut |done, total| steps.push((done, total))).unwrap();
+        let out = explain_many_with(&mut chat, &explain_many_prompt("zh-CN"), &items, &AtomicBool::new(false), &mut |done, total| steps.push((done, total))).unwrap();
         assert_eq!(*asked.borrow(), vec![10, 2], "12 个分两次问");
         assert_eq!(out.len(), 10);
         assert!(!out.iter().any(|(k, _)| k == "k3" || k == "k4"));
@@ -932,9 +959,9 @@ mod tests {
         assert_eq!(steps.last(), Some(&(12, 12)));
         // 回答完全看不懂时报错
         let mut broken = |_s: &str, _u: &str| -> Result<String, AiError> { Ok("sorry".into()) };
-        assert!(matches!(explain_many_with(&mut broken, "zh-CN", &items, &AtomicBool::new(false), &mut |_, _| {}), Err(AiError::BadAnswer(_))));
+        assert!(matches!(explain_many_with(&mut broken, &explain_many_prompt("zh-CN"), &items, &AtomicBool::new(false), &mut |_, _| {}), Err(AiError::BadAnswer(_))));
         // 取消了就不再问
-        assert_eq!(explain_many_with(&mut chat, "zh-CN", &items, &AtomicBool::new(true), &mut |_, _| {}), Err(AiError::Cancelled));
+        assert_eq!(explain_many_with(&mut chat, &explain_many_prompt("zh-CN"), &items, &AtomicBool::new(true), &mut |_, _| {}), Err(AiError::Cancelled));
     }
 
     #[test]

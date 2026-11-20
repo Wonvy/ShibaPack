@@ -64,6 +64,8 @@ pub struct Scope {
     pub private: bool,
     /// 要管理员权限：根目录必须是 `admin_roots` 里的系统文件夹。
     pub admin: bool,
+    /// 不删文件、只删里面的浏览记录：这时才能碰 Firefox 的 places.sqlite（书签也在里面，文件本身任何时候都不删）。
+    pub history_db: bool,
 }
 
 impl Scope {
@@ -257,6 +259,9 @@ impl Guard {
 /// 名字能不能删：密码、书签这类一律不行；浏览记录、Cookie 只有隐私痕迹能删。
 fn name_ok(path: &Path, scope: Scope) -> bool {
     let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    if scope.history_db && scope.private && name == "places.sqlite" {
+        return true;
+    }
     !NEVER.contains(&name.as_str()) && (scope.private || !PRIVATE.contains(&name.as_str()))
 }
 
@@ -346,7 +351,11 @@ mod tests {
         assert_eq!(f.guard.entry_check(&cache, &cache.join("repo"), Scope::broad()), Err("not_allowed"));
         assert_eq!(f.guard.entry_check(&cache, &cache.join("Cookies"), Scope::broad()), Err("not_allowed"));
         // 隐私痕迹可以删 Cookie，但还是不能删密码
-        let private = Scope { narrow: true, private: true, admin: false };
+        let private = Scope { narrow: true, private: true, ..Scope::default() };
+        // places.sqlite 里有书签：只有“只删浏览记录”的规则能碰
+        fs::write(cache.join("places.sqlite"), b"x").unwrap();
+        assert_eq!(f.guard.entry_check(&cache, &cache.join("places.sqlite"), private), Err("not_allowed"));
+        assert_eq!(f.guard.entry_check(&cache, &cache.join("places.sqlite"), Scope { history_db: true, ..private }), Ok(()));
         fs::write(cache.join("Login Data"), b"x").unwrap();
         assert_eq!(f.guard.entry_check(&cache, &cache.join("Cookies"), private), Ok(()));
         assert_eq!(f.guard.entry_check(&cache, &cache.join("Login Data"), private), Err("not_allowed"));

@@ -275,7 +275,7 @@ fn command(program: &str) -> Command {
 }
 
 /// 运行一个命令，最多等 `limit`。超时就结束它，返回 `None`。
-fn output_within(mut command: Command, limit: Duration) -> Option<Output> {
+pub(crate) fn output_within(mut command: Command, limit: Duration) -> Option<Output> {
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().ok()?;
     // 输出要边跑边读，不然输出多了会把管道塞满，命令卡住

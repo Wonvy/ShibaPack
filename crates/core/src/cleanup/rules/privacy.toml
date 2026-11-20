@@ -1,6 +1,6 @@
 # 隐私痕迹：浏览记录、Cookie、最近打开的文件。一律默认不勾、直接删除（进回收站等于没删），要先关掉浏览器。
 # 只删名字列出来的这几个文件：书签（Bookmarks）、密码（Login Data）、自动填充（Web Data）、加密密钥（Local State）
-# 在保护检查里一律不删。Firefox 的历史和书签在同一个文件（places.sqlite）里，不清。
+# 在保护检查里一律不删。Firefox 的历史和书签在同一个文件（places.sqlite）里：不删文件，只删里面的浏览记录（historyDb）。
 # Cookie 有保留名单时，只删名单以外网站的 Cookie（改浏览器自己的 Cookie 数据库），不删整个文件。
 
 [[rule]]
@@ -232,3 +232,18 @@ name = { zh = "最近使用的文件和跳转列表", en = "Recent files and jum
 about = { zh = "资源管理器“最近使用的文件”和任务栏右键菜单里的跳转列表。只是指向文件的快捷方式，文件本身不在这里。", en = "File Explorer's recent files and the jump lists on taskbar right-click menus. These are shortcuts; the files themselves are elsewhere." }
 effect = { zh = "最近使用的列表会清空，文件本身不受影响。资源管理器正在用的会跳过。", en = "The recent lists are cleared; the files themselves are not affected. Items in use by Explorer are skipped." }
 evidence = "https://learn.microsoft.com/en-us/windows/win32/shell/taskbar-extensions"
+
+[[rule]]
+id = "privacy.firefox-history"
+category = "privacy"
+risk = "high"
+permanent = true
+historyDb = true
+app = "Firefox"
+processes = { macos = ["firefox"], windows = ["firefox.exe"], linux = ["firefox", "firefox-bin", "firefox-esr"] }
+roots = { macos = ["${app_support}/Firefox/Profiles/*"], windows = ["${roaming_app_data}/Mozilla/Firefox/Profiles/*"], linux = ["${home}/.mozilla/firefox/*", "${xdg_config}/mozilla/firefox/*"] }
+names = ["places.sqlite"]
+name = { zh = "Firefox 浏览记录", en = "Firefox browsing history" }
+about = { zh = "Firefox 把浏览记录和书签存在同一个文件里。这里只删其中访问过的网页和地址栏输入记录，书签留着，文件本身不删。显示的大小是整个文件的，实际腾出的会少一些。", en = "Firefox keeps history and bookmarks in one file. Only visited pages and address bar input history are removed from it; bookmarks stay and the file itself is kept. The size shown is the whole file, so less is actually freed." }
+effect = { zh = "访问记录删了就找不回来。书签、密码、Cookie 不受影响。", en = "Visit history cannot be recovered. Bookmarks, passwords and cookies are not affected." }
+evidence = "https://support.mozilla.org/kb/delete-browsing-search-download-history-firefox"

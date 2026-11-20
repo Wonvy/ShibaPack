@@ -634,7 +634,7 @@ const classifyCache: Record<string, Suggestion> = {};
 
 export async function mockCall(command: string, args: Record<string, unknown>): Promise<unknown> {
   await sleep(40);
-  if (command.startsWith("cleanup_")) return (await import("./mockCleanup")).mockCleanupCall(command, args);
+  if (command.startsWith("cleanup_") || command === "ai_explain_cleanup") return (await import("./mockCleanup")).mockCleanupCall(command, args);
   switch (command) {
     case "get_status":
     case "set_repo_root": {

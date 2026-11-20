@@ -70,6 +70,8 @@ struct AppState {
     cleanup: Mutex<Option<cleanup::Scan>>,
     /// 扫描和清理一次只做一件。
     cleanup_turn: Mutex<()>,
+    /// 用户点了取消扫描。
+    cleanup_cancel: AtomicBool,
     /// 失败日志放在哪（应用自己的日志文件夹，只和这台电脑有关）。
     log_dir: PathBuf,
 }
@@ -1098,8 +1100,13 @@ fn cleanup_context(app: &AppHandle, state: &State<AppState>) -> CmdResult<cleanu
             None => (None, None, Vec::new()),
         }
     };
-    let options = cleanup::load_options(&local_state_dir(app)?);
-    Ok(cleanup::Context::new(root.as_deref(), downloads, library, options))
+    let local = local_state_dir(app)?;
+    let options = cleanup::load_options(&local);
+    let mut ctx = cleanup::Context::new(root.as_deref(), downloads, library, options);
+    // 自检时不问访达：会弹出授权提示把自检卡住
+    ctx.ask_finder = state.selftest.is_none();
+    ctx.cache_dir = Some(local);
+    Ok(ctx)
 }
 
 #[derive(Clone, Serialize)]
@@ -1117,9 +1124,17 @@ async fn cleanup_scan(app: AppHandle) -> CmdResult<Vec<cleanup::CleanItem>> {
     blocking(app, move |app, state| {
         let _turn = state.cleanup_turn.lock().unwrap_or_else(|e| e.into_inner());
         let ctx = cleanup_context(app, &state)?;
-        let scan = cleanup::scan(&ctx, &|item| {
-            let _ = app.emit("cleanup://item", item);
-        });
+        state.cleanup_cancel.store(false, Ordering::SeqCst);
+        let scan = cleanup::scan_with(
+            &ctx,
+            &|item| {
+                let _ = app.emit("cleanup://item", item);
+            },
+            &|done, total| {
+                let _ = app.emit("cleanup://scan", CleanupProgress { done, total, waiting_admin: false });
+            },
+            &state.cleanup_cancel,
+        );
         let items = scan.items();
         if let Ok(mut cached) = state.cleanup.lock() {
             *cached = Some(scan);
@@ -1137,6 +1152,9 @@ async fn cleanup_run(app: AppHandle, picks: Vec<cleanup::Pick>) -> CmdResult<cle
         let _turn = state.cleanup_turn.lock().unwrap_or_else(|e| e.into_inner());
         let ctx = cleanup_context(app, &state)?;
         let scan = state.cleanup.lock().ok().and_then(|scan| scan.clone()).ok_or_else(|| "not_found".to_string())?;
+        // 清理前后各看一眼系统报告的可用空间，和我们自己算的对一对
+        let free = || ctx.vars.get("home").and_then(cleanup::special::free_space);
+        let disk_before = free();
         // 要管理员权限的项另外交给提权的进程，一次授权做完
         let (admin, normal): (Vec<cleanup::Pick>, Vec<cleanup::Pick>) = picks.into_iter().partition(|pick| scan.is_admin(&pick.id));
         let (mut report, mut run) = cleanup::clean(&scan, &normal, &ctx, &|done, total| {
@@ -1162,14 +1180,95 @@ async fn cleanup_run(app: AppHandle, picks: Vec<cleanup::Pick>) -> CmdResult<cle
                 }
             }
         }
+        report.disk_before = disk_before;
+        report.disk_after = free();
         if !run.items.is_empty() || run.skipped > 0 {
             report.history = cleanup::history::record(&local_state_dir(app)?.join("cleanup-history"), &run).ok();
         }
-        // 清掉的东西不在了：下次清理前要重新扫描
-        if let Ok(mut cached) = state.cleanup.lock() {
-            *cached = None;
-        }
+        // 扫描结果留着：界面接着用 `cleanup_rescan` 只重新量清过的这几项。
+        // 已经不在的条目就算再传回来，删之前的复查也会当作“已经不在了”
         Ok(report)
+    })
+    .await
+}
+
+/// 停下正在进行的扫描：不再量新的，已经量完的照样作为结果（不完整）。
+#[tauri::command]
+fn cleanup_cancel_scan(state: State<AppState>) {
+    state.cleanup_cancel.store(true, Ordering::SeqCst);
+}
+
+/// 只重新量这几项（清理完以后），返回更新后的全部项。还没扫过时返回 `not_found`。
+#[tauri::command]
+async fn cleanup_rescan(app: AppHandle, ids: Vec<String>) -> CmdResult<Vec<cleanup::CleanItem>> {
+    blocking(app, move |app, state| {
+        let _turn = state.cleanup_turn.lock().unwrap_or_else(|e| e.into_inner());
+        let ctx = cleanup_context(app, &state)?;
+        let mut cached = state.cleanup.lock().map_err(|_| "internal".to_string())?;
+        let scan = cached.as_mut().ok_or_else(|| "not_found".to_string())?;
+        scan.rescan(&ctx, &ids);
+        Ok(scan.items())
+    })
+    .await
+}
+
+/// 让 AI 解释几个清理项：这些文件是什么、删了会怎样。做法和解释启动项一样：以前解释过的用记下的，
+/// 没解释过的凑成一批问。发给 AI 的是名字、文件夹（用户文件夹写成 `~`）、大小和里面最大的几样的名字。
+#[tauri::command]
+async fn ai_explain_cleanup(app: AppHandle, ids: Vec<String>, mode: String) -> CmdResult<Explanations> {
+    blocking(app, move |app, state| {
+        let home = if cfg!(windows) { std::env::var_os("USERPROFILE") } else { std::env::var_os("HOME") }.map(PathBuf::from);
+        let facts: Vec<(String, String)> = {
+            let cached = state.cleanup.lock().map_err(|_| "internal".to_string())?;
+            let scan = cached.as_ref().ok_or_else(|| "not_found".to_string())?;
+            ids.iter().filter_map(|id| scan.facts(id, home.as_deref()).map(|text| (id.clone(), text))).collect()
+        };
+        let dir = cache_dir(&state)?;
+        let language = with_repo(&state, |repo| Ok(repo.lib.settings.language.clone()))?;
+        // 文件夹不一样（比如改了自定义规则）就算另一项，重新问
+        let key_of = |id: &str, text: &str| {
+            let folders = text.lines().find(|line| line.starts_with("folders:")).unwrap_or("");
+            aicache::explain_key(std::env::consts::OS, "cleanup", &format!("{id} {folders}"), &language)
+        };
+        let mut explanations = HashMap::new();
+        let mut todo: Vec<&(String, String)> = Vec::new();
+        {
+            let _turn = state.ai_cache_turn.lock().unwrap_or_else(|e| e.into_inner());
+            let cache = AiCache::load(&dir);
+            for entry in &facts {
+                match cache.explain.get(&key_of(&entry.0, &entry.1)).filter(|_| mode != "refresh") {
+                    Some(hit) => {
+                        explanations.insert(entry.0.clone(), Explanation { text: hit.text.clone(), model: hit.model.clone(), at: hit.at.clone(), cached: true });
+                    }
+                    None => todo.push(entry),
+                }
+            }
+        }
+        if mode == "cached" || todo.is_empty() {
+            return Ok(Explanations { explanations, asked: 0, missing: 0 });
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        if let Ok(mut current) = state.ai_cancel.lock() {
+            current.store(true, Ordering::SeqCst);
+            *current = cancel.clone();
+        }
+        let (service, library) = repo_ai(&state)?;
+        let questions: Vec<(String, String)> = todo.iter().map(|entry| (*entry).clone()).collect();
+        let answers = ai::explain_cleanup_many(&service, &library.settings.language, &questions, &cancel, &mut |done, total| {
+            let _ = app.emit("ai://progress", AiProgress { done, total });
+        })
+        .map_err(|e| e.code())?;
+        let at = shibapack_core::now();
+        let model = service.model().to_string();
+        let _turn = state.ai_cache_turn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = AiCache::load(&dir);
+        for (id, text) in &answers {
+            let Some(entry) = todo.iter().find(|entry| &entry.0 == id) else { continue };
+            cache.explain.insert(key_of(&entry.0, &entry.1), CachedText { text: text.clone(), model: model.clone(), at: at.clone() });
+            explanations.insert(id.clone(), Explanation { text: text.clone(), model: model.clone(), at: at.clone(), cached: false });
+        }
+        let _ = cache.save(&dir);
+        Ok(Explanations { explanations, asked: todo.len(), missing: todo.len() - answers.len() })
     })
     .await
 }
@@ -2013,6 +2112,7 @@ pub fn run() {
                 ai_cache_turn: Mutex::new(()),
                 cleanup: Mutex::new(None),
                 cleanup_turn: Mutex::new(()),
+                cleanup_cancel: AtomicBool::new(false),
                 log_dir: app.path().app_log_dir().unwrap_or_else(|_| std::env::temp_dir().join("ShibaPack-logs")),
             });
             Ok(())
@@ -2071,6 +2171,9 @@ pub fn run() {
             cleanup_set_options,
             cleanup_history,
             cleanup_cookie_sites,
+            cleanup_cancel_scan,
+            cleanup_rescan,
+            ai_explain_cleanup,
             ai_explain_startup_many,
             fill_icons,
             fill_file_info,

@@ -120,6 +120,9 @@ pub struct Rule {
     /// 这些文件是浏览器的 Cookie 数据库：有保留名单时只删名单以外的网站，不删整个文件。
     #[serde(default)]
     pub cookies: bool,
+    /// 这个文件是 Firefox 的 places.sqlite：历史和书签在一起，只删里面的浏览记录，书签留着，文件不删。
+    #[serde(default)]
+    pub history_db: bool,
     /// 不删文件，改为运行这条系统自带的命令（只用于要管理员权限的规则，比如 Windows 的传递优化缓存）。
     #[serde(default)]
     pub command: PerOs<String>,
@@ -267,6 +270,9 @@ pub fn check(rule: &Rule) -> Result<(), String> {
     if rule.cookies && rule.category != Category::Privacy {
         return Err("cookies 只用于隐私痕迹".into());
     }
+    if rule.history_db && (rule.category != Category::Privacy || rule.names != ["places.sqlite"]) {
+        return Err("historyDb 只用于隐私痕迹，而且只能是 places.sqlite".into());
+    }
     for text in [&rule.name, &rule.about, &rule.effect] {
         if text.zh.trim().is_empty() || text.en.trim().is_empty() {
             return Err("名字和说明要有中英文".into());
@@ -312,6 +318,7 @@ mod tests {
             admin: false,
             permanent: false,
             cookies: false,
+            history_db: false,
             command: PerOs::default(),
             name: Text::new("演示", "Demo"),
             about: Text::new("说明", "About"),

@@ -167,6 +167,11 @@ export async function runSelftest() {
       await check("认出要先关掉的程序", true, running.length > 0 ? `正在运行：${running.join("、")}` : "都没在运行");
       const admin = items.filter((item) => item.admin).map((item) => item.id);
       await check("列出要管理员权限的项", true, admin.length > 0 ? admin.join("、") : "这台电脑上没有");
+      // 单项重扫：只重新量第一项，别的原样
+      const again = await api.cleanupRescan(items.slice(0, 1).map((item) => item.id));
+      await check("只重新量一项", again.length >= items.length - 1 && again.length <= items.length, `${items[0]?.id} → 共 ${again.length} 项`);
+      const cachedNotes = await api.aiExplainCleanup(items.slice(0, 3).map((item) => item.id), "cached");
+      await check("AI 解释的缓存能读（不问 AI）", cachedNotes.asked === 0, `${Object.keys(cachedNotes.explanations).length} 条`);
       const nothing = await api.cleanupRun([]);
       await check("不选任何项时什么都不清", nothing.removed === 0 && nothing.freed === 0 && nothing.trashed === 0 && !nothing.history);
       const before = await api.cleanupOptions();
@@ -190,7 +195,9 @@ export async function runSelftest() {
       await check("读得到浏览器里有 Cookie 的网站", Array.isArray(sites), `${sites.length} 个网站`);
       const history = await api.cleanupHistory();
       await check("清理记录能读", Array.isArray(history), `${history.length} 次`);
-      // 清理页在真实窗口里显示出扫描结果
+      // 清理页在真实窗口里显示出扫描结果。类别折叠是记在本机的，先都展开，查完放回去
+      const collapsed = usePrefs.getState().cleanupCollapsed;
+      usePrefs.getState().set({ cleanupCollapsed: [] });
       useApp.getState().setRoute("cleanup");
       const deadline = Date.now() + 60_000;
       await sleep(300);
@@ -198,7 +205,12 @@ export async function runSelftest() {
       await sleep(300);
       const first = useCleanup.getState().items?.[0];
       const text = document.querySelector("main")?.textContent ?? "";
-      await check("清理页显示出扫描结果", Boolean(first) && (text.includes(first!.name.zh) || text.includes(first!.name.en)), first?.id ?? "没有项");
+      await check(
+        "清理页显示出扫描结果",
+        Boolean(first) && (text.includes(first!.name.zh) || text.includes(first!.name.en)),
+        `${first?.id ?? "没有项"}${collapsed.length > 0 ? `（原来折叠着 ${collapsed.join("、")}）` : ""}`,
+      );
+      usePrefs.getState().set({ cleanupCollapsed: collapsed });
       const sidebar = document.querySelector("#app-sidebar")?.textContent ?? "";
       await check("侧栏显示能清理多少", /\d(\.\d)? (B|KB|MB|GB|TB)/.test(sidebar));
       useApp.getState().setRoute("library");

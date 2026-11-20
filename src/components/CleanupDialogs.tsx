@@ -1,14 +1,14 @@
 // 清理用到的几个窗口：确认、结果、清理记录、清理设置（自定义文件夹和排除）。
 
-import { CheckCircle2, FolderPlus, Plus, X } from "lucide-react";
+import { CheckCircle2, FolderOpen, FolderPlus, Plus, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, pickFolder } from "../lib/api";
 import { pickedSize, runClean, skipReason, textOf, useCleanup } from "../lib/cleanup";
 import { formatDate, formatSize } from "../lib/library";
 import { useApp, useLanguage, useT } from "../lib/store";
-import type { CleanAction, CleanItem, CleanOptions, CleanRun, CookieSite } from "../lib/types";
+import type { CleanAction, CleanItem, CleanOptions, CleanReport, CleanRun, CookieSite, CustomCleanRule } from "../lib/types";
 import { CleanIcon } from "../views/CleanupView";
-import { Button, Checkbox, IconButton, Modal, TextInput, cx } from "./ui";
+import { Button, Checkbox, Field, IconButton, Modal, Segmented, TextInput, cx } from "./ui";
 
 export function CleanupDialogs() {
   return (
@@ -142,6 +142,7 @@ function ResultDialog() {
             {report.trashed > 0 && <Figure label={t("cleanup.result.trashed")} value={formatSize(report.trashed)} hint={t("cleanup.result.trashedHint")} />}
           </div>
         )}
+        <DiskChange report={report} />
         <div className="flex items-center gap-2 text-[12px] text-fg-2">
           <CheckCircle2 size={14} strokeWidth={1.75} className="text-success" aria-hidden />
           {t("cleanup.result.removed", { n: report.removed })}
@@ -169,6 +170,28 @@ function ResultDialog() {
         )}
       </div>
     </Modal>
+  );
+}
+
+/**
+ * 系统报告的可用空间在清理前后的变化，和我们自己算的“腾出空间”对一对。
+ * 差得多时如实说：系统可能过一会儿才回收（快照、本地备份），也可能有别的程序同时在写。
+ */
+function DiskChange({ report }: { report: CleanReport }) {
+  const t = useT();
+  if (report.diskBefore === null || report.diskAfter === null) return null;
+  const gained = report.diskAfter - report.diskBefore;
+  const change =
+    gained >= 0 ? t("cleanup.result.diskMore", { size: formatSize(gained) }) : t("cleanup.result.diskLess", { size: formatSize(-gained) });
+  // 少了一半以上、而且差得不止 50 MB，才算对不上
+  const short = report.freed - gained > Math.max(report.freed / 2, 50 * 1024 * 1024);
+  return (
+    <div className="rounded-lg bg-hover px-3 py-2 text-[12px] leading-relaxed text-fg-2">
+      <div className="tabular">
+        {t("cleanup.result.disk", { before: formatSize(report.diskBefore), after: formatSize(report.diskAfter) })} · {change}
+      </div>
+      {short && <div className="mt-0.5 text-fg-3">{t("cleanup.result.diskLag")}</div>}
+    </div>
   );
 }
 
@@ -240,7 +263,7 @@ function OptionsDialog() {
       latest.current = value;
       setOptions(value);
     };
-    void api.cleanupOptions().then(loaded, () => loaded({ custom: [], exclude: [], keepCookies: [] }));
+    void api.cleanupOptions().then(loaded, () => loaded({ custom: [], exclude: [], keepCookies: [], rules: [] }));
   }, [open]);
   const update = (change: (current: CleanOptions) => CleanOptions | null): Promise<boolean> => {
     const step = queue.current.then(async () => {
@@ -262,11 +285,11 @@ function OptionsDialog() {
     useCleanup.setState({ optionsOpen: false });
     if (changed) void useCleanup.getState().scan();
   };
-  const add = async (key: "custom" | "exclude") => {
+  const add = async (key: "exclude") => {
     const folder = await attempt(pickFolder);
     if (folder) await update((current) => (current[key].includes(folder) ? null : { ...current, [key]: [...current[key], folder] }));
   };
-  const remove = (key: keyof CleanOptions, value: string) => {
+  const remove = (key: "exclude" | "keepCookies", value: string) => {
     void update((current) => ({ ...current, [key]: current[key].filter((x) => x !== value) }));
   };
   return (
@@ -283,12 +306,10 @@ function OptionsDialog() {
     >
       {options && (
         <div className="flex flex-col gap-5">
-          <FolderList
-            title={t("cleanup.options.custom")}
-            hint={t("cleanup.options.customHint")}
-            folders={options.custom}
-            onAdd={() => void add("custom")}
-            onRemove={(folder) => remove("custom", folder)}
+          <CustomRules
+            rules={options.rules}
+            onAdd={(rule) => update((current) => ({ ...current, rules: [...current.rules, rule] }))}
+            onRemove={(index) => void update((current) => ({ ...current, rules: current.rules.filter((_, i) => i !== index) }))}
           />
           <FolderList
             title={t("cleanup.options.exclude")}
@@ -332,6 +353,119 @@ function FolderList({ title, hint, folders, onAdd, onRemove }: { title: string; 
             </IconButton>
           </div>
         ))}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * 自己加的清理规则：给别的软件加规则用。选一个文件夹，可以只清符合名字的（*.log）、只清多少天没动过的，
+ * 写上清理前要先关掉的程序，选移到回收站还是直接删除。文件夹要过保护检查，受保护的加不进来。
+ */
+function CustomRules({ rules, onAdd, onRemove }: { rules: CustomCleanRule[]; onAdd: (rule: CustomCleanRule) => Promise<boolean>; onRemove: (index: number) => void }) {
+  const t = useT();
+  const attempt = useApp((state) => state.attempt);
+  const blank = { name: "", path: "", names: "", days: "", processes: "", mode: "trash" as "trash" | "delete" };
+  const [form, setForm] = useState<typeof blank | null>(null);
+  const split = (text: string) => text.split(/[,，;；\n]/).map((x) => x.trim()).filter(Boolean);
+  const pick = async () => {
+    const folder = await attempt(pickFolder);
+    if (folder && form) setForm({ ...form, path: folder, name: form.name || folder.split(/[\\/]/).pop() || "" });
+  };
+  const submit = async () => {
+    if (!form?.path.trim()) return;
+    const days = Number.parseInt(form.days, 10);
+    const ok = await onAdd({
+      name: form.name.trim(),
+      path: form.path.trim(),
+      names: split(form.names),
+      olderThanDays: Number.isFinite(days) && days > 0 ? days : null,
+      processes: split(form.processes),
+      delete: form.mode === "delete",
+    });
+    if (ok) setForm(null);
+  };
+  const summary = (rule: CustomCleanRule) =>
+    [
+      rule.names.length > 0 ? rule.names.join(" ") : t("cleanup.rules.everything"),
+      rule.olderThanDays ? t("cleanup.rules.olderThan", { n: rule.olderThanDays }) : "",
+      rule.delete ? t("cleanup.action.delete") : t("cleanup.action.trash"),
+      rule.processes.length > 0 ? t("cleanup.rules.closeFirst", { apps: rule.processes.join(t("common.listSeparator")) }) : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  return (
+    <section>
+      <div className="flex items-center gap-2">
+        <h3 className="m-0 flex-1 text-[13px] font-medium">{t("cleanup.rules.title")}</h3>
+        {!form && (
+          <Button size="sm" onClick={() => setForm(blank)}>
+            <Plus size={13} strokeWidth={1.75} aria-hidden />
+            {t("cleanup.rules.add")}
+          </Button>
+        )}
+      </div>
+      <p className="mt-1 mb-2 text-[12px] leading-relaxed text-fg-3">{t("cleanup.rules.hint")}</p>
+      <div className="rounded-lg border border-line">
+        {rules.length === 0 && !form && <div className="px-3 py-2 text-[12px] text-fg-3">{t("cleanup.options.none")}</div>}
+        {rules.map((rule, index) => (
+          <div key={`${rule.path}-${index}`} className="flex items-center gap-2 border-b border-line py-1.5 pr-1 pl-3 last:border-b-0">
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[13px] font-medium">{rule.name}</div>
+              <div className="selectable truncate font-mono text-[12px] text-fg-2" title={rule.path}>
+                {rule.path}
+              </div>
+              <div className="truncate text-[12px] text-fg-3">{summary(rule)}</div>
+            </div>
+            <IconButton label={t("cleanup.options.remove")} className="size-6" onClick={() => onRemove(index)}>
+              <X size={13} strokeWidth={1.75} />
+            </IconButton>
+          </div>
+        ))}
+        {form && (
+          <div className="flex flex-col gap-2.5 border-t border-line p-3 first:border-t-0">
+            <Field label={t("cleanup.rules.folder")}>
+              <div className="flex gap-2">
+                <TextInput className="flex-1 font-mono" value={form.path} placeholder={t("cleanup.rules.folderPlaceholder")} onChange={(event) => setForm({ ...form, path: event.target.value })} />
+                <Button onClick={() => void pick()}>
+                  <FolderOpen size={14} strokeWidth={1.75} aria-hidden />
+                  {t("cleanup.rules.choose")}
+                </Button>
+              </div>
+            </Field>
+            <Field label={t("cleanup.rules.name")}>
+              <TextInput value={form.name} placeholder={t("cleanup.rules.namePlaceholder")} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+            </Field>
+            <Field label={t("cleanup.rules.names")} hint={t("cleanup.rules.namesHint")}>
+              <TextInput className="font-mono" value={form.names} placeholder="*.log, *.tmp" onChange={(event) => setForm({ ...form, names: event.target.value })} />
+            </Field>
+            <div className="grid grid-cols-2 gap-2.5">
+              <Field label={t("cleanup.rules.days")} hint={t("cleanup.rules.daysHint")}>
+                <TextInput inputMode="numeric" value={form.days} placeholder="30" onChange={(event) => setForm({ ...form, days: event.target.value.replace(/\D/g, "") })} />
+              </Field>
+              <Field label={t("cleanup.rules.processes")} hint={t("cleanup.rules.processesHint")}>
+                <TextInput value={form.processes} placeholder="WeChat" onChange={(event) => setForm({ ...form, processes: event.target.value })} />
+              </Field>
+            </div>
+            <div className="flex items-center gap-2">
+              <Segmented<"trash" | "delete">
+                value={form.mode}
+                onChange={(mode) => setForm({ ...form, mode })}
+                options={[
+                  { value: "trash", label: t("cleanup.action.trash") },
+                  { value: "delete", label: t("cleanup.action.delete") },
+                ]}
+              />
+              <span className="flex-1" />
+              <Button variant="ghost" onClick={() => setForm(null)}>
+                {t("common.cancel")}
+              </Button>
+              <Button variant="primary" disabled={!form.path.trim()} onClick={() => void submit()}>
+                {t("cleanup.rules.save")}
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
     </section>
   );

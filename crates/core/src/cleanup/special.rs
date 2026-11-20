@@ -93,8 +93,24 @@ pub struct TrashInfo {
     pub items: u64,
 }
 
+/// 问访达废纸篓里有几项。没有“完全磁盘访问权限”时读不了 ~/.Trash，但访达知道。
+/// 第一次会问能不能控制“访达”；不允许、超时（最多等 20 秒）或者出错时返回 None。
+#[cfg(target_os = "macos")]
+fn finder_trash_count() -> Option<u64> {
+    let mut cmd = command("osascript");
+    cmd.args(["-e", "tell application \"Finder\" to count items of trash"]);
+    let output = crate::startup::output_within(cmd, Duration::from_secs(20))?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
 /// 量回收站（废纸篓）。这个系统上没有时返回 None。
-pub fn trash_info(home: &Path, xdg_data: Option<&Path>) -> Option<TrashInfo> {
+/// `ask_finder`：macOS 上读不了废纸篓时，问访达里面有几项（空的就能不列出来）。
+pub fn trash_info(home: &Path, xdg_data: Option<&Path>, ask_finder: bool) -> Option<TrashInfo> {
+    #[cfg(not(target_os = "macos"))]
+    let _ = ask_finder;
     #[cfg(target_os = "macos")]
     {
         let _ = xdg_data;
@@ -112,7 +128,11 @@ pub fn trash_info(home: &Path, xdg_data: Option<&Path>) -> Option<TrashInfo> {
                 }
                 Some(TrashInfo { size: Some(size), items })
             }
-            Err(_) if dir.exists() || std::fs::symlink_metadata(&dir).is_ok() => Some(TrashInfo { size: None, items: 0 }),
+            Err(_) if dir.exists() || std::fs::symlink_metadata(&dir).is_ok() => match ask_finder.then(finder_trash_count).flatten() {
+                Some(0) => Some(TrashInfo { size: Some(0), items: 0 }),
+                Some(items) => Some(TrashInfo { size: None, items }),
+                None => Some(TrashInfo { size: None, items: 0 }),
+            },
             Err(_) => Some(TrashInfo { size: Some(0), items: 0 }),
         }
     }
@@ -197,6 +217,44 @@ pub fn empty_trash(home: &Path, xdg_data: Option<&Path>) -> Result<(), String> {
         let _ = (home, xdg_data);
         Err("not_supported".into())
     }
+}
+
+// ── 磁盘可用空间 ─────────────────────────────────────────────
+
+/// 这个路径所在的盘还有多少可用空间。量不出来时返回 None。
+pub fn free_space(path: &Path) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        // POSIX 格式：最后一行第 4 列是可用的 1K 块数
+        let output = command("df").arg("-Pk").arg(path).output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        parse_df(&String::from_utf8_lossy(&output.stdout))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let mut available = 0u64;
+        let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut available, std::ptr::null_mut(), std::ptr::null_mut()) };
+        (ok != 0).then_some(available)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+fn parse_df(text: &str) -> Option<u64> {
+    let line = text.lines().rfind(|line| !line.trim().is_empty())?;
+    // 设备名里可能有空格，从后往前数：…… 总数 已用 可用 百分比 挂载点
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    let percent = fields.iter().rposition(|f| f.ends_with('%'))?;
+    fields.get(percent.checked_sub(1)?)?.parse::<u64>().ok().map(|blocks| blocks * 1024)
 }
 
 // ── 剪贴板 ───────────────────────────────────────────────────
@@ -358,6 +416,63 @@ pub fn prune_cookies(path: &Path, keep: &[String]) -> Result<u64, String> {
     Ok(before.saturating_sub(db_size(path)))
 }
 
+/// 删掉 Firefox 的 places.sqlite 里的浏览记录，书签留着。返回腾出的空间。
+/// 做法：删访问记录和地址栏输入记录；没有被书签、关键词用到的网页记录也删掉，留下的把访问次数清零。
+/// 全部在一个事务里，任何一步出错就整个撤销、原样不动。Firefox 开着时数据库被锁住，返回 `in_use`。
+#[cfg(feature = "sqlite")]
+pub fn prune_firefox_history(path: &Path) -> Result<u64, String> {
+    use rusqlite::{Connection, OpenFlags};
+    let before = db_size(path);
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(db_error)?;
+    conn.busy_timeout(Duration::from_millis(800)).map_err(db_error)?;
+    let has = |name: &str| {
+        conn.query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1", [name], |row| row.get::<_, i64>(0)).map(|n| n > 0).unwrap_or(false)
+    };
+    // 不是 Firefox 的这个库（缺这三张表）就不动
+    if !(has("moz_places") && has("moz_historyvisits") && has("moz_bookmarks")) {
+        return Err("unknown_format".into());
+    }
+    let kept = if has("moz_keywords") {
+        "SELECT fk FROM moz_bookmarks WHERE fk IS NOT NULL UNION SELECT place_id FROM moz_keywords WHERE place_id IS NOT NULL"
+    } else {
+        "SELECT fk FROM moz_bookmarks WHERE fk IS NOT NULL"
+    };
+    let tx = conn.unchecked_transaction().map_err(db_error)?;
+    tx.execute("DELETE FROM moz_historyvisits", []).map_err(db_error)?;
+    for table in ["moz_inputhistory", "moz_places_metadata", "moz_places_metadata_search_queries", "moz_previews_tombstones"] {
+        if has(table) {
+            tx.execute(&format!("DELETE FROM {table}"), []).map_err(db_error)?;
+        }
+    }
+    if has("moz_annos") {
+        tx.execute(&format!("DELETE FROM moz_annos WHERE place_id NOT IN ({kept})"), []).map_err(db_error)?;
+    }
+    tx.execute(&format!("DELETE FROM moz_places WHERE id NOT IN ({kept})"), []).map_err(db_error)?;
+    // 留下的（有书签的）网页：访问次数清零。列不一定都有，逐个试，没有的列跳过
+    for assignment in ["visit_count = 0", "last_visit_date = NULL", "typed = 0", "frecency = -1"] {
+        let column = assignment.split(' ').next().unwrap_or("");
+        let exists = tx.query_row("SELECT count(*) FROM pragma_table_info('moz_places') WHERE name = ?1", [column], |row| row.get::<_, i64>(0)).map(|n| n > 0).unwrap_or(false);
+        if exists {
+            tx.execute(&format!("UPDATE moz_places SET {assignment}"), []).map_err(db_error)?;
+        }
+    }
+    if has("moz_origins") {
+        let has_origin = tx.query_row("SELECT count(*) FROM pragma_table_info('moz_places') WHERE name = 'origin_id'", [], |row| row.get::<_, i64>(0)).map(|n| n > 0).unwrap_or(false);
+        if has_origin {
+            tx.execute("DELETE FROM moz_origins WHERE id NOT IN (SELECT origin_id FROM moz_places WHERE origin_id IS NOT NULL)", []).map_err(db_error)?;
+        }
+    }
+    tx.commit().map_err(db_error)?;
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
+    conn.close().map_err(|(_, e)| db_error(e))?;
+    Ok(before.saturating_sub(db_size(path)))
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub fn prune_firefox_history(_path: &Path) -> Result<u64, String> {
+    Err("not_supported".into())
+}
+
 #[cfg(not(feature = "sqlite"))]
 pub fn prune_cookies(_path: &Path, _keep: &[String]) -> Result<u64, String> {
     Err("not_supported".into())
@@ -459,6 +574,51 @@ pub struct Loose {
     pub known: Option<(String, Vec<String>)>,
 }
 
+/// 算过的 SHA-256：路径 →（大小，修改时间毫秒，哈希）。文件没变就不重算。只是缓存，删了会重新算。
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HashCache {
+    #[serde(default)]
+    files: HashMap<String, (u64, i64, String)>,
+    /// 这次扫描用到的路径：存的时候只留这些，别的（文件已经不在了）丢掉。
+    #[serde(skip)]
+    used: HashSet<String>,
+    /// 这次真的算了几个（测试用）。
+    #[serde(skip)]
+    pub computed: usize,
+}
+
+const HASH_CACHE_FILE: &str = "cleanup-hashes.json";
+
+impl HashCache {
+    pub fn load(dir: &Path) -> HashCache {
+        std::fs::read(dir.join(HASH_CACHE_FILE)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+    }
+
+    pub fn save(&self, dir: &Path) {
+        let kept = HashCache { files: self.files.iter().filter(|(path, _)| self.used.contains(*path)).map(|(k, v)| (k.clone(), v.clone())).collect(), ..Default::default() };
+        let _ = std::fs::create_dir_all(dir);
+        if let Ok(body) = serde_json::to_vec(&kept) {
+            let _ = std::fs::write(dir.join(HASH_CACHE_FILE), body);
+        }
+    }
+
+    /// 这个文件的 SHA-256：大小和修改时间都没变就用记下的。
+    fn sha256(&mut self, path: &Path, meta: &std::fs::Metadata) -> Option<String> {
+        let key = path.to_string_lossy().to_string();
+        let stamp = meta.modified().ok().and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64).unwrap_or(-1);
+        self.used.insert(key.clone());
+        if let Some((size, at, hash)) = self.files.get(&key) {
+            if *size == meta.len() && *at == stamp && stamp >= 0 {
+                return Some(hash.clone());
+            }
+        }
+        let hash = crate::import::sha256_file(path).ok()?;
+        self.computed += 1;
+        self.files.insert(key, (meta.len(), stamp, hash.clone()));
+        Some(hash)
+    }
+}
+
 /// 不在仓库里的、才当作安装包列出来的扩展名。和仓库比对一模一样的不限扩展名（压缩包也算）。
 const STRICT: &[&str] = &[
     "exe", "msi", "msix", "msixbundle", "appx", "appxbundle", "appinstaller", "dmg", "pkg", "mpkg", "deb", "rpm", "appimage", "flatpak",
@@ -467,7 +627,7 @@ const STRICT: &[&str] = &[
 
 /// 在这些文件夹（下载文件夹、桌面）和它们下面一层里找安装包，和仓库比对：大小一样的才算 SHA-256。
 /// 隐藏的文件夹、.app、里面有 .git 的项目文件夹不进去。
-pub fn loose_installers(dirs: &[PathBuf], library: &[LibraryFile]) -> Vec<Loose> {
+pub fn loose_installers(dirs: &[PathBuf], library: &[LibraryFile], hashes: &mut HashCache) -> Vec<Loose> {
     let mut by_size: HashMap<u64, Vec<&LibraryFile>> = HashMap::new();
     for file in library {
         by_size.entry(file.size).or_default().push(file);
@@ -500,7 +660,7 @@ pub fn loose_installers(dirs: &[PathBuf], library: &[LibraryFile]) -> Vec<Loose>
                 }
                 let size = meta.len();
                 let same_as = by_size.get(&size).and_then(|candidates| {
-                    let hash = crate::import::sha256_file(&path).ok()?;
+                    let hash = hashes.sha256(&path, &meta)?;
                     candidates.iter().find(|file| file.sha256.eq_ignore_ascii_case(&hash)).map(|file| (file.software.clone(), file.version.clone()))
                 });
                 let (_, ext) = identify::split_ext(&name);
@@ -550,7 +710,22 @@ mod tests {
             LibraryFile { size: 10, sha256: hash, software: "Foo".into(), version: "1.2.0".into() },
             LibraryFile { size: 99, sha256: "00".into(), software: "Bar".into(), version: "1.0".into() },
         ];
-        let found = loose_installers(std::slice::from_ref(&downloads), &library);
+        let mut hashes = HashCache::default();
+        let found = loose_installers(std::slice::from_ref(&downloads), &library, &mut hashes);
+        assert_eq!(hashes.computed, 1, "只有大小和仓库里一样的才算哈希");
+        // 存下来再读回：第二遍不用重算；文件变了才重算
+        hashes.save(dir.path());
+        let mut again = HashCache::load(dir.path());
+        assert_eq!(loose_installers(std::slice::from_ref(&downloads), &library, &mut again), found);
+        assert_eq!(again.computed, 0);
+        fs::write(downloads.join("Foo-1.2.0.dmg"), b"other data").unwrap();
+        // 大小没变：把修改时间明确往后拨，免得同一毫秒里写两次看不出变化
+        let file = fs::File::options().write(true).open(downloads.join("Foo-1.2.0.dmg")).unwrap();
+        file.set_modified(SystemTime::now() + Duration::from_secs(5)).unwrap();
+        drop(file);
+        let changed = loose_installers(std::slice::from_ref(&downloads), &library, &mut again);
+        assert_eq!(again.computed, 1);
+        assert!(changed.iter().find(|f| f.path.ends_with("Foo-1.2.0.dmg")).unwrap().same_as.is_none());
         let names: Vec<String> = found.iter().map(|f| f.path.file_name().unwrap().to_string_lossy().to_string()).collect();
         assert_eq!(names, vec!["Bar-2.0.exe", "Foo-1.2.0.dmg", "Baz-1.0.msi"]);
         let foo = found.iter().find(|f| f.path.ends_with("Foo-1.2.0.dmg")).unwrap();
@@ -568,9 +743,59 @@ mod tests {
         fs::write(dir.path().join("Tool-3.zip"), b"zip bytes").unwrap();
         let hash = crate::import::sha256_file(&dir.path().join("Tool-3.zip")).unwrap();
         let library = vec![LibraryFile { size: 9, sha256: hash, software: "Tool".into(), version: "3".into() }];
-        let found = loose_installers(&[dir.path().to_path_buf()], &library);
+        let found = loose_installers(&[dir.path().to_path_buf()], &library, &mut HashCache::default());
         assert_eq!(found.len(), 1);
         assert!(found[0].same_as.is_some());
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn firefox_history_is_removed_and_bookmarks_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("places.sqlite");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE moz_origins (id INTEGER PRIMARY KEY, host TEXT);
+             CREATE TABLE moz_places (id INTEGER PRIMARY KEY, url TEXT, title TEXT, visit_count INTEGER, last_visit_date INTEGER, typed INTEGER, frecency INTEGER, origin_id INTEGER);
+             CREATE TABLE moz_historyvisits (id INTEGER PRIMARY KEY, place_id INTEGER, visit_date INTEGER);
+             CREATE TABLE moz_inputhistory (place_id INTEGER, input TEXT);
+             CREATE TABLE moz_bookmarks (id INTEGER PRIMARY KEY, type INTEGER, fk INTEGER, title TEXT);
+             CREATE TABLE moz_keywords (id INTEGER PRIMARY KEY, keyword TEXT, place_id INTEGER);
+             INSERT INTO moz_origins VALUES (1, 'bookmarked.example'), (2, 'visited.example'), (3, 'keyword.example');
+             INSERT INTO moz_places VALUES (1, 'https://bookmarked.example/', 'B', 9, 123, 1, 500, 1), (2, 'https://visited.example/a', 'V', 3, 456, 0, 100, 2), (3, 'https://keyword.example/', 'K', 1, 789, 0, 50, 3);
+             INSERT INTO moz_historyvisits VALUES (1, 1, 123), (2, 2, 456), (3, 3, 789);
+             INSERT INTO moz_inputhistory VALUES (2, 'vis');
+             INSERT INTO moz_bookmarks VALUES (1, 2, NULL, 'folder'), (2, 1, 1, 'B');
+             INSERT INTO moz_keywords VALUES (1, 'kw', 3);",
+        )
+        .unwrap();
+        drop(conn);
+        prune_firefox_history(&path).unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let count = |sql: &str| conn.query_row(sql, [], |row| row.get::<_, i64>(0)).unwrap();
+        assert_eq!(count("SELECT count(*) FROM moz_historyvisits"), 0);
+        assert_eq!(count("SELECT count(*) FROM moz_inputhistory"), 0);
+        assert_eq!(count("SELECT count(*) FROM moz_bookmarks"), 2, "书签一条不少");
+        assert_eq!(count("SELECT count(*) FROM moz_places"), 2, "有书签、有关键词的网页留着");
+        assert_eq!(count("SELECT count(*) FROM moz_places WHERE url LIKE '%visited%'"), 0);
+        assert_eq!(count("SELECT sum(visit_count) FROM moz_places"), 0);
+        assert_eq!(count("SELECT count(*) FROM moz_origins"), 2);
+        // 不是 Firefox 的库：不动
+        let other = dir.path().join("other.sqlite");
+        rusqlite::Connection::open(&other).unwrap().execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES (1);").unwrap();
+        assert_eq!(prune_firefox_history(&other), Err("unknown_format".into()));
+        assert_eq!(rusqlite::Connection::open(&other).unwrap().query_row("SELECT count(*) FROM t", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn reads_available_space_from_df() {
+        let text = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk3s5 482797652 310252996 150000000 68% /System/Volumes/Data\n";
+        assert_eq!(parse_df(text), Some(150_000_000 * 1024));
+        let spaced = "Filesystem 1024-blocks Used Available Capacity Mounted on\n//nas/My Share 1000 400 600 40% /Volumes/My Share\n";
+        assert_eq!(parse_df(spaced), Some(600 * 1024));
+        assert_eq!(parse_df(""), None);
+        #[cfg(unix)]
+        assert!(free_space(Path::new("/")).is_some_and(|free| free > 0));
     }
 
     #[test]

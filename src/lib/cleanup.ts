@@ -4,11 +4,14 @@
 // 勾选记在本机的界面偏好里（没动过的按默认：安全档勾上，别的不勾）；不要的条目只在这次扫描里有效。
 
 import { create } from "zustand";
-import { api, onCleanupItem, onCleanupProgress } from "./api";
+import { api, onCleanupItem, onCleanupProgress, onCleanupScan } from "./api";
 import { type Key, errorText, translate } from "./i18n";
 import { usePrefs } from "./prefs";
 import { useApp } from "./store";
-import type { BiText, CleanCategory, CleanItem, CleanProgress, CleanReport, CleanRun, Language } from "./types";
+import type { BiText, CleanCategory, CleanItem, CleanProgress, CleanReport, CleanRun, Explanation, Language } from "./types";
+
+/** 扫描结果放多久算旧：回到清理页时超过这么久就自动重新扫。 */
+export const STALE_MS = 10 * 60_000;
 
 /** 类别在列表里的顺序。 */
 export const CATEGORIES: CleanCategory[] = ["system", "browser", "apps", "development", "installers", "privacy", "trash", "custom"];
@@ -39,6 +42,13 @@ interface CleanupState {
   history: CleanRun[] | null;
   /** Cookie 保留名单（清理设置里的），确认窗口和详情栏要显示。 */
   keepCookies: string[];
+  /** 扫描进度：量完几处、一共几处。 */
+  scanProgress: { done: number; total: number } | null;
+  /** 上一次扫描被取消了，结果不完整。 */
+  partial: boolean;
+  /** AI 的解释，按项 id。 */
+  explanations: Record<string, Explanation>;
+  explaining: Record<string, boolean>;
   select: (id: string | null) => void;
   loadHistory: () => Promise<void>;
   scan: () => Promise<void>;
@@ -63,6 +73,10 @@ export const useCleanup = create<CleanupState>()((set, get) => ({
   optionsOpen: false,
   history: null,
   keepCookies: [],
+  scanProgress: null,
+  partial: false,
+  explanations: {},
+  explaining: {},
   select: (id) => set({ selectedId: id }),
   loadHistory: async () => {
     try {
@@ -74,7 +88,8 @@ export const useCleanup = create<CleanupState>()((set, get) => ({
   scan: async () => {
     if (get().scanning || get().cleaning) return;
     const first = get().items === null;
-    set({ scanning: true, error: null, ...(first ? { items: [] } : {}) });
+    cancelRequested = false;
+    set({ scanning: true, error: null, scanProgress: null, ...(first ? { items: [] } : {}) });
     // 第一次扫描时量完一项就先显示一项；重新扫描时先留着旧的，扫完一起换
     const stop = first
       ? await onCleanupItem((item) => {
@@ -82,20 +97,32 @@ export const useCleanup = create<CleanupState>()((set, get) => ({
           if (!items.some((x) => x.id === item.id)) set({ items: [...items, item] });
         })
       : null;
+    const stopProgress = await onCleanupScan((progress) => set({ scanProgress: { done: progress.done, total: progress.total } }));
     try {
       const items = await api.cleanupScan();
       const ids = new Set(items.map((item) => item.id));
       const selectedId = get().selectedId;
-      set({ items, skips: {}, selectedId: selectedId && ids.has(selectedId) ? selectedId : null });
+      // 取消了的扫描结果不完整：照样显示，上面提示一句
+      set({ items, skips: {}, partial: cancelRequested, selectedId: selectedId && ids.has(selectedId) ? selectedId : null });
     } catch (error) {
       set({ error: errorText(language(), error) });
       if (get().items === null) set({ items: [] });
     } finally {
       stop?.();
-      set({ scanning: false, scannedAt: Date.now() });
+      stopProgress();
+      set({ scanning: false, scanProgress: null, scannedAt: Date.now() });
     }
     void get().loadHistory();
     api.cleanupOptions().then((options) => set({ keepCookies: options.keepCookies ?? [] }), () => {});
+    // 以前让 AI 解释过的拿出来（只读缓存，不问 AI）
+    const known = get().explanations;
+    const missing = (get().items ?? []).filter((item) => !known[item.id]).map((item) => item.id);
+    if (missing.length > 0) {
+      api.aiExplainCleanup(missing, "cached").then(
+        (result) => set({ explanations: { ...get().explanations, ...result.explanations } }),
+        () => {},
+      );
+    }
   },
   toggleEntry: (id, index) => {
     const current = get().skips[id] ?? [];
@@ -104,6 +131,23 @@ export const useCleanup = create<CleanupState>()((set, get) => ({
   },
   setEntries: (id, skip) => set({ skips: { ...get().skips, [id]: skip } }),
 }));
+
+/** 用户点了取消扫描。 */
+let cancelRequested = false;
+
+/** 停下正在进行的扫描。已经量完的照样显示。 */
+export function cancelScan() {
+  if (!useCleanup.getState().scanning) return;
+  cancelRequested = true;
+  void api.cleanupCancelScan().catch(() => {});
+}
+
+/** 回到清理页或窗口回到前台时：结果放得太久了就重新扫一遍。 */
+export function rescanIfStale() {
+  const state = useCleanup.getState();
+  if (state.items === null || state.scanning || state.cleaning || state.confirming || state.report) return;
+  if (Date.now() - state.scannedAt > STALE_MS) void state.scan();
+}
 
 function language(): Language {
   return useApp.getState().library?.settings.language ?? "zh-CN";
@@ -180,7 +224,19 @@ export async function runClean(ids: string[]) {
     stop();
     useCleanup.setState({ cleaning: false, progress: null });
   }
-  await useCleanup.getState().scan();
+  // 只重新量清过的这几项，别的不动
+  try {
+    const ids = items.map((item) => item.id);
+    const updated = await api.cleanupRescan(ids);
+    const left = new Set(updated.map((item) => item.id));
+    const state = useCleanup.getState();
+    const skips = Object.fromEntries(Object.entries(state.skips).filter(([id]) => !ids.includes(id)));
+    useCleanup.setState({ items: updated, skips, selectedId: state.selectedId && left.has(state.selectedId) ? state.selectedId : null });
+    void state.loadHistory();
+  } catch {
+    // 单项重扫不行（比如后端的扫描结果没了）就整个重扫
+    await useCleanup.getState().scan();
+  }
 }
 
 /** 让这一项要先关掉的程序正常退出。 */
@@ -220,4 +276,41 @@ export function lastCleaned(id: string, history: CleanRun[] | null): { at: strin
     if (item) return { at: run.at, size: item.freed + item.trashed };
   }
   return null;
+}
+
+/** 让 AI 解释这一项：有记下的解释就直接用；`refresh` 为真（点了“重新解释”）才重新问。 */
+export async function explainCleanup(item: CleanItem, refresh = false) {
+  const state = useCleanup.getState();
+  if (state.explaining[item.id]) return;
+  useCleanup.setState({ explaining: { ...state.explaining, [item.id]: true } });
+  try {
+    const result = await api.aiExplainCleanup([item.id], refresh ? "refresh" : "auto");
+    useCleanup.setState({ explanations: { ...useCleanup.getState().explanations, ...result.explanations } });
+    if (result.missing > 0) useApp.getState().notify(errorText(language(), "ai_unknown"), "error");
+  } catch (error) {
+    useApp.getState().notify(errorText(language(), error), "error");
+  } finally {
+    const { [item.id]: _done, ...rest } = useCleanup.getState().explaining;
+    useCleanup.setState({ explaining: rest });
+  }
+}
+
+/**
+ * 这一项大概多快长回来（字节每天）：看清理记录里相邻两次清理，后一次清掉的就是这段时间里长出来的。
+ * 至少要清过两次、隔了一天以上才算得出，算不出时是 null。
+ */
+export function regrowthPerDay(id: string, history: CleanRun[] | null): number | null {
+  const cleaned = (history ?? [])
+    .map((run) => ({ at: new Date(run.at).getTime(), item: run.items.find((x) => x.id === id) }))
+    .filter((x): x is { at: number; item: NonNullable<typeof x.item> } => Boolean(x.item) && Number.isFinite(x.at))
+    .sort((a, b) => a.at - b.at);
+  let bytes = 0;
+  let days = 0;
+  for (let i = 1; i < cleaned.length; i++) {
+    const gap = (cleaned[i].at - cleaned[i - 1].at) / 86_400_000;
+    if (gap < 1) continue;
+    bytes += cleaned[i].item.freed + cleaned[i].item.trashed;
+    days += gap;
+  }
+  return days > 0 ? bytes / days : null;
 }

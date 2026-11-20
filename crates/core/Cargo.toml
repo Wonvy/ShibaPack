@@ -37,7 +37,7 @@ ureq = { version = "3", features = ["json"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
-windows-sys = { version = "0.61", features = ["Win32_System_ApplicationInstallationAndServicing", "Win32_System_Environment", "Win32_Foundation", "Win32_UI_Shell", "Win32_System_DataExchange"] }
+windows-sys = { version = "0.61", features = ["Win32_System_ApplicationInstallationAndServicing", "Win32_System_Environment", "Win32_Foundation", "Win32_UI_Shell", "Win32_System_DataExchange", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 tempfile = "3"

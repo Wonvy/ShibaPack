@@ -42,7 +42,7 @@ function Dashboard() {
 
   return (
     <div className="@container flex min-h-0 flex-1 flex-col">
-      <Header title={t("nav.home")} />
+      {/* 主页不要标题栏，直接是内容 */}
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pt-3 pb-16">
         {error !== null && !sample ? (
           <p className="m-0 rounded-lg border border-line px-3 py-2.5 text-[13px] text-danger">{errorText(language, error)}</p>
@@ -101,12 +101,14 @@ function Dashboard() {
           </Card>
         </div>
 
-        <div className="mb-3 grid grid-cols-1 gap-3 @[720px]:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        <div className="mb-3">
           <TopProcesses />
-          <SoftwareStats />
         </div>
-
-        <RecentInstalls />
+        {/* 软件的数量和最近安装左右两栏，窄的时候上下排 */}
+        <div className="grid grid-cols-1 gap-3 @[640px]:grid-cols-2">
+          <SoftwareStats />
+          <RecentInstalls />
+        </div>
       </div>
     </div>
   );
@@ -137,28 +139,31 @@ function CardTitle({ children, action }: { children: ReactNode; action?: ReactNo
 /** CPU、内存：大数字、说明和最近一分钟的走势线。 */
 function Meter({ label, value, note, history, busy }: { label: string; value: string; note: string; history: number[]; busy: boolean }) {
   return (
-    <Card>
-      <div className="text-[12px] text-fg-3">{label}</div>
-      <div className={cx("tabular mt-0.5 text-[20px] leading-7 font-semibold", busy && "text-warning")}>{value}</div>
-      <div className="text-[12px] text-fg-3">{note || " "}</div>
+    <Card className="relative overflow-hidden">
+      {/* 走势铺满整张卡片，在文字后面 */}
       <Sparkline values={history} busy={busy} />
+      <div className="relative">
+        <div className="text-[12px] text-fg-3">{label}</div>
+        <div className={cx("tabular mt-0.5 text-[20px] leading-7 font-semibold", busy && "text-warning")}>{value}</div>
+        <div className="text-[12px] text-fg-3">{note || "\u00a0"}</div>
+        <div className="h-10" />
+      </div>
     </Card>
   );
 }
 
-/** 走势线：0–100，最新的在右边。点不够时从右边开始画。 */
+/** 走势：0–100，最新的在右边，铺满整张卡片当背景。刚打开、点还不够一分钟时，前面用第一个值补平，不会只在右边画一小截。 */
 function Sparkline({ values, busy }: { values: number[]; busy: boolean }) {
   const slots = 30;
-  const points = values.map((v, i) => `${((slots - values.length + i) / (slots - 1)) * 100},${30 - (Math.min(100, Math.max(0, v)) / 100) * 28}`);
+  if (values.length === 0) return null;
+  const padded = [...Array<number>(Math.max(0, slots - values.length)).fill(values[0]!), ...values].slice(-slots);
+  // 最高画到卡片的 85%，上面留点空，满载时也不至于整张都是颜色
+  const points = padded.map((v, i) => `${((i / (slots - 1)) * 100).toFixed(2)},${(100 - (Math.min(100, Math.max(0, v)) / 100) * 85).toFixed(2)}`);
   const color = busy ? "var(--warning)" : "var(--accent)";
   return (
-    <svg viewBox="0 0 100 30" preserveAspectRatio="none" className="mt-2 h-8 w-full" aria-hidden>
-      {points.length > 1 && (
-        <>
-          <polygon points={`${points[0]!.split(",")[0]},30 ${points.join(" ")} 100,30`} fill={color} opacity={0.1} />
-          <polyline points={points.join(" ")} fill="none" stroke={color} strokeWidth={1.5} vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
-        </>
-      )}
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden>
+      <polygon points={`0,100 ${points.join(" ")} 100,100`} fill={color} opacity={0.1} />
+      <polyline points={points.join(" ")} fill="none" stroke={color} strokeOpacity={0.55} strokeWidth={1.5} vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -317,7 +322,7 @@ function RecentInstalls() {
   return (
     <Card>
       <CardTitle>{t("home.recent")}</CardTitle>
-      <div className="grid grid-cols-1 gap-1 @[480px]:grid-cols-2 @[820px]:grid-cols-3">
+      <div className="flex flex-col">
         {recent.map((app) => (
           <button
             key={app.id}
@@ -326,15 +331,14 @@ function RecentInstalls() {
               setRoute("installed");
               selectInstalled(app.id);
             }}
-            className="-mx-1.5 flex min-w-0 items-center gap-2.5 rounded-md px-1.5 py-1.5 text-left hover:bg-hover"
+            className="-mx-1.5 flex h-7 min-w-0 items-center gap-2 rounded-md px-1.5 text-left text-[13px] hover:bg-hover"
           >
-            <InstalledSoftwareIcon app={app} size={28} />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-[13px] font-medium">{app.name}</span>
-              <span className="block truncate text-[12px] text-fg-3">
-                {[app.version, formatDate(app.installedAt, language)].filter(Boolean).join(" · ")}
-              </span>
+            <InstalledSoftwareIcon app={app} size={16} />
+            <span className="min-w-0 flex-1 truncate">
+              {app.name}
+              {app.version && <span className="ml-1.5 text-[12px] text-fg-4">{app.version}</span>}
             </span>
+            <span className="tabular shrink-0 text-[12px] text-fg-3">{formatDate(app.installedAt, language)}</span>
           </button>
         ))}
       </div>

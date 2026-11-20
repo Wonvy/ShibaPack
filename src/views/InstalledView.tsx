@@ -175,12 +175,9 @@ export function InstalledView({ detailToggle }: { detailToggle: ReactNode }) {
 
   return (
     <div ref={frame} className="@container flex min-h-0 flex-1 flex-col">
-      {/* 和软件库的工具栏一样分三段：标题、正中间的筛选、右边的按钮 */}
+      {/* 三段：左边空着（不要标题和个数，侧栏里已经写了），正中间的筛选，右边的按钮 */}
       <div className="grid h-11 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-2 border-b border-line pr-2 pl-4">
-        <div className="flex min-w-0 items-center">
-          <h2 className="m-0 min-w-0 truncate text-[14px] font-semibold">{t("installed.title")}</h2>
-          <span className="tabular ml-1.5 shrink-0 text-[12px] text-fg-3">{list.length}</span>
-        </div>
+        <div />
         <FilterMenu<RepoFilter>
           label={t("installed.repoFilter")}
           value={repoFilter}

@@ -4,6 +4,8 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export const SIDEBAR = { min: 140, max: 360 };
+/** 侧栏收起后只剩一列图标的宽度。 */
+export const SIDEBAR_RAIL = 48;
 /** 顶栏的高度：拖动顶栏下沿可以调，双击回到默认。 */
 export const TOPBAR = { min: 40, max: 72, initial: 52 };
 export const DETAIL = { min: 280, max: 560, initial: 380 };
@@ -31,6 +33,8 @@ interface Prefs {
   topBarHeight: number;
   /** 手动调整后的侧栏宽度。`null` 时按导航内容自动计算。 */
   sidebarWidth: number | null;
+  /** 侧栏收起成一列图标。 */
+  sidebarCollapsed: boolean;
   detailWidth: number;
   packageView: PackageView;
   sortKey: SortKey;
@@ -81,6 +85,7 @@ export const usePrefs = create<Prefs>()(
     (set) => ({
       topBarHeight: TOPBAR.initial,
       sidebarWidth: null,
+      sidebarCollapsed: false,
       detailWidth: DETAIL.initial,
       packageView: "list",
       sortKey: "name",

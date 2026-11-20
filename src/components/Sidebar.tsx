@@ -6,6 +6,7 @@ import {
   ArrowUpCircle,
   ArrowUpToLine,
   ChevronRight,
+  ChevronLeft,
   ChevronsDownUp,
   ChevronsUpDown,
   FolderPlus,
@@ -25,13 +26,13 @@ import {
   Star,
   Trash2,
 } from "lucide-react";
-import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, createContext, useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { canMoveCategory, classify, moveCategory } from "../lib/actions";
 import { api } from "../lib/api";
 import { beginDrag, useDrag } from "../lib/drag";
 import { CATEGORY_COLORS, CATEGORY_ICONS, categoryIcon } from "../lib/icons";
 import { childrenOf, flattenTree, formatSize, hasUpdate, newId, withDescendants } from "../lib/library";
-import { SIDEBAR, usePrefs } from "../lib/prefs";
+import { SIDEBAR, SIDEBAR_RAIL, usePrefs } from "../lib/prefs";
 import { useCleanup } from "../lib/cleanup";
 import { useStartup } from "../lib/startup";
 import { type Scope, useApp, useT } from "../lib/store";
@@ -40,6 +41,9 @@ import { confirm } from "./dialogs";
 import { Button, ContextMenu, Field, IconButton, type MenuEntry, Modal, Select, TextInput, cx } from "./ui";
 
 type Editing = { mode: "new"; parentId: string | null } | { mode: "edit"; category: Category };
+
+/** 侧栏收起成一列图标：每一行只画图标，名字放在鼠标停留的提示里。 */
+const Rail = createContext(false);
 
 export function Sidebar({ onAutoWidthChange }: { onAutoWidthChange: (width: number) => void }) {
   const t = useT();
@@ -60,19 +64,21 @@ export function Sidebar({ onAutoWidthChange }: { onAutoWidthChange: (width: numb
   const cleanupBytes = useCleanup((state) => (state.items && !state.scanning ? state.items.reduce((sum, item) => sum + (item.size ?? 0), 0) : null));
   const cleanupTotal = cleanupBytes ? formatSize(cleanupBytes) : undefined;
   const width = usePrefs((state) => state.sidebarWidth);
+  const collapsed = usePrefs((state) => state.sidebarCollapsed);
   const setPrefs = usePrefs((state) => state.set);
   const [editing, setEditing] = useState<Editing | null>(null);
   const nav = useRef<HTMLElement>(null);
 
   useLayoutEffect(() => {
     const element = nav.current;
-    if (width !== null || !element) return;
+    // 收起时量出来的是那一列图标的宽度，不算
+    if (width !== null || !element || collapsed) return;
     const measure = () => onAutoWidthChange(element.getBoundingClientRect().width);
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [width, onAutoWidthChange]);
+  }, [width, onAutoWidthChange, collapsed]);
 
   // 每个分类下的软件数，包含下级分类里的
   const counts = useMemo(() => {
@@ -161,10 +167,49 @@ export function Sidebar({ onAutoWidthChange }: { onAutoWidthChange: (width: numb
   const dialog = editing && <CategoryDialog editing={editing} onClose={() => setEditing(null)} />;
 
   return (
-    <nav id="app-sidebar" ref={nav} className="flex shrink-0 flex-col bg-side" style={{ width: width ?? "max-content", minWidth: SIDEBAR.min, maxWidth: SIDEBAR.max }}>
-      <div className="flex flex-col gap-px p-2 pb-0">
-        {/* 主页和管本机的几项（启动与服务、清理、磁盘分析、已安装）在上面，和软件库的入口用分隔线隔开 */}
-        <NavRow icon={House} label={t("nav.home")} active={route === "home"} onClick={() => setRoute("home")} />
+    <Rail.Provider value={collapsed}>
+    <nav
+      id="app-sidebar"
+      ref={nav}
+      className="flex shrink-0 flex-col bg-side"
+      style={collapsed ? { width: SIDEBAR_RAIL, minWidth: SIDEBAR_RAIL, maxWidth: SIDEBAR_RAIL } : { width: width ?? "max-content", minWidth: SIDEBAR.min, maxWidth: SIDEBAR.max }}
+    >
+      <div className={cx("flex flex-col gap-px pb-0", collapsed ? "px-1.5 pt-2" : "p-2")}>
+        {/* 主页和管本机的几项（启动与服务、清理、磁盘分析、已安装）在上面，和软件库的入口用分隔线隔开。
+            主页这一行右边是收起侧栏的箭头；收起后这个位置换成展开的箭头 */}
+        {collapsed ? (
+          <button
+            type="button"
+            aria-label={t("nav.expand")}
+            title={t("nav.expand")}
+            onClick={() => setPrefs({ sidebarCollapsed: false })}
+            className="flex h-8 w-full shrink-0 items-center justify-center rounded-md text-fg-2 transition-colors hover:bg-hover hover:text-fg"
+          >
+            <ChevronRight size={15} strokeWidth={1.75} aria-hidden />
+          </button>
+        ) : (
+          <NavRow
+            icon={House}
+            label={t("nav.home")}
+            active={route === "home"}
+            onClick={() => setRoute("home")}
+            action={
+              // 和右边详情栏的开关一样：单箭头，平时窄，鼠标停上去变宽、有底色
+              <button
+                type="button"
+                aria-label={t("nav.collapse")}
+                title={t("nav.collapse")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setPrefs({ sidebarCollapsed: true });
+                }}
+                className="-mr-1 flex h-7 w-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-fg-2 transition-[width,background-color,color] hover:w-7 hover:bg-active hover:text-fg focus-visible:w-7 motion-reduce:transition-none"
+              >
+                <ChevronLeft size={15} strokeWidth={1.75} aria-hidden />
+              </button>
+            }
+          />
+        )}
         <NavRow icon={Rocket} label={t("nav.startup")} count={startupCount} active={route === "startup"} onClick={() => setRoute("startup")} />
         <NavRow icon={BrushCleaning} label={t("nav.cleanup")} badge={cleanupTotal} active={route === "cleanup"} onClick={() => setRoute("cleanup")} />
         <NavRow icon={ChartPie} label={t("nav.disk")} active={route === "disk"} onClick={() => setRoute("disk")} />
@@ -229,7 +274,7 @@ export function Sidebar({ onAutoWidthChange }: { onAutoWidthChange: (width: numb
 
       {/* 右键分类以外的空白处：新建分类、全部展开或折叠。右键某个分类时出它自己的菜单 */}
       <ContextMenu items={sectionMenu}>
-      <div role="group" aria-label={t("nav.categories")} className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+      <div role="group" aria-label={t("nav.categories")} className={cx("min-h-0 flex-1 overflow-y-auto pb-2", collapsed ? "px-1.5" : "px-2")}>
         <Tree
           parentId={null}
           depth={0}
@@ -238,7 +283,7 @@ export function Sidebar({ onAutoWidthChange }: { onAutoWidthChange: (width: numb
           onSelect={(id) => setScope({ kind: "category", id })}
           menuFor={categoryMenu}
         />
-        {library.categories.length === 0 && <div className="px-2 py-1.5 text-[12px] text-fg-4">{t("cat.empty")}</div>}
+        {library.categories.length === 0 && !collapsed && <div className="px-2 py-1.5 text-[12px] text-fg-4">{t("cat.empty")}</div>}
         {(uncategorized.length > 0 || draggingSoftware) && (
           <NavRow
             icon={Inbox}
@@ -256,12 +301,13 @@ export function Sidebar({ onAutoWidthChange }: { onAutoWidthChange: (width: numb
       </ContextMenu>
 
       {/* 下面是设置（仓库存储和备份也在设置里） */}
-      <div className="flex h-(--bottom-bar-height) shrink-0 items-center border-t border-line px-2">
+      <div className={cx("flex h-(--bottom-bar-height) shrink-0 items-center border-t border-line", collapsed ? "px-1.5" : "px-2")}>
         <NavRow icon={Settings} label={t("app.settings")} active={settingsOpen} onClick={() => patch({ settingsOpen: true })} />
       </div>
 
       {dialog}
     </nav>
+    </Rail.Provider>
   );
 }
 
@@ -296,16 +342,19 @@ function NavRow({
   badge?: string;
   onClick: () => void;
 }) {
+  const rail = useContext(Rail);
   const row = (
     <div
       role="button"
       tabIndex={0}
+      title={rail ? label : undefined}
+      aria-label={rail ? label : undefined}
       data-drop={drop}
       onClick={onClick}
       onKeyDown={(event) => event.target === event.currentTarget && event.key === "Enter" && onClick()}
       className={cx(
         ROW,
-        "w-full px-2",
+        rail ? "w-full justify-center px-0" : "w-full px-2",
         dropping
           ? "bg-accent-soft text-accent"
           : active
@@ -314,10 +363,14 @@ function NavRow({
       )}
     >
       {Icon ? <Icon size={16} strokeWidth={1.75} aria-hidden className="shrink-0" /> : <span className="w-4 shrink-0" />}
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      {action}
-      {count !== undefined && count > 0 && <Count n={count} highlight={highlight} />}
-      {badge && <span className="tabular shrink-0 text-[12px] text-fg-3">{badge}</span>}
+      {!rail && (
+        <>
+          <span className="min-w-0 flex-1 truncate">{label}</span>
+          {action}
+          {count !== undefined && count > 0 && <Count n={count} highlight={highlight} />}
+          {badge && <span className="tabular shrink-0 text-[12px] text-fg-3">{badge}</span>}
+        </>
+      )}
     </div>
   );
   return menu ? <ContextMenu items={menu}>{row}</ContextMenu> : row;
@@ -361,6 +414,7 @@ function Tree(props: TreeProps) {
   const dropTarget = useDrag((state) => state.target);
   const fileDrop = useApp((state) => state.fileDropTarget);
   const { parentId, depth, counts, isActive, onSelect, menuFor } = props;
+  const rail = useContext(Rail);
 
   return (
     <div className="flex flex-col gap-px">
@@ -388,10 +442,12 @@ function Tree(props: TreeProps) {
                     (target) => canMoveCategory(categories, category.id, target),
                   )
                 }
-                style={{ paddingLeft: 8 + depth * INDENT }}
+                title={rail ? category.name : undefined}
+                aria-label={rail ? category.name : undefined}
+                style={rail ? undefined : { paddingLeft: 8 + depth * INDENT }}
                 className={cx(
                   ROW,
-                  "pr-2",
+                  rail ? "justify-center px-0" : "pr-2",
                   zone === "inside"
                     ? "bg-accent-soft text-accent"
                     : isActive(category.id)
@@ -404,6 +460,7 @@ function Tree(props: TreeProps) {
                 {/* 图标默认单色；只有给分类选了颜色，图标才带那个颜色 */}
                 <Icon size={16} strokeWidth={1.75} aria-hidden className="shrink-0" style={{ color: category.color ?? undefined }} />
                 {/* 有下级的分类：名字后面跟一个小箭头，点它展开或折叠。放在名字后面，图标和文字才能和上面的入口对齐 */}
+                {!rail && (
                 <span className="flex min-w-0 flex-1 items-center gap-0.5">
                   <span className="truncate">{category.name}</span>
                   {hasChildren && (
@@ -422,10 +479,12 @@ function Tree(props: TreeProps) {
                     </button>
                   )}
                 </span>
-                {count > 0 && <Count n={count} />}
+                )}
+                {!rail && count > 0 && <Count n={count} />}
               </div>
             </ContextMenu>
-            {hasChildren && open && depth < 12 && (
+            {/* 收起成一列图标时只列第一层分类 */}
+            {hasChildren && open && depth < 12 && !rail && (
               <div className="mt-px">
                 <Tree {...props} parentId={category.id} depth={depth + 1} />
               </div>

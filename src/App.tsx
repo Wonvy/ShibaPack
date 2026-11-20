@@ -16,7 +16,7 @@ import { UpdateDialog } from "./components/UpdateDialog";
 import { onFileDrop, windowControls } from "./lib/api";
 import { useDrag } from "./lib/drag";
 import { dropOnCategory, fileDropTargetAt } from "./lib/filedrop";
-import { SIDEBAR, usePrefs } from "./lib/prefs";
+import { SIDEBAR, SIDEBAR_RAIL, usePrefs } from "./lib/prefs";
 import { useStartup } from "./lib/startup";
 import { type Route, useApp, useT } from "./lib/store";
 import { scheduleUpdateChecks } from "./lib/updater";
@@ -37,7 +37,8 @@ export default function App() {
   const dropping = useApp((state) => state.dropping);
   const manualSidebarWidth = usePrefs((state) => state.sidebarWidth);
   const [autoSidebarWidth, setAutoSidebarWidth] = useState(SIDEBAR.min);
-  const sidebarWidth = manualSidebarWidth ?? autoSidebarWidth;
+  const sidebarCollapsed = usePrefs((state) => state.sidebarCollapsed);
+  const sidebarWidth = sidebarCollapsed ? SIDEBAR_RAIL : (manualSidebarWidth ?? autoSidebarWidth);
   const detailWidth = usePrefs((state) => state.detailWidth);
   const detailOpen = usePrefs((state) => state.detailOpen);
   const setPrefs = usePrefs((state) => state.set);
@@ -146,12 +147,15 @@ export default function App() {
       <TopBar listBounds={{ left: sidebarWidth, right: docked ? detailWidth : 0, windowWidth }} />
       <div className="relative flex min-h-0 flex-1">
         <Sidebar onAutoWidthChange={setAutoSidebarWidth} />
-        <ResizeHandle
-          edge="left"
-          width={sidebarWidth}
-          onResize={(width) => setPrefs({ sidebarWidth: width })}
-          onReset={() => setPrefs({ sidebarWidth: null })}
-        />
+        {/* 收起成一列图标时不能拖宽度 */}
+        {!sidebarCollapsed && (
+          <ResizeHandle
+            edge="left"
+            width={sidebarWidth}
+            onResize={(width) => setPrefs({ sidebarWidth: width })}
+            onReset={() => setPrefs({ sidebarWidth: null })}
+          />
+        )}
         <main className="relative flex min-w-0 flex-1 flex-col">
           {route === "home" && <HomeView />}
           {route === "disk" && <DiskView />}

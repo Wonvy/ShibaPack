@@ -8,6 +8,28 @@ One section per version, titled `## <version>`, with a Chinese and an English pa
 `.github/workflows/release.yml` puts that section into the GitHub Release notes and `latest.json`; the update window
 in ShibaPack (opened from the version number in the bottom-right corner) shows the part that matches the interface language.
 
+## 0.9.0
+
+### 中文
+
+- 清理列表改得更简洁：按类别分组，可以折叠，能清的、大的排在前面；底部有“全选”和“推荐”，选了多少、能腾出多少显示在状态栏。
+- 扫描时显示进度，可以随时停止；结果放久了会自动重新扫描，清理完只重新量清过的那几项。清理前后对比系统报告的可用空间。
+- 详情栏可以让 AI 解释某一项，右键类别标题能让 AI 一次解释一整组；还能看到这一项大约每周长多少，旁边有排除按钮。
+- 可以清除 Firefox 的浏览记录：只删访问记录，书签留着。
+- 清理设置里可以添加和编辑自定义规则：文件名筛选、多少天没动过、要先关掉的程序、直接删除还是移到回收站。
+- 新增 Microsoft Teams 缓存。微信、企业微信、飞书、钉钉、QQ 没有官方说明哪些文件能删，所以不直接删，改为列出“××自带的清理”，一点就打开那个应用去用它自己的清理。
+- 扫描时不再弹出“控制访达”的授权；需要看废纸篓里有什么时再问。停止扫描更快了。
+
+### English
+
+- A cleaner Clean up list: items are grouped by category and the groups can be collapsed, with cleanable and larger items first. Select all and Recommended sit at the bottom, and the selection and space to be freed show in the status bar.
+- Scanning shows progress and can be stopped at any time. Results that have been around a while are rescanned automatically, and after cleaning only the cleaned items are measured again. Free space reported by the system is compared before and after.
+- Ask AI to explain an item from the details pane, or a whole category from its right-click menu. The details pane also shows roughly how much an item grows per week, with an exclude button next to it.
+- Firefox browsing history can be cleared: only visits are removed, bookmarks stay.
+- Add and edit your own cleanup rules in the cleanup settings: name filters, days untouched, programs to quit first, and whether to delete or move to the Trash.
+- Microsoft Teams caches are now included. WeChat, WeCom, Feishu/Lark, DingTalk and QQ have no official guidance on which files are safe to remove, so instead of deleting anything they get an item that opens the app to use its own cleanup.
+- Scanning no longer asks for permission to control Finder; it asks only when you want to see what's in the Trash. Stopping a scan is faster.
+
 ## 0.8.0
 
 ### 中文

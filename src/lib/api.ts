@@ -102,7 +102,7 @@ export const api = {
   exportBackup: (dest: string) => call<void>("export_backup", { dest }),
   importBackup: (src: string) => call<Library>("import_backup", { src }),
   emptyTrash: () => call<Stats>("empty_trash"),
-  listInstalled: () => call<InstalledApp[]>("list_installed"),
+  listInstalled: () => call<{ apps: InstalledApp[]; cachedIcons: Library["installedIcons"] | null }>("list_installed"),
   measureInstalled: () => call<Record<string, number>>("measure_installed"),
   matchInstalled: () => call<Record<string, string>>("match_installed"),
   uninstallInstalled: (id: string) => call<void>("uninstall_installed", { id }),
@@ -146,7 +146,7 @@ export const api = {
   fillFileInfo: () => call<FillResult>("fill_file_info"),
   inspectDrop: (paths: string[]) => call<DropEntry[]>("inspect_drop", { paths }),
   /** 联网找图标（主页的网站图标或 GitHub 头像）。返回图标的相对路径，没找到时是 null。 */
-  fetchIcon: (id: string) => call<string | null>("fetch_icon", { id }),
+  fetchIcon: (id: string) => call<{ icon: string; iconData: string | null } | null>("fetch_icon", { id }),
   /** 按名字取简介（需要时顺带翻译）。`refresh` 为真时不管有没有都重新取。 */
   fetchSummary: (name: string, refresh = false) => call<Library>("fetch_summary", { name, refresh }),
   selftestReport: (line: string, done = false) => call<void>("selftest_report", { line, done }),
@@ -188,9 +188,13 @@ export const api = {
   cancelAi: () => call<void>("cancel_ai"),
 };
 
-/** 把磁盘上的图标文件变成界面里 <img> 能用的地址。 */
+export function isImageDataUrl(value: string | null | undefined): value is string {
+  return typeof value === "string" && /^data:image\/(?:png|svg\+xml|jpeg|gif|webp);base64,/.test(value);
+}
+
+/** 把磁盘上的图标文件变成界面里 <img> 能用的地址，已内嵌的图标直接使用。 */
 export function assetUrl(path: string): string {
-  return isTauri ? convertFileSrc(path) : path;
+  return isTauri && !isImageDataUrl(path) ? convertFileSrc(path) : path;
 }
 
 // ── 系统对话框 ───────────────────────────────────────────────
@@ -289,8 +293,19 @@ async function currentWindow() {
   return getCurrentWindow();
 }
 
+type DetailWindowResize = { open: boolean; detailWidth: number; before: number; after: number };
+let detailResize = Promise.resolve<DetailWindowResize | null>(null);
+
 export const windowControls = {
   minimize: async () => (await currentWindow()).minimize(),
   toggleMaximize: async () => (await currentWindow()).toggleMaximize(),
   close: async () => (await currentWindow()).close(),
+  resizeForDetail(open: boolean, detailWidth: number, dockMinWidth: number) {
+    if (!isTauri) return;
+    // 快速开关时，按点击顺序完成窗口调整，再以实际的窗口宽度计算下一步。
+    detailResize = detailResize.then((previous) =>
+      call<DetailWindowResize | null>("resize_detail_window", { open, detailWidth, dockMinWidth, previous }),
+    ).catch(() => null);
+    return detailResize;
+  },
 };

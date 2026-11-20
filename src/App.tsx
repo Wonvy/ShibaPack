@@ -1,10 +1,11 @@
 // 整体布局：顶栏 / 侧栏 + 中间栏 + 详情栏 / 底栏。
 
 import { Download } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { ClassifyDialog } from "./components/ClassifyDialog";
 import { UninstallDialog } from "./components/UninstallDialog";
-import { ImportProgress, ResizeHandle, StatusBar, ToastView, TopBar, UpdateCard } from "./components/chrome";
+import { AddMenuButton, DetailToggle, ResizeHandle, StatusBar, ToastView, TopBar, UpdateCard } from "./components/chrome";
 import { DialogHost } from "./components/dialogs";
 import { ImportDialog } from "./components/ImportDialog";
 import { PackageDetail } from "./components/PackageDetail";
@@ -12,10 +13,10 @@ import { SettingsDialog, SetupGuide } from "./components/panels";
 import { Sidebar } from "./components/Sidebar";
 import { SourceDialog } from "./components/SourcePanel";
 import { UpdateDialog } from "./components/UpdateDialog";
-import { onFileDrop } from "./lib/api";
+import { onFileDrop, windowControls } from "./lib/api";
 import { useDrag } from "./lib/drag";
 import { dropOnCategory, fileDropTargetAt } from "./lib/filedrop";
-import { RAIL_WIDTH, SIDEBAR, usePrefs } from "./lib/prefs";
+import { SIDEBAR, usePrefs } from "./lib/prefs";
 import { useStartup } from "./lib/startup";
 import { useApp, useT } from "./lib/store";
 import { scheduleUpdateChecks } from "./lib/updater";
@@ -29,13 +30,12 @@ export default function App() {
   const ready = useApp((state) => state.library !== null);
   const route = useApp((state) => state.route);
   const dropping = useApp((state) => state.dropping);
-  const sidebarCollapsed = usePrefs((state) => state.sidebarCollapsed);
-  // 侧栏收起时只占一列图标的宽度
-  const sidebarWidth = usePrefs((state) => (state.sidebarCollapsed ? RAIL_WIDTH : state.sidebarWidth));
+  const manualSidebarWidth = usePrefs((state) => state.sidebarWidth);
+  const [autoSidebarWidth, setAutoSidebarWidth] = useState(SIDEBAR.min);
+  const sidebarWidth = manualSidebarWidth ?? autoSidebarWidth;
   const detailWidth = usePrefs((state) => state.detailWidth);
   const detailOpen = usePrefs((state) => state.detailOpen);
   const setPrefs = usePrefs((state) => state.set);
-  const windowWidth = useWindowWidth();
   const startupSelected = useStartup((state) => state.selectedId !== null);
   const softwareSelected = useApp((state) => (state.route === "installed" ? state.selectedInstalledId : state.selectedId) !== null);
   const hasSelection = route === "startup" ? startupSelected : softwareSelected;
@@ -43,9 +43,12 @@ export default function App() {
   // 存储页不需要详情栏；详情栏收起时中间栏占满。
   // 窗口太窄、中间栏放不下时，详情栏不再占一栏，选中软件时浮在列表右侧
   const withDetail = (route === "library" || route === "installed" || route === "startup") && detailOpen;
-  const cramped = windowWidth - sidebarWidth - detailWidth < MAIN_MIN;
+  const dockMinWidth = sidebarWidth + detailWidth + MAIN_MIN;
+  const { width: windowWidth, toggle, resizing } = useWindowLayout(detailWidth, dockMinWidth);
+  const cramped = windowWidth < dockMinWidth;
   const docked = withDetail && !cramped;
   const floating = withDetail && cramped && hasSelection;
+  const floatingDetailWidth = Math.min(detailWidth, Math.max(0, windowWidth - sidebarWidth - 48));
 
   useEffect(() => {
     const app = useApp.getState();
@@ -105,7 +108,7 @@ export default function App() {
   useEffect(() => {
     if (!floating) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      if (event.key !== "Escape" || event.defaultPrevented || event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
       if (document.querySelector('[role="dialog"],[role="menu"]')) return;
       const app = useApp.getState();
       if (app.route === "installed") app.selectInstalled(null);
@@ -129,48 +132,46 @@ export default function App() {
     );
   }
 
+  const detailToggle = <DetailToggle open={detailOpen} onClick={toggle} disabled={resizing} />;
+
   return (
     <div className="flex h-full flex-col">
       <TopBar />
       <div className="relative flex min-h-0 flex-1">
-        <Sidebar />
-        {!sidebarCollapsed && (
-          <ResizeHandle
-            edge="left"
-            width={sidebarWidth}
-            onResize={(width) => setPrefs({ sidebarWidth: width })}
-            // 拖得比最窄还窄一截，就收起成一列图标
-            collapseBelow={SIDEBAR.min - 48}
-            onCollapse={() => setPrefs({ sidebarCollapsed: true })}
-          />
-        )}
+        <Sidebar onAutoWidthChange={setAutoSidebarWidth} />
+        <ResizeHandle
+          edge="left"
+          width={sidebarWidth}
+          onResize={(width) => setPrefs({ sidebarWidth: width })}
+          onReset={() => setPrefs({ sidebarWidth: null })}
+        />
         <main className="relative flex min-w-0 flex-1 flex-col">
-          <ImportProgress />
-          {route === "library" && <LibraryView />}
-          {route === "installed" && <InstalledView />}
-          {route === "startup" && <StartupView />}
+          {route === "library" && <LibraryView detailToggle={detailToggle} />}
+          {route === "installed" && <InstalledView detailToggle={detailToggle} />}
+          {route === "startup" && <StartupView detailToggle={detailToggle} />}
           {dropping && (
             <div className="pointer-events-none absolute inset-2 z-20 flex animate-fade flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-accent bg-accent-soft text-accent backdrop-blur-sm">
               <Download size={28} strokeWidth={1.5} aria-hidden />
               <span className="text-[13px] font-medium">{t("import.drop")}</span>
             </div>
           )}
+          <AddMenuButton coveredWidth={floating ? floatingDetailWidth : 0} />
           {/* 状态栏只占中间一栏，左边的侧栏和右边的详情栏一直到窗口底部 */}
           <StatusBar />
         </main>
         {docked && (
           <>
             <ResizeHandle edge="right" width={detailWidth} onResize={(width) => setPrefs({ detailWidth: width })} />
-            <aside className="min-h-0 shrink-0" style={{ width: detailWidth }}>
+            <aside className="min-h-0 shrink-0 motion-safe:animate-fade" style={{ width: detailWidth }}>
               {route === "library" ? <PackageDetail /> : route === "installed" ? <InstalledDetail /> : <StartupDetail />}
             </aside>
           </>
         )}
         {floating && (
-          // 让出中间栏的工具栏（44px）和底下的状态栏（28px），点列表空白处或按 Esc 关闭
+          // 让出中间栏的工具栏和状态栏，点列表空白处或按 Esc 关闭
           <aside
-            className="absolute top-11 right-0 bottom-7 z-30 min-h-0 animate-fade border-l border-line bg-bg shadow-pop"
-            style={{ width: Math.min(detailWidth, windowWidth - sidebarWidth - 48) }}
+            className="absolute right-0 bottom-(--bottom-bar-height) z-30 min-h-0 animate-fade border-l border-line bg-bg shadow-pop"
+            style={{ width: floatingDetailWidth, top: route !== "installed" && windowWidth - sidebarWidth < 440 ? 68 : 44 }}
           >
             {route === "library" ? <PackageDetail /> : route === "installed" ? <InstalledDetail /> : <StartupDetail />}
           </aside>
@@ -215,12 +216,59 @@ function DragGhost() {
 /** 中间栏至少要有这么宽，放不下时详情栏改成浮动的。 */
 const MAIN_MIN = 380;
 
-function useWindowWidth(): number {
+type PendingDetailResize = { width: number; finish: () => void; timer?: number };
+
+function useWindowLayout(detailWidth: number, dockMinWidth: number) {
   const [width, setWidth] = useState(() => window.innerWidth);
+  const [resizing, setResizing] = useState(false);
+  const pending = useRef<PendingDetailResize | null>(null);
+
   useEffect(() => {
-    const onResize = () => setWidth(window.innerWidth);
+    const onResize = () => {
+      const change = pending.current;
+      if (change && change.width !== window.innerWidth) change.finish();
+      else setWidth(window.innerWidth);
+    };
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.clearTimeout(pending.current?.timer);
+      pending.current = null;
+    };
   }, []);
-  return width;
+
+  const toggle = () => {
+    if (pending.current) return;
+    const prefs = usePrefs.getState();
+    const open = !prefs.detailOpen;
+    const request = windowControls.resizeForDetail(open, detailWidth, dockMinWidth);
+    if (!request) {
+      prefs.set({ detailOpen: open });
+      return;
+    }
+
+    const change: PendingDetailResize = {
+      width: window.innerWidth,
+      finish: () => {
+        if (pending.current !== change) return;
+        window.clearTimeout(change.timer);
+        pending.current = null;
+        // 在同一帧提交新窗口宽度和详情栏状态，避免网格先换列又换回来。
+        flushSync(() => {
+          setWidth(window.innerWidth);
+          prefs.set({ detailOpen: open });
+          setResizing(false);
+        });
+      },
+    };
+    pending.current = change;
+    setResizing(true);
+    void request.then((result) => {
+      if (pending.current !== change) return;
+      if (!result || window.innerWidth !== change.width) change.finish();
+      else change.timer = window.setTimeout(change.finish, 180);
+    });
+  };
+
+  return { width, toggle, resizing };
 }

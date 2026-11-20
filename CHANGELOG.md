@@ -8,6 +8,26 @@ One section per version, titled `## <version>`, with a Chinese and an English pa
 `.github/workflows/release.yml` puts that section into the GitHub Release notes and `latest.json`; the update window
 in ShibaPack (opened from the version number in the bottom-right corner) shows the part that matches the interface language.
 
+## 0.6.0
+
+### 中文
+
+- 安装包和已安装软件的图标可随仓库索引保存，迁移到另一台电脑时也能显示。改进 Windows 图标提取，识别 `.appinstaller`，并为 ZIP、RAR 等压缩包显示文件类型图标。
+- 在软件库、已安装和启动与服务的项目上悬停，可以查看摘要和文件路径。详情栏里的版本和安装包也支持悬停查看。
+- 软件库工具栏可以直接切换列表、网格和文件夹视图。网格随栏宽变化平滑重排。左侧栏默认按标题调整宽度，右侧详情栏开合时桌面窗口可以跟随调整宽度。
+- 搜索框默认提供 GitHub 和 Homebrew 快捷图标，右键可以增删，长按拖动可以排序。GitHub 搜索结果显示仓库所有者的头像。
+- 添加菜单移到中间栏右下角。按住鼠标中键可以移动圆形加号按钮，右键可以复位。
+- 状态栏与左侧设置区对齐。点击文件夹图标可更换仓库位置，新版本可用时版本号旁显示彩色上箭头。
+
+### English
+
+- Installer and installed-app icons can travel with the repository index and display on another computer. Windows icon extraction is more reliable, `.appinstaller` files are recognized, and ZIP and RAR archives have file-type icons.
+- Hover over items in the library, installed apps, or Startup & services to see summaries and file paths. Versions and installers in the details pane also have hover cards.
+- Switch directly between list, grid, and folder views from the library toolbar. Grid items animate as the pane changes width. The sidebar fits its labels by default, and the desktop window can resize when the details pane opens or closes.
+- GitHub and Homebrew shortcuts appear in the search box by default. Right-click to choose which shortcuts are shown, and press and drag to reorder them. GitHub results show repository owners' avatars.
+- The Add menu has moved to a round button in the lower-right corner of the main pane. Drag it with the middle mouse button and right-click to reset its position.
+- The status bar lines up with the sidebar's Settings area. Click its folder icon to switch repositories. A colored arrow appears next to the version number when an update is available.
+
 ## 0.5.0
 
 ### 中文

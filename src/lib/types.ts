@@ -44,6 +44,7 @@ export interface Software {
   categoryId: string | null;
   starred: boolean;
   icon: string | null;
+  iconData?: string | null;
   defaultVersionId: string | null;
   addedAt: string;
   versions: Version[];
@@ -129,6 +130,7 @@ export interface RepoHit {
   name: string;
   description: string;
   url: string;
+  ownerAvatarUrl?: string;
   stars: number;
   /** 已经归档、不再维护。 */
   archived: boolean;
@@ -314,6 +316,7 @@ export interface Library {
   categories: Category[];
   software: Software[];
   summaries: Record<string, Summary>;
+  installedIcons?: Record<string, string>;
   settings: Settings;
 }
 

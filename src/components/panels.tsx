@@ -2,7 +2,7 @@
 
 import { ArchiveRestore, FolderInput, FolderOpen, Globe, HardDrive, Info, type LucideIcon, ScrollText, SlidersHorizontal, Sparkles, TriangleAlert } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useState } from "react";
-import { api, pickFolder, pickJsonFile, pickSavePath } from "../lib/api";
+import { api, pickJsonFile, pickSavePath } from "../lib/api";
 import { type Key, effectivePack, errorText, languages } from "../lib/i18n";
 import { useApp, useLanguage, useT } from "../lib/store";
 import { ACCENTS, ACCENT_NAMES } from "../lib/theme";
@@ -24,10 +24,6 @@ export function SetupGuide() {
   const chooseRepo = useApp((state) => state.chooseRepo);
   const lastRoot = useApp((state) => state.status?.lastRoot);
   const openError = useApp((state) => state.status?.openError);
-  const choose = async () => {
-    const folder = await pickFolder();
-    if (folder) await chooseRepo(folder);
-  };
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center p-8">
       <div className="flex w-full max-w-[420px] flex-col items-center text-center">
@@ -50,7 +46,7 @@ export function SetupGuide() {
         )}
         <h1 className="mt-5 mb-0 text-[17px] font-semibold">{t("setup.title")}</h1>
         <p className="mt-2 mb-0 text-[13px] leading-relaxed text-fg-2">{t("setup.body")}</p>
-        <Button variant="primary" className="mt-6 h-8 px-3.5" onClick={() => void choose()}>
+        <Button variant="primary" className="mt-6 h-8 px-3.5" onClick={() => void chooseRepo()}>
           <FolderOpen size={15} strokeWidth={1.75} aria-hidden />
           {t("setup.choose")}
         </Button>

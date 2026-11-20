@@ -4,6 +4,7 @@ import type { LangPack, Language } from "./types";
 
 const zh = {
   "app.add": "添加",
+  "add.resetPosition": "复位位置",
   "app.settings": "设置",
   "add.files": "导入文件…",
   "add.folder": "导入文件夹…",
@@ -101,6 +102,7 @@ const zh = {
   "storage.repo": "仓库位置",
   "storage.repoHint": "索引、托管的安装包、备份都在这个文件夹里。",
   "storage.change": "更换…",
+  "storage.changeFolder": "更换仓库文件夹",
   "storage.open": "打开文件夹",
   "storage.stats": "统计",
   "storage.software": "软件",
@@ -272,6 +274,7 @@ const zh = {
   "link.noInstaller": "仓库里没有适合这台电脑的安装包",
 
   "lib.view.folder": "文件夹",
+  "summary.title": "简介",
   "summary.source": "来源：{source}",
   "settings.summaries": "联网获取软件简介和图标",
   "settings.summariesHint":
@@ -282,6 +285,8 @@ const zh = {
   "summary.loading": "正在获取简介…",
   "summary.none": "没有找到这个软件的简介",
   "summary.notYet": "还没有简介",
+  "hover.filePaths": "文件路径",
+  "hover.noPath": "没有可用的路径",
   "summary.retry": "重新获取",
   "summary.fetch": "获取简介",
   "summary.showTranslation": "查看译文",
@@ -380,6 +385,7 @@ const zh = {
   "source.update": "有新版本",
   "source.upToDate": "已是最新",
   "source.check": "检查更新",
+  "source.actions": "在线源操作",
   "source.unlink": "取消关联",
   "source.unlinkConfirm": "取消“{name}”和在线源的关联？已下载的安装包不受影响。",
   "source.download": "下载",
@@ -458,8 +464,6 @@ const zh = {
   "detail.addedAt": "添加时间",
   "detail.openHomepage": "打开主页",
   "layout.resizeTopBar": "拖动调整顶栏高度，双击恢复默认",
-  "layout.showSidebar": "展开侧栏",
-  "layout.hideSidebar": "收起侧栏",
   "layout.showDetail": "显示详情栏",
   "layout.hideDetail": "隐藏详情栏",
   "lib.col.version": "版本",
@@ -833,6 +837,7 @@ export type Key = keyof typeof zh;
 
 const en: Record<Key, string> = {
   "app.add": "Add",
+  "add.resetPosition": "Reset position",
   "app.settings": "Settings",
   "add.files": "Import files…",
   "add.folder": "Import folder…",
@@ -932,6 +937,7 @@ const en: Record<Key, string> = {
   "storage.repo": "Repository location",
   "storage.repoHint": "The index, managed installers, and backups all live in this folder.",
   "storage.change": "Change…",
+  "storage.changeFolder": "Change repository folder",
   "storage.open": "Open folder",
   "storage.stats": "Statistics",
   "storage.software": "Software",
@@ -1103,6 +1109,7 @@ const en: Record<Key, string> = {
   "link.noInstaller": "The repository has no installer that fits this computer",
 
   "lib.view.folder": "Folders",
+  "summary.title": "Description",
   "summary.source": "Source: {source}",
   "settings.summaries": "Fetch summaries and icons online",
   "settings.summariesHint":
@@ -1113,6 +1120,8 @@ const en: Record<Key, string> = {
   "summary.loading": "Looking up a summary…",
   "summary.none": "No summary found for this app",
   "summary.notYet": "No summary yet",
+  "hover.filePaths": "File paths",
+  "hover.noPath": "No path available",
   "summary.retry": "Try again",
   "summary.fetch": "Get summary",
   "summary.showTranslation": "Show translation",
@@ -1213,6 +1222,7 @@ const en: Record<Key, string> = {
   "source.update": "Update available",
   "source.upToDate": "Up to date",
   "source.check": "Check for updates",
+  "source.actions": "Online source actions",
   "source.unlink": "Unlink",
   "source.unlinkConfirm": "Unlink “{name}” from its online source? Installers you've downloaded stay.",
   "source.download": "Download",
@@ -1294,8 +1304,6 @@ const en: Record<Key, string> = {
   "detail.addedAt": "Added",
   "detail.openHomepage": "Open homepage",
   "layout.resizeTopBar": "Drag to resize the top bar; double-click to reset",
-  "layout.showSidebar": "Expand sidebar",
-  "layout.hideSidebar": "Collapse sidebar",
   "layout.showDetail": "Show details",
   "layout.hideDetail": "Hide details",
   "lib.col.version": "Version",

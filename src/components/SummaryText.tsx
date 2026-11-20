@@ -27,12 +27,14 @@ export function SummaryText({
   onFetch,
   ai,
   name,
+  showWriteButton = true,
 }: {
   summary: Summary | undefined;
   busy?: boolean;
   onFetch?: () => void;
   ai?: AiTarget;
   name?: string;
+  showWriteButton?: boolean;
 }) {
   const t = useT();
   const language = useLanguage();
@@ -62,7 +64,8 @@ export function SummaryText({
     );
   }
   if (!summary || !shown) {
-    if (!onFetch && !canWrite && !name) return null;
+    const canWriteManually = name && showWriteButton;
+    if (!onFetch && !canWrite && !canWriteManually) return null;
     // 取过但没找到 / 还没取过（比如关着“联网获取简介”）
     return (
       <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-fg-3">
@@ -79,7 +82,7 @@ export function SummaryText({
             {t("ai.describe")}
           </button>
         )}
-        {name && (
+        {name && showWriteButton && (
           <button type="button" onClick={() => void editSummary(name)} className={linkClass}>
             <Pencil size={12} strokeWidth={2} aria-hidden />
             {t("summary.write")}

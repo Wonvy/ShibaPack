@@ -440,6 +440,7 @@ mod tests {
             category_id: None,
             starred: false,
             icon: None,
+            icon_data: None,
             default_version_id: None,
             added_at: String::new(),
             versions: Vec::new(),

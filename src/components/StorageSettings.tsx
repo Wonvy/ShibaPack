@@ -5,7 +5,7 @@
 import { CircleCheck, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { deleteVersions } from "../lib/actions";
-import { api, pickFolder, pickJsonFile, pickSavePath } from "../lib/api";
+import { api, pickJsonFile, pickSavePath } from "../lib/api";
 import { errorText } from "../lib/i18n";
 import { formatDate, formatSize, prunable } from "../lib/library";
 import { useApp, useLanguage, useT } from "../lib/store";
@@ -19,10 +19,6 @@ export function RepoLocation() {
   const root = useApp((state) => state.status?.repoRoot);
   const attempt = useApp((state) => state.attempt);
   const chooseRepo = useApp((state) => state.chooseRepo);
-  const changeRepo = async () => {
-    const folder = await pickFolder();
-    if (folder) await chooseRepo(folder);
-  };
   return (
     <SettingRow
       label={t("storage.repo")}
@@ -35,7 +31,7 @@ export function RepoLocation() {
     >
       <div className="flex gap-2">
         <Button onClick={() => void attempt(() => api.openRepoFolder())}>{t("storage.open")}</Button>
-        <Button onClick={() => void changeRepo()}>{t("storage.change")}</Button>
+        <Button onClick={() => void chooseRepo()}>{t("storage.change")}</Button>
       </div>
     </SettingRow>
   );

@@ -327,7 +327,7 @@ mod tests {
         ];
         let software = |name: &str, category: Option<&str>, versions: Vec<Version>| Software {
             id: name.into(), name: name.into(), publisher: "ACME <Inc>".into(), homepage: String::new(), note: String::new(),
-            category_id: category.map(String::from), starred: false, icon: None, default_version_id: None, added_at: String::new(), versions, subscription: None,
+            category_id: category.map(String::from), starred: false, icon: None, icon_data: None, default_version_id: None, added_at: String::new(), versions, subscription: None,
         };
         let version = |v: &str, files: Vec<PackageFile>| Version { id: v.into(), version: v.into(), note: String::new(), added_at: String::new(), files };
         lib.software = vec![

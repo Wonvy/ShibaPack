@@ -1,9 +1,11 @@
 // 平台图标：Windows、macOS、Linux、Android、iOS、跨平台。单色，跟随文字颜色。
 
-import { Layers } from "lucide-react";
+import { File, FileArchive, Layers, Package } from "lucide-react";
 import { siAndroid, siApple, siIos, siLinux } from "simple-icons";
+import { packageIconKind } from "../lib/library";
 import { useT } from "../lib/store";
 import type { Platform } from "../lib/types";
+import { useHoverCard } from "./HoverCard";
 import { cx } from "./ui";
 
 // 图标库里没有 Windows 的标志（微软不允许收录），这里用四格窗的图形
@@ -17,36 +19,34 @@ const PATHS: Record<Exclude<Platform, "cross">, string> = {
   ios: siIos.path,
 };
 
-export function PlatformIcon({ platform, size = 14, className }: { platform: Platform; size?: number; className?: string }) {
-  if (platform === "cross") return <Layers size={size} strokeWidth={1.75} aria-hidden className={cx("shrink-0", className)} />;
-  return (
-    <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" aria-hidden className={cx("shrink-0", className)}>
-      <path d={PATHS[platform]} />
-    </svg>
-  );
-}
-
-/** 一排平台图标，鼠标停上去显示平台名。 */
-export function PlatformIcons({ platforms, size = 14, className }: { platforms: Platform[]; size?: number; className?: string }) {
+export function PlatformIcon({ platform, size = 14 }: { platform: Platform; size?: number }) {
   const t = useT();
+  const label = t(`platform.${platform}`);
+  const hover = useHoverCard(label, "label");
   return (
-    <span className={cx("flex items-center gap-2 text-fg-3", className)}>
-      {platforms.map((platform) => (
-        <span key={platform} title={t(`platform.${platform}`)} aria-label={t(`platform.${platform}`)} role="img" className="flex">
-          <PlatformIcon platform={platform} size={size} />
-        </span>
-      ))}
+    <span role="img" aria-label={label} className="inline-flex shrink-0 text-fg-4 transition-colors hover:text-fg-3 motion-reduce:transition-none" {...hover.handlers}>
+      {platform === "cross" ? <Layers size={size} strokeWidth={1.75} aria-hidden /> : (
+        <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" aria-hidden>
+          <path d={PATHS[platform]} />
+        </svg>
+      )}
+      {hover.card}
     </span>
   );
 }
 
-/** 灰色小标签里放图标和平台名，用在位置宽裕的地方（详情栏的文件行）。 */
-export function PlatformChip({ platform }: { platform: Platform }) {
-  const t = useT();
+export function PackageFileIcon({ name, platform, size = 14, className }: { name: string; platform?: Platform; size?: number; className?: string }) {
+  const kind = packageIconKind(name);
+  if (!kind && platform) return <PlatformIcon platform={platform} size={size} />;
+  const Icon = kind === "archive" ? FileArchive : kind === "installer" ? Package : File;
+  return <Icon size={size} strokeWidth={1.75} aria-hidden className={cx("shrink-0", className)} />;
+}
+
+/** 一排平台图标，鼠标停上去显示平台名。 */
+export function PlatformIcons({ platforms, size = 14, className }: { platforms: Platform[]; size?: number; className?: string }) {
   return (
-    <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-[4px] bg-hover px-1.5 text-[12px] text-fg-3">
-      <PlatformIcon platform={platform} size={12} />
-      {t(`platform.${platform}`)}
+    <span className={cx("flex items-center gap-2", className)}>
+      {platforms.map((platform) => <PlatformIcon key={platform} platform={platform} size={size} />)}
     </span>
   );
 }

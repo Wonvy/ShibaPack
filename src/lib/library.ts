@@ -40,9 +40,10 @@ export function fullPath(file: PackageFile, root: string | null | undefined): st
   return root.endsWith(separator) ? root + rel : root + separator + rel;
 }
 
-/** 悬停在版本号上时的提示：这个版本里每个安装包的完整路径，一行一个。 */
-export function versionPaths(version: Version, root: string | null | undefined): string {
-  return version.files.map((file) => fullPath(file, root)).join("\n");
+export function packageIconKind(name: string): "archive" | "installer" | undefined {
+  const lower = name.toLowerCase();
+  if (lower.endsWith(".zip") || lower.endsWith(".rar")) return "archive";
+  if (lower.endsWith(".appinstaller")) return "installer";
 }
 
 /**

@@ -7,7 +7,8 @@
 // 它检查的是单元测试和浏览器预览都够不着的部分：前后端之间的调用、
 // 图标文件能不能通过资源协议显示出来、已安装软件在真实窗口里能不能列出来。
 
-import { api, assetUrl } from "./api";
+import { api, assetUrl, windowControls } from "./api";
+import { usePrefs } from "./prefs";
 import { useApp } from "./store";
 
 function loads(path: string): Promise<boolean> {
@@ -32,6 +33,47 @@ export async function runSelftest() {
     const status = await api.getStatus();
     await check("仓库已打开", status.configured, status.repoRoot ?? "");
 
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    const appWindow = getCurrentWindow();
+    const before = await appWindow.innerSize();
+    const scale = await appWindow.scaleFactor();
+    const detailOpen = usePrefs.getState().detailOpen;
+    const main = document.querySelector("main");
+    const toggle = async (open: boolean) => {
+      const button = document.querySelector<HTMLButtonElement>("[data-detail-toggle]");
+      if (!button || button.disabled) throw new Error("详情栏开关不可用");
+      button.click();
+      const deadline = Date.now() + 2000;
+      while (usePrefs.getState().detailOpen !== open && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      if (usePrefs.getState().detailOpen !== open) throw new Error("详情栏状态切换超时");
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      return appWindow.innerSize();
+    };
+    if (!main) throw new Error("没有找到中间列表");
+    const widths = [main.clientWidth];
+    const observer = new ResizeObserver(() => widths.push(main.clientWidth));
+    observer.observe(main);
+    try {
+      const changed = await toggle(!detailOpen);
+      const middle = main.clientWidth;
+      const restored = await toggle(detailOpen);
+      await check("详情栏同步调整窗口宽度", (detailOpen ? changed.width < before.width : changed.width > before.width) && restored.width === before.width
+        && changed.height === before.height && restored.height === before.height, `${before.width} → ${changed.width} → ${restored.width}`);
+      const min = Math.min(widths[0], middle);
+      const max = Math.max(widths[0], middle);
+      await check("中间列表宽度没有瞬间跳变", widths.every((width) => width >= min - 2 && width <= max + 2), widths.join(" → "));
+    } finally {
+      observer.disconnect();
+    }
+
+    const logicalWidth = before.width / scale;
+    await windowControls.resizeForDetail(false, logicalWidth, logicalWidth);
+    const narrow = await appWindow.innerSize();
+    await windowControls.resizeForDetail(true, logicalWidth, logicalWidth);
+    await check("桌面窗口可以缩窄到 560 px", Math.abs(narrow.width / scale - 560) <= 1, `${Math.round(narrow.width / scale)} px`);
+
     // 导入一个真实文件（托管模式），看记录、文件和图标
     const result = await api.importPaths([status.selftest!], "managed");
     const item = result.report.items[0];
@@ -39,9 +81,9 @@ export async function runSelftest() {
     const software = result.library.software.find((s) => s.id === item?.softwareId);
     const file = software?.versions[0]?.files[0];
     await check("索引里有这条记录", Boolean(software && file), `${software?.name} / ${software?.versions[0]?.version} / ${file?.path}`);
-    await check("从安装包里取到了图标", Boolean(software?.icon), software?.icon ?? "");
-    if (software?.icon) {
-      await check("仓库里的图标能在界面里显示", await loads(`${status.repoRoot}/${software.icon}`));
+    await check("从安装包里取到了图标并缓存到索引", Boolean(software?.iconData), software?.icon ?? "");
+    if (software?.iconData) {
+      await check("索引里的图标能在界面里显示", await loads(software.iconData));
     }
 
     // 修改再读回，确认写入生效
@@ -67,11 +109,13 @@ export async function runSelftest() {
     await check("校验文件", verify.problems.length === 0, `检查 ${verify.checked} 个，问题 ${verify.problems.length} 个`);
 
     // 已安装软件
-    const installed = await api.listInstalled();
+    const { apps: installed, cachedIcons } = await api.listInstalled();
     const withIcon = installed.filter((app) => app.icon);
     await check("列出已安装软件", installed.length > 0, `${installed.length} 个，${withIcon.length} 个有图标`);
     if (withIcon[0]) {
       await check("已安装软件的图标能在界面里显示", await loads(withIcon[0].icon!), withIcon[0].name);
+      const cached = cachedIcons?.[withIcon[0].name.trim().toLowerCase()];
+      await check("已安装软件的图标可以从索引显示", Boolean(cached && await loads(cached)), withIcon[0].name);
     }
     const links = await api.matchInstalled();
     await check("对应关系可以取到", typeof links === "object", `${Object.keys(links).length} 个软件已安装`);

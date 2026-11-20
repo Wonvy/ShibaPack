@@ -20,10 +20,10 @@ import {
   WandSparkles,
 } from "lucide-react";
 import { type ReactNode, useContext, useEffect, useMemo, useState } from "react";
-import { DetailToggle } from "../components/chrome";
+import { useGridMotion } from "../components/gridMotion";
 import { SummaryCard, useHoverCard } from "../components/HoverCard";
-import { type ColumnDef, type Columns, ColumnsContext, TableHeader, useTableColumns, useWidth } from "../components/columns";
-import { SoftwareIcon } from "../components/SoftwareIcon";
+import { type ColumnDef, type ColumnSamples, type Columns, ColumnsContext, TableHeader, useTableColumns, useWidth } from "../components/columns";
+import { InstalledSoftwareIcon } from "../components/SoftwareIcon";
 import { SummaryText } from "../components/SummaryText";
 import { Button, Chip, ContextMenu, EmptyState, FilterMenu, IconButton, type MenuEntry, ViewMenu, cx } from "../components/ui";
 import { editSummary, uninstallApp } from "../lib/actions";
@@ -39,18 +39,19 @@ type Column = "name" | "version" | "date" | "size";
 // 卸载只在右键菜单和详情栏里，列表里不放（鼠标停上去冒出来的按钮容易误点）
 type InstalledColumn = "version" | "repo" | "date" | "size";
 const INSTALLED_COLUMNS: ColumnDef<InstalledColumn>[] = [
-  { key: "version", initial: 110, min: 64, max: 260 },
-  { key: "repo", initial: 96, min: 72, max: 220, autoHide: 3 },
-  { key: "date", initial: 92, min: 76, max: 200, end: true, autoHide: 1 },
-  { key: "size", initial: 80, min: 60, max: 160, end: true, autoHide: 2 },
+  { key: "version", initial: 110, min: 28, max: 260 },
+  { key: "repo", initial: 96, min: 28, max: 220, autoHide: 3 },
+  { key: "date", initial: 112, min: 44, max: 200, end: true, autoHide: 1 },
+  { key: "size", initial: 80, min: 28, max: 160, end: true, autoHide: 2 },
 ];
 /** 一行里除了各列之外占的宽度：列表的左右留白加上行自己的左右留白。 */
 const ROW_CHROME = 16 + 22;
 
 type RepoFilter = "all" | "in" | "out";
 
-export function InstalledView() {
+export function InstalledView({ detailToggle }: { detailToggle: ReactNode }) {
   const t = useT();
+  const language = useLanguage();
   const installed = useApp((state) => state.installed);
   const loading = useApp((state) => state.installedLoading);
   const sizes = useApp((state) => state.sizes);
@@ -67,7 +68,6 @@ export function InstalledView() {
   const view = usePrefs((state) => state.installedView);
   const setPrefs = usePrefs((state) => state.set);
   const [frame, frameWidth] = useWidth<HTMLDivElement>();
-  const columns = useTableColumns("installed", INSTALLED_COLUMNS, frameWidth - ROW_CHROME);
   const [sort, setSort] = useState<{ column: Column; asc: boolean }>({ column: "name", asc: true });
 
   // 统计出来的实际占用优先；还没统计完、或者统计不了时用安装程序登记的大小
@@ -99,6 +99,27 @@ export function InstalledView() {
     };
     return items.sort((a, b) => compare[sort.column](a, b) * (sort.asc ? 1 : -1));
   }, [installed, search, sort, sizes, stored, repoFilter]);
+  const gridViewport = useGridMotion(view === "grid", list);
+
+  const samples = useMemo<ColumnSamples<InstalledColumn>>(() => view !== "list" ? [] : [
+    {
+      version: { text: t("installed.col.version"), extra: 16 },
+      repo: t("installed.col.repo"),
+      date: { text: t("installed.col.date"), extra: 16 },
+      size: { text: t("installed.col.size"), extra: 16 },
+    },
+    ...list.map((app) => {
+      const software = stored.get(app.id);
+      const size = sizes[app.id] ?? app.size ?? null;
+      return {
+        version: app.version,
+        repo: { text: repoColumnText(t, software), extra: software ? 4 : 0 },
+        date: formatDate(app.installedAt, language),
+        size: size === null ? "" : formatSize(size),
+      };
+    }),
+  ], [language, list, sizes, stored, t, view]);
+  const columns = useTableColumns("installed", INSTALLED_COLUMNS, frameWidth - ROW_CHROME, samples);
 
   // 选中的：多选时是 selectedIds，单选时就是 selectedId 那一个
   const chosen = selectedIds.length > 0 ? selectedIds : selectedId ? [selectedId] : [];
@@ -182,7 +203,7 @@ export function InstalledView() {
               { value: "grid", label: t("lib.view.grid"), icon: <LayoutGrid size={15} strokeWidth={1.75} /> },
             ]}
           />
-          <DetailToggle />
+          {detailToggle}
         </div>
       </div>
 
@@ -217,9 +238,10 @@ export function InstalledView() {
             />
           )}
           <div
+            ref={gridViewport}
             className={cx(
-              "min-h-0 flex-1 overflow-y-auto pt-1 pb-3",
-              view === "grid" ? "grid auto-rows-min grid-cols-[repeat(auto-fill,minmax(112px,1fr))] content-start gap-1 px-3" : "px-2",
+              "min-h-0 flex-1 overflow-y-auto pt-1 pb-16",
+              view === "grid" ? "grid auto-rows-min grid-cols-[repeat(auto-fill,minmax(112px,1fr))] content-start gap-1 overflow-x-hidden px-3" : "px-2",
             )}
           >
             {list.map((app) =>
@@ -311,6 +333,10 @@ function useSubtitle(app: InstalledApp): { text: string; described: boolean } {
   return { text: app.publisher || t(`source.${app.source}`), described: false };
 }
 
+function useInstalledHover(app: InstalledApp, text?: string) {
+  return useHoverCard(<SummaryCard name={app.name} publisher={app.publisher} text={text} paths={[{ values: app.location ? [app.location] : [] }]} />);
+}
+
 /** 列表视图的一行。 */
 function InstalledRow({
   app,
@@ -332,6 +358,7 @@ function InstalledRow({
   const language = useLanguage();
   const menu = useInstalledMenu(app, group);
   const subtitle = useSubtitle(app);
+  const hover = useInstalledHover(app, subtitle.described ? subtitle.text : undefined);
   const selectInstalled = useApp((state) => state.selectInstalled);
   const columns = useContext(ColumnsContext) as Columns<InstalledColumn>;
   const show = (key: InstalledColumn) => columns.visible.includes(key);
@@ -341,18 +368,23 @@ function InstalledRow({
         role="button"
         tabIndex={0}
         aria-pressed={selected}
+        {...hover.handlers}
         onClick={onSelect}
         // 右键的不在多选里时，先单选它，菜单作用于它自己
-        onContextMenu={() => !group && !selected && selectInstalled(app.id)}
+        onContextMenu={() => {
+          hover.handlers.onContextMenu();
+          if (!group && !selected) selectInstalled(app.id);
+        }}
         onKeyDown={(event) => event.key === "Enter" && onSelect(event)}
         style={{ gridTemplateColumns: columns.template }}
-        className={cx("group grid min-h-[52px] items-center gap-x-3 rounded-md py-1.5 pr-3 pl-2.5 transition-colors", selected ? "bg-active" : "hover:bg-hover")}
+        className={cx("group grid min-h-[52px] items-center gap-x-2 rounded-md py-1.5 pr-3 pl-2.5 transition-colors", selected ? "bg-active" : "hover:bg-hover")}
       >
+        {hover.card}
         <div className="flex min-w-0 items-center gap-2.5">
-          <SoftwareIcon name={app.name} icon={app.icon} />
+          <InstalledSoftwareIcon app={app} />
           <div className="min-w-0">
             <div className="truncate text-[13px] font-medium">{app.name}</div>
-            <div className={cx("truncate text-[12px]", subtitle.described ? "text-fg-2" : "text-fg-3")} title={subtitle.described ? `${subtitle.text}\n${app.publisher}` : undefined}>
+            <div className={cx("truncate text-[12px]", subtitle.described ? "text-fg-2" : "text-fg-3")}>
               {subtitle.text}
             </div>
           </div>
@@ -388,18 +420,16 @@ function InstalledTile({
   const menu = useInstalledMenu(app, group);
   const subtitle = useSubtitle(app);
   const selectInstalled = useApp((state) => state.selectInstalled);
-  // 鼠标停一会儿浮出简介（网格里只放得下名字和版本）
-  const hover = useHoverCard(subtitle.described ? <SummaryCard name={app.name} publisher={app.publisher} text={subtitle.text} /> : null);
+  const hover = useInstalledHover(app, subtitle.described ? subtitle.text : undefined);
   return (
     <ContextMenu items={menu}>
       <div
+        data-grid-tile=""
         role="button"
         tabIndex={0}
         aria-pressed={selected}
+        {...hover.handlers}
         onClick={onSelect}
-        onMouseEnter={hover.handlers.onMouseEnter}
-        onMouseLeave={hover.handlers.onMouseLeave}
-        onPointerDown={hover.handlers.onPointerDown}
         onContextMenu={() => {
           hover.handlers.onContextMenu();
           if (!group && !selected) selectInstalled(app.id);
@@ -412,7 +442,7 @@ function InstalledTile({
       >
         {hover.card}
         <span className="relative">
-          <SoftwareIcon name={app.name} icon={app.icon} size={48} />
+          <InstalledSoftwareIcon app={app} size={48} />
           {software && (
             <span
               title={t("installed.inLibrary")}
@@ -430,11 +460,17 @@ function InstalledTile({
   );
 }
 
+function repoColumnText(t: ReturnType<typeof useT>, software?: Software) {
+  if (!software) return t("installed.repoNone");
+  const version = primaryVersion(software)?.version;
+  return version ? t("installed.repoHas", { version }) : software.name;
+}
+
 /** “仓库”一列：仓库里有它的安装包时写默认版本号，点了到软件库里看；没有时写“未收录”。 */
 function RepoCell({ software, onOpen }: { software?: Software; onOpen: (id: string) => void }) {
   const t = useT();
-  if (!software) return <span className="truncate text-[12px] text-fg-4">{t("installed.repoNone")}</span>;
-  const version = primaryVersion(software)?.version ?? "";
+  const label = repoColumnText(t, software);
+  if (!software) return <span className="truncate text-[12px] text-fg-4">{label}</span>;
   return (
     <button
       type="button"
@@ -445,7 +481,7 @@ function RepoCell({ software, onOpen }: { software?: Software; onOpen: (id: stri
       }}
       className="tabular -ml-1 min-w-0 truncate rounded px-1 text-left text-[12px] text-fg-2 hover:bg-active hover:text-accent"
     >
-      {version ? t("installed.repoHas", { version }) : software.name}
+      {label}
     </button>
   );
 }
@@ -491,7 +527,7 @@ function InstalledBatch() {
         <div className="mt-4 rounded-lg border border-line">
           {apps.map((app) => (
             <div key={app.id} className="flex h-9 items-center gap-2 border-b border-line px-2.5 last:border-b-0">
-              <SoftwareIcon name={app.name} icon={app.icon} size={20} />
+              <InstalledSoftwareIcon app={app} size={20} />
               <span className="min-w-0 flex-1 truncate text-[13px]">{app.name}</span>
             </div>
           ))}
@@ -538,7 +574,7 @@ function InstalledSingle() {
     <div className="flex h-full flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-4">
         <div className="flex items-center gap-3">
-          <SoftwareIcon name={app.name} icon={app.icon} size={44} />
+          <InstalledSoftwareIcon app={app} size={44} />
           <div className="min-w-0">
             <div className="selectable truncate text-[15px] font-semibold">{app.name}</div>
             <div className="truncate text-[12px] text-fg-2">{app.publisher}</div>

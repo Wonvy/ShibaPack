@@ -6,7 +6,7 @@
         "title": "ShibaPack",
         "width": 1280,
         "height": 800,
-        "minWidth": 920,
+        "minWidth": 560,
         "minHeight": 560,
         "center": true,
         "decorations": true,

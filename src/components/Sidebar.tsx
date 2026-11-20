@@ -1,5 +1,4 @@
 // 侧栏：上面是软件库的几个入口，中间是分类树，下面是设置（存储与备份在设置窗口里）。
-// 可以收起成一列图标（“设置”那一行右边的按钮，或者把侧栏拖得很窄）：只留入口、顶层分类和设置，名字和数量在悬停提示里。
 
 import {
   ArrowDown,
@@ -14,8 +13,6 @@ import {
   LayoutGrid,
   type LucideIcon,
   MonitorCheck,
-  PanelLeftClose,
-  PanelLeftOpen,
   Pencil,
   Plus,
   RefreshCw,
@@ -25,13 +22,13 @@ import {
   Star,
   Trash2,
 } from "lucide-react";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { canMoveCategory, classify, moveCategory } from "../lib/actions";
 import { api } from "../lib/api";
 import { beginDrag, useDrag } from "../lib/drag";
 import { CATEGORY_COLORS, CATEGORY_ICONS, categoryIcon } from "../lib/icons";
 import { childrenOf, flattenTree, hasUpdate, newId, withDescendants } from "../lib/library";
-import { RAIL_WIDTH, usePrefs } from "../lib/prefs";
+import { SIDEBAR, usePrefs } from "../lib/prefs";
 import { useStartup } from "../lib/startup";
 import { type Scope, useApp, useT } from "../lib/store";
 import type { Category } from "../lib/types";
@@ -40,7 +37,7 @@ import { Button, ContextMenu, Field, IconButton, type MenuEntry, Modal, Select, 
 
 type Editing = { mode: "new"; parentId: string | null } | { mode: "edit"; category: Category };
 
-export function Sidebar() {
+export function Sidebar({ onAutoWidthChange }: { onAutoWidthChange: (width: number) => void }) {
   const t = useT();
   const library = useApp((state) => state.library)!;
   const route = useApp((state) => state.route);
@@ -56,9 +53,19 @@ export function Sidebar() {
   // 第三方的、开着的启动项：开机慢时最想知道的那个数
   const startupCount = useStartup((state) => state.items?.filter((i) => i.kind === "startup" && i.enabled && !i.system).length);
   const width = usePrefs((state) => state.sidebarWidth);
-  const collapsed = usePrefs((state) => state.sidebarCollapsed);
   const setPrefs = usePrefs((state) => state.set);
   const [editing, setEditing] = useState<Editing | null>(null);
+  const nav = useRef<HTMLElement>(null);
+
+  useLayoutEffect(() => {
+    const element = nav.current;
+    if (width !== null || !element) return;
+    const measure = () => onAutoWidthChange(element.getBoundingClientRect().width);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [width, onAutoWidthChange]);
 
   // 每个分类下的软件数，包含下级分类里的
   const counts = useMemo(() => {
@@ -82,8 +89,6 @@ export function Sidebar() {
   // 软件拖到分类上，或者从系统把安装包拖到分类上（直接导入进这个分类）
   const fileDrop = useApp((state) => state.fileDropTarget);
   const overUncategorized = useDrag((state) => state.target !== null && state.target.category === null) || fileDrop === "uncategorized";
-  const dragCategory = useDrag((state) => state.target?.category);
-  const dropCategory = dragCategory ?? (fileDrop?.startsWith("category:") ? fileDrop.slice("category:".length) : undefined);
 
   const isScope = (target: Scope) =>
     route === "library" && scope.kind === target.kind && (scope.kind !== "category" || scope.id === (target as { id: string }).id);
@@ -148,86 +153,10 @@ export function Sidebar() {
 
   const dialog = editing && <CategoryDialog editing={editing} onClose={() => setEditing(null)} />;
 
-  if (collapsed) {
-    // 选中的是下级分类时，点亮它所在的顶层分类
-    let activeTop: string | null = null;
-    if (route === "library" && scope.kind === "category") {
-      let current = library.categories.find((c) => c.id === scope.id);
-      for (let depth = 0; current?.parentId && depth < 16; depth++) current = library.categories.find((c) => c.id === current!.parentId);
-      activeTop = current?.id ?? null;
-    }
-    return (
-      <nav className="flex shrink-0 flex-col items-center border-r border-line bg-side" style={{ width: RAIL_WIDTH }}>
-        <div className="flex flex-col items-center gap-1 pt-2">
-          {/* 启动与服务管的是这台电脑，不是软件库：放在最上面，用一条线和软件库的入口隔开 */}
-          <RailButton icon={Rocket} label={t("nav.startup")} count={startupCount} active={route === "startup"} onClick={() => setRoute("startup")} />
-          <span className="my-1 h-px w-6 shrink-0 bg-line" />
-          <RailButton
-            icon={LayoutGrid}
-            label={t("nav.all")}
-            count={library.software.length}
-            active={isScope({ kind: "all" })}
-            onClick={() => setScope({ kind: "all" })}
-            menu={classifyMenu(library.software.map((s) => s.id))}
-          />
-          <RailButton icon={MonitorCheck} label={t("nav.installed")} count={installedCount} active={route === "installed"} onClick={() => setRoute("installed")} />
-          <RailButton icon={Star} label={t("nav.starred")} count={starred} active={isScope({ kind: "starred" })} onClick={() => setScope({ kind: "starred" })} />
-          <RailButton
-            icon={ArrowUpCircle}
-            label={t("nav.updates")}
-            count={updates}
-            highlight={updates > 0}
-            active={isScope({ kind: "updates" })}
-            onClick={() => setScope({ kind: "updates" })}
-            menu={[{ label: t("scan.updates"), icon: RefreshCw, disabled: checking, onSelect: () => void checkUpdates() }]}
-          />
-        </div>
-        <span className="my-2 h-px w-6 shrink-0 bg-line" />
-        {/* 顶层分类。软件照样可以拖到图标上归类；右键是分类自己的菜单，空白处右键可以新建分类 */}
-        <ContextMenu items={sectionMenu}>
-          <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto pb-2 [scrollbar-width:none]">
-            {childrenOf(library.categories, null).map((category) => (
-              <RailButton
-                key={category.id}
-                icon={categoryIcon(category.icon)}
-                color={category.color}
-                label={category.name}
-                count={counts.get(category.id)}
-                active={activeTop === category.id}
-                drop={`category:${category.id}`}
-                dropping={dropCategory === category.id}
-                onClick={() => setScope({ kind: "category", id: category.id })}
-                menu={categoryMenu(category)}
-              />
-            ))}
-            {(uncategorized.length > 0 || draggingSoftware) && (
-              <RailButton
-                icon={Inbox}
-                label={t("nav.uncategorized")}
-                count={uncategorized.length}
-                muted
-                drop="uncategorized"
-                dropping={overUncategorized}
-                active={isScope({ kind: "uncategorized" })}
-                onClick={() => setScope({ kind: "uncategorized" })}
-                menu={classifyMenu(uncategorized.map((s) => s.id))}
-              />
-            )}
-          </div>
-        </ContextMenu>
-        <div className="flex w-full shrink-0 flex-col items-center gap-1 border-t border-line py-2">
-          <RailButton icon={Settings} label={t("app.settings")} active={settingsOpen} onClick={() => patch({ settingsOpen: true })} />
-          <RailButton icon={PanelLeftOpen} label={t("layout.showSidebar")} muted active={false} onClick={() => setPrefs({ sidebarCollapsed: false })} />
-        </div>
-        {dialog}
-      </nav>
-    );
-  }
-
   return (
-    <nav className="flex shrink-0 flex-col bg-side" style={{ width }}>
+    <nav id="app-sidebar" ref={nav} className="flex shrink-0 flex-col bg-side" style={{ width: width ?? "max-content", minWidth: SIDEBAR.min, maxWidth: SIDEBAR.max }}>
       <div className="flex flex-col gap-px p-2 pb-0">
-        {/* 启动与服务管的是这台电脑，不是软件库：放在最上面，用一条线和软件库的入口隔开 */}
+        {/* 启动与服务和软件库的入口用分隔线隔开 */}
         <NavRow icon={Rocket} label={t("nav.startup")} count={startupCount} active={route === "startup"} onClick={() => setRoute("startup")} />
         <Divider />
         <NavRow
@@ -313,83 +242,13 @@ export function Sidebar() {
       </ContextMenu>
 
       {/* 下面是设置（仓库存储和备份也在设置里） */}
-      <div className="flex shrink-0 flex-col gap-px border-t border-line p-2">
-        <NavRow
-          icon={Settings}
-          label={t("app.settings")}
-          active={settingsOpen}
-          onClick={() => patch({ settingsOpen: true })}
-          action={
-            // 收起侧栏：放在侧栏自己的最下面，收起后“展开”也在这一列的最下面
-            <IconButton
-              label={t("layout.hideSidebar")}
-              className="size-6"
-              onClick={(event) => {
-                event.stopPropagation();
-                setPrefs({ sidebarCollapsed: true });
-              }}
-            >
-              <PanelLeftClose size={14} strokeWidth={1.75} />
-            </IconButton>
-          }
-        />
+      <div className="flex h-(--bottom-bar-height) shrink-0 items-center border-t border-line px-2">
+        <NavRow icon={Settings} label={t("app.settings")} active={settingsOpen} onClick={() => patch({ settingsOpen: true })} />
       </div>
 
       {dialog}
     </nav>
   );
-}
-
-/** 收起的侧栏里的一个图标。名字和数量放在悬停提示里；有更新时右上角一个小圆点。 */
-function RailButton({
-  icon: Icon,
-  label,
-  count,
-  active,
-  muted,
-  highlight,
-  color,
-  drop,
-  dropping,
-  menu,
-  onClick,
-}: {
-  icon: LucideIcon;
-  label: string;
-  count?: number;
-  active: boolean;
-  muted?: boolean;
-  highlight?: boolean;
-  /** 分类自己的颜色。 */
-  color?: string | null;
-  drop?: string;
-  dropping?: boolean;
-  menu?: MenuEntry[];
-  onClick: () => void;
-}) {
-  const title = count ? `${label} · ${count}` : label;
-  const button = (
-    <button
-      type="button"
-      title={title}
-      aria-label={title}
-      aria-current={active || undefined}
-      data-drop={drop}
-      onClick={onClick}
-      className={cx(
-        "relative flex size-9 shrink-0 items-center justify-center rounded-md transition-colors",
-        dropping
-          ? "bg-accent-soft text-accent ring-2 ring-accent ring-inset"
-          : active
-            ? "bg-active text-fg"
-            : cx(muted ? "text-fg-3" : "text-fg-2", "hover:bg-hover hover:text-fg"),
-      )}
-    >
-      <Icon size={18} strokeWidth={1.75} aria-hidden style={{ color: color ?? undefined }} />
-      {highlight && <span className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-accent" />}
-    </button>
-  );
-  return menu ? <ContextMenu items={menu}>{button}</ContextMenu> : button;
 }
 
 function NavRow({

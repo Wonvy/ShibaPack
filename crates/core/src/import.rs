@@ -655,6 +655,7 @@ impl Repo {
                     category_id: category.clone(),
                     starred: false,
                     icon: None,
+                    icon_data: None,
                     default_version_id: None,
                     added_at: added_at.clone(),
                     versions: Vec::new(),

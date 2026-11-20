@@ -44,8 +44,11 @@ pub struct InstalledApp {
 
 /// 列出已安装的软件，按名称排序。图标取出来放在 `icon_cache` 里，下次直接用。
 pub fn list_installed(icon_cache: &Path) -> Vec<InstalledApp> {
+    #[cfg(windows)]
+    let mut apps = platform::list(icon_cache);
+    #[cfg(not(windows))]
     let mut apps = platform::list();
-    for app in &mut apps {
+    for app in apps.iter_mut().filter(|app| app.icon.is_none()) {
         app.icon = app.icon_source.as_deref().and_then(|source| icon_for(source, icon_cache));
     }
     apps.sort_by_key(|app| app.name.to_lowercase());
@@ -55,11 +58,18 @@ pub fn list_installed(icon_cache: &Path) -> Vec<InstalledApp> {
 
 /// 图标按“来源路径 + 修改时间”缓存：软件升级后图标文件变了会重新取。
 pub(crate) fn icon_for(source: &Path, cache: &Path) -> Option<String> {
+    icon_for_index(source, cache, 0)
+}
+
+fn icon_for_index(source: &Path, cache: &Path, index: i32) -> Option<String> {
     let meta = std::fs::metadata(source).ok()?;
-    let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-    let key = hex::encode(Sha256::digest(format!("{}|{modified}|{}", source.display(), meta.len())));
+    if !meta.is_file() {
+        return None;
+    }
+    let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    let key = hex::encode(Sha256::digest(format!("v2|{}|{index}|{modified}|{}", source.display(), meta.len())));
     let stem = &key[..20];
-    let path = icons::cached_icon(cache, stem).or_else(|| icons::extract_icon(source, cache, stem))?;
+    let path = icons::cached_icon(cache, stem).or_else(|| icons::extract_icon_at(source, cache, stem, index))?;
     Some(path.to_string_lossy().to_string())
 }
 
@@ -365,12 +375,20 @@ mod platform {
 #[cfg(windows)]
 mod platform {
     use super::*;
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::{
+        core::PCWSTR,
+        Win32::System::{
+            ApplicationInstallationAndServicing::{MsiGetProductInfoW, INSTALLPROPERTY_LOCALPACKAGE, INSTALLPROPERTY_PRODUCTICON},
+            Environment::ExpandEnvironmentStringsW,
+        },
+    };
     use winreg::{enums::*, RegKey};
 
     const UNINSTALL: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
     const UNINSTALL_32: &str = r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall";
 
-    pub fn list() -> Vec<InstalledApp> {
+    pub fn list(icon_cache: &Path) -> Vec<InstalledApp> {
         let mut apps = Vec::new();
         let hives = [
             (HKEY_LOCAL_MACHINE, "HKLM", UNINSTALL),
@@ -381,18 +399,24 @@ mod platform {
             let Ok(root) = RegKey::predef(hive).open_subkey(path) else { continue };
             for key_name in root.enum_keys().flatten() {
                 let Ok(key) = root.open_subkey(&key_name) else { continue };
-                if let Some(app) = read_key(&key, &format!(r"{hive_name}\{path}\{key_name}")) {
+                if let Some(app) = read_key(&key, &format!(r"{hive_name}\{path}\{key_name}"), &key_name, icon_cache) {
                     apps.push(app);
                 }
             }
         }
         // 同一个软件可能在 64 位和 32 位两处都登记了
         apps.sort_by(|a, b| (a.name.to_lowercase(), &a.version).cmp(&(b.name.to_lowercase(), &b.version)));
-        apps.dedup_by(|a, b| a.name.eq_ignore_ascii_case(&b.name) && a.version == b.version);
+        apps.dedup_by(|duplicate, first| {
+            let same = duplicate.name.eq_ignore_ascii_case(&first.name) && duplicate.version == first.version;
+            if same && first.icon.is_none() {
+                first.icon = duplicate.icon.take();
+            }
+            same
+        });
         apps
     }
 
-    fn read_key(key: &RegKey, id: &str) -> Option<InstalledApp> {
+    fn read_key(key: &RegKey, id: &str, key_name: &str, icon_cache: &Path) -> Option<InstalledApp> {
         let text = |name: &str| key.get_value::<String, _>(name).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
         let number = |name: &str| key.get_value::<u32, _>(name).ok();
 
@@ -406,26 +430,34 @@ mod platform {
         }
 
         let uninstall_command = text("UninstallString");
-        let install_dir = text("InstallLocation").map(|dir| PathBuf::from(dir.trim_matches('"')));
-        // DisplayIcon 形如 "C:\App\app.exe,0"：去掉引号和后面的图标序号
-        let display_icon = text("DisplayIcon").map(|raw| {
-            let raw = raw.trim_matches('"');
-            let path = match raw.rsplit_once(',') {
-                Some((path, index)) if index.trim().trim_start_matches('-').chars().all(|c| c.is_ascii_digit()) => path,
-                _ => raw,
+        let install_dir = text("InstallLocation").and_then(|dir| expand_path(dir.trim_matches('"')));
+        let display_icon = text("DisplayIcon").and_then(|raw| display_icon_path(&raw)).map(|(path, index)| {
+            let path = match &install_dir {
+                Some(dir) if path.is_relative() => dir.join(path),
+                _ => path,
             };
-            PathBuf::from(path.trim().trim_matches('"'))
+            (path, index)
         });
-        let icon_source = display_icon
-            .clone()
-            .filter(|path| path.is_file())
-            .or_else(|| install_dir.as_deref().and_then(|dir| main_exe(dir, &name)))
-            .or_else(|| uninstall_command.as_deref().and_then(exe_in_command).filter(|path| path.is_file()));
+        let msi_product = (key_name.starts_with('{') && key_name.ends_with('}') && uuid::Uuid::parse_str(key_name).is_ok())
+            .then(|| key_name.encode_utf16().chain(Some(0)).collect::<Vec<_>>());
+        let icon = display_icon.as_ref().and_then(|(path, index)| icon_for_index(path, icon_cache, *index))
+            .or_else(|| msi_product_path(msi_product.as_deref()?, INSTALLPROPERTY_PRODUCTICON)
+                .and_then(|path| icon_for(&path, icon_cache)))
+            .or_else(|| msi_product_path(msi_product.as_deref()?, INSTALLPROPERTY_LOCALPACKAGE)
+                .and_then(|path| icon_for(&path, icon_cache)))
+            .or_else(|| main_exes(install_dir.as_deref()?, &name).into_iter().find_map(|path| icon_for(&path, icon_cache)))
+            .or_else(|| {
+                let path = uninstall_command.as_deref().and_then(exe_in_command)?;
+                if path.file_name()?.eq_ignore_ascii_case("msiexec.exe") {
+                    return None;
+                }
+                icon_for(&path, icon_cache)
+            });
 
         let location = install_dir
             .clone()
             .filter(|dir| dir.is_dir())
-            .or_else(|| display_icon.as_deref().and_then(Path::parent).map(Path::to_path_buf))
+            .or_else(|| display_icon.as_ref().and_then(|(path, _)| path.parent()).map(Path::to_path_buf))
             .map(|path| path.to_string_lossy().to_string())
             .unwrap_or_default();
 
@@ -446,8 +478,8 @@ mod platform {
             source: "registry".to_string(),
             location,
             uninstallable: uninstall_command.is_some(),
-            icon: None,
-            icon_source,
+            icon,
+            icon_source: None,
             uninstall_command,
             // 只认登记的安装位置；从图标路径推出来的文件夹可能是安装程序的缓存，不拿来统计
             install_dir: install_dir.filter(|dir| dir.is_dir()),
@@ -455,26 +487,65 @@ mod platform {
         })
     }
 
-    /// 安装目录里最像主程序的 exe：名字和软件名对得上的优先，否则取最大的。
-    fn main_exe(dir: &Path, name: &str) -> Option<PathBuf> {
+    fn display_icon_path(raw: &str) -> Option<(PathBuf, i32)> {
+        let raw = raw.trim().trim_start_matches('@');
+        let (path, index) = raw.rsplit_once(',')
+            .and_then(|(path, index)| Some((path, index.trim().trim_end_matches('"').parse::<i32>().ok()?)))
+            .unwrap_or((raw, 0));
+        Some((expand_path(path.trim().trim_matches('"'))?, index))
+    }
+
+    fn expand_path(path: &str) -> Option<PathBuf> {
+        if !path.contains('%') {
+            return Some(PathBuf::from(path));
+        }
+        let input: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+        // input 以 NUL 结尾。先查询所需长度，再写入足够长的缓冲区。
+        let size = unsafe { ExpandEnvironmentStringsW(input.as_ptr(), std::ptr::null_mut(), 0) };
+        if size == 0 {
+            return None;
+        }
+        let mut expanded = vec![0; size as usize];
+        let used = unsafe { ExpandEnvironmentStringsW(input.as_ptr(), expanded.as_mut_ptr(), size) };
+        (used > 0 && used <= size).then(|| std::ffi::OsString::from_wide(&expanded[..used as usize - 1]).into())
+    }
+
+    fn msi_product_path(product: &[u16], property: PCWSTR) -> Option<PathBuf> {
+        let mut value = vec![0u16; 260];
+        let mut size = value.len() as u32;
+        // 产品代码与属性都是 NUL 结尾的 UTF-16，size 是输出缓冲区的字符数。
+        let result = unsafe { MsiGetProductInfoW(product.as_ptr(), property, value.as_mut_ptr(), &mut size) };
+        let result = if result == 234 {
+            size += 1;
+            value.resize(size as usize, 0);
+            unsafe { MsiGetProductInfoW(product.as_ptr(), property, value.as_mut_ptr(), &mut size) }
+        } else {
+            result
+        };
+        (result == 0 && size > 0).then(|| std::ffi::OsString::from_wide(&value[..size as usize]).into())
+    }
+
+    /// 安装目录里最像主程序的 exe：名字和软件名对得上的优先，然后按大小排列。
+    fn main_exes(dir: &Path, name: &str) -> Vec<PathBuf> {
         let wanted = crate::identify::normalize_name(name);
-        let mut exes: Vec<(PathBuf, u64)> = std::fs::read_dir(dir)
-            .ok()?
+        let mut exes: Vec<_> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
             .flatten()
             .map(|entry| entry.path())
             .filter(|path| path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("exe")))
-            .filter(|path| {
+            .filter_map(|path| {
                 let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_lowercase();
-                !stem.starts_with("unins") && !stem.contains("uninstall") && !stem.contains("update")
+                if stem.starts_with("unins") || stem.contains("uninstall") || stem.contains("update") {
+                    return None;
+                }
+                let stem = crate::identify::normalize_name(&stem);
+                let matches = !stem.is_empty() && (wanted.contains(&stem) || stem.contains(&wanted));
+                Some((!matches, std::cmp::Reverse(std::fs::metadata(&path).ok()?.len()), path))
             })
-            .filter_map(|path| std::fs::metadata(&path).ok().map(|meta| (path, meta.len())))
             .collect();
-        exes.sort_by(|a, b| b.1.cmp(&a.1));
-        let by_name = exes.iter().find(|(path, _)| {
-            let stem = crate::identify::normalize_name(&path.file_stem().unwrap_or_default().to_string_lossy());
-            !stem.is_empty() && (wanted.contains(&stem) || stem.contains(&wanted))
-        });
-        by_name.or(exes.first()).map(|(path, _)| path.clone())
+        exes.sort();
+        exes.into_iter().map(|(_, _, path)| path).collect()
     }
 
     /// 卸载命令里的程序路径：`"C:\App\unins000.exe" /SILENT` → `C:\App\unins000.exe`。
@@ -483,11 +554,19 @@ mod platform {
         let path = match command.strip_prefix('"') {
             Some(rest) => rest.split('"').next()?,
             None => {
-                let end = command.to_lowercase().find(".exe")? + 4;
+                let end = command.to_ascii_lowercase().find(".exe")? + 4;
                 &command[..end]
             }
         };
-        Some(PathBuf::from(path))
+        expand_path(path)
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn parses_display_icon_paths_and_resource_ids() {
+        assert_eq!(display_icon_path(r#""C:\Apps\name, tool.dll", -123"#), Some((PathBuf::from(r"C:\Apps\name, tool.dll"), -123)));
+        assert_eq!(display_icon_path(r#""C:\Apps\tool.exe,2""#), Some((PathBuf::from(r"C:\Apps\tool.exe"), 2)));
+        assert_eq!(display_icon_path(r"@%SystemRoot%\explorer.exe,0"), Some((PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("explorer.exe"), 0)));
     }
 }
 

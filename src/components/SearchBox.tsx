@@ -8,18 +8,18 @@
 
 import * as DropdownPrimitive from "@radix-ui/react-dropdown-menu";
 import { Check, ChevronDown, ExternalLink, Layers, LayoutGrid, LoaderCircle, MonitorCheck, Rocket, Search, X } from "lucide-react";
-import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { siGithub, siHomebrew } from "simple-icons";
 import { api } from "../lib/api";
 import { type Key, errorText } from "../lib/i18n";
 import { primaryVersion } from "../lib/library";
-import { type SearchScope, usePrefs } from "../lib/prefs";
+import { SEARCH_SCOPES, type SearchScope, usePrefs } from "../lib/prefs";
 import { useStartup } from "../lib/startup";
 import { useApp, useLanguage, useT } from "../lib/store";
 import type { Candidate, RepoHit } from "../lib/types";
-import { SoftwareIcon } from "./SoftwareIcon";
+import { InstalledSoftwareIcon, RepositorySoftwareIcon } from "./SoftwareIcon";
 import { StartupIcon } from "./StartupIcon";
-import { cx, itemClass, menuClass } from "./ui";
+import { ContextMenu, cx, itemClass, menuClass } from "./ui";
 
 type Group = "library" | "installed" | "startup" | "github" | "homebrew";
 
@@ -47,14 +47,14 @@ interface Section {
   note: string | null;
 }
 
-const SCOPES: { value: SearchScope; icon: ReactNode }[] = [
-  { value: "all", icon: <Layers size={14} strokeWidth={1.75} /> },
-  { value: "library", icon: <LayoutGrid size={14} strokeWidth={1.75} /> },
-  { value: "installed", icon: <MonitorCheck size={14} strokeWidth={1.75} /> },
-  { value: "startup", icon: <Rocket size={14} strokeWidth={1.75} /> },
-  { value: "github", icon: <Brand path={siGithub.path} size={13} /> },
-  { value: "homebrew", icon: <Brand path={siHomebrew.path} size={13} /> },
-];
+const SCOPE_ICONS: Record<SearchScope, ReactNode> = {
+  all: <Layers size={14} strokeWidth={1.75} />,
+  library: <LayoutGrid size={14} strokeWidth={1.75} />,
+  installed: <MonitorCheck size={14} strokeWidth={1.75} />,
+  startup: <Rocket size={14} strokeWidth={1.75} />,
+  github: <Brand path={siGithub.path} size={13} />,
+  homebrew: <Brand path={siHomebrew.path} size={13} />,
+};
 
 const ONLINE: SearchScope[] = ["github", "homebrew"];
 /** 每一组最多列几个。只看这一处时多列一些。 */
@@ -75,6 +75,22 @@ function BrandTile({ path }: { path: string }) {
     <span aria-hidden className="flex size-6 shrink-0 items-center justify-center rounded-md bg-tile text-tile-fg">
       <Brand path={path} size={13} />
     </span>
+  );
+}
+
+function GitHubOwnerAvatar({ url }: { url?: string }) {
+  const [failedUrl, setFailedUrl] = useState<string>();
+  if (!url || failedUrl === url) return <BrandTile path={siGithub.path} />;
+  return (
+    <img
+      src={url}
+      alt=""
+      draggable={false}
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={() => setFailedUrl(url)}
+      className="size-6 shrink-0 rounded-md bg-tile object-cover"
+    />
   );
 }
 
@@ -149,6 +165,7 @@ export function SearchBox() {
   const search = useApp((state) => state.search);
   const patch = useApp((state) => state.patch);
   const scope = usePrefs((state) => state.searchScope);
+  const shortcuts = usePrefs((state) => state.searchShortcuts);
   const setPrefs = usePrefs((state) => state.set);
   const online = ONLINE.includes(scope);
   // 范围是 GitHub、Homebrew 时，字只用来在网上搜，不过滤当前页的列表
@@ -159,18 +176,11 @@ export function SearchBox() {
   const [active, setActive] = useState(-1);
   const box = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
-  const right = useRef<HTMLDivElement>(null);
-  const [padRight, setPadRight] = useState(80);
 
   const sections = useResults(text, scope, open);
   const flat = useMemo(() => sections.flatMap((section) => section.items), [sections]);
   const busy = sections.some((section) => section.loading);
   const shown = open && text.trim() !== "";
-
-  // 右端的清空按钮和范围按钮宽度会变，输入的字不要钻到它们下面
-  useLayoutEffect(() => {
-    if (right.current) setPadRight(right.current.offsetWidth + 10);
-  }, [scope, text, t]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -209,7 +219,6 @@ export function SearchBox() {
   };
 
   const changeScope = (next: SearchScope) => {
-    if (next === scope) return;
     const nextOnline = ONLINE.includes(next);
     // 已经输入的字跟着带过去；从网上的范围换回来时，才拿它过滤当前页
     if (nextOnline && !online) {
@@ -219,7 +228,7 @@ export function SearchBox() {
       patch({ search: onlineText });
       setOnlineText("");
     }
-    setPrefs({ searchScope: next });
+    if (next !== scope) setPrefs({ searchScope: next });
     setOpen(true);
     requestAnimationFrame(() => input.current?.focus());
   };
@@ -234,100 +243,76 @@ export function SearchBox() {
           : scope === "startup"
             ? t("startup.search")
             : t(`search.placeholder.${scope}` as Key);
-  const current = SCOPES.find((entry) => entry.value === scope) ?? SCOPES[0];
-
   return (
-    <div ref={box} className="relative w-full max-w-[400px] min-w-[180px]">
-      <Search size={14} strokeWidth={1.75} aria-hidden className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-fg-3" />
-      <input
-        ref={input}
-        type="text"
-        value={text}
-        spellCheck={false}
-        role="combobox"
-        aria-expanded={shown}
-        aria-controls="search-results"
-        placeholder={placeholder}
-        onChange={(event) => {
-          setText(event.target.value);
-          setOpen(true);
-        }}
-        onFocus={() => setOpen(true)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            // 先收起结果；结果已经收起了再清空
-            if (shown) setOpen(false);
-            else {
-              setText("");
-              event.currentTarget.blur();
-            }
-          } else if (event.key === "ArrowDown" && shown && flat.length > 0) {
-            event.preventDefault();
-            setActive((index) => Math.min(flat.length - 1, index + 1));
-          } else if (event.key === "ArrowUp" && shown && flat.length > 0) {
-            event.preventDefault();
-            setActive((index) => Math.max(0, index - 1));
-          } else if (event.key === "Enter" && shown && active >= 0 && flat[active]) {
-            event.preventDefault();
-            choose(flat[active]);
-          }
-        }}
-        style={{ paddingRight: padRight }}
-        className="h-7 w-full rounded-md border border-transparent bg-hover pl-8 text-[13px] outline-none placeholder:text-fg-3 focus:border-accent"
-      />
-      <div ref={right} className="absolute inset-y-0 right-1 flex items-center gap-0.5">
-        {text && (
-          <button
-            type="button"
-            aria-label={t("common.close")}
-            onClick={() => {
-              setText("");
-              input.current?.focus();
-            }}
-            className="flex size-5 items-center justify-center rounded text-fg-3 hover:text-fg"
-          >
-            <X size={13} strokeWidth={2} />
-          </button>
-        )}
-        <DropdownPrimitive.Root>
-          <DropdownPrimitive.Trigger asChild>
-            <button
-              type="button"
-              title={t("search.scope")}
-              aria-label={`${t("search.scope")} · ${t(`search.scope.${scope}` as Key)}`}
-              className={cx(
-                "flex h-5 items-center gap-1 rounded px-1.5 text-[12px] whitespace-nowrap text-fg-3 transition-colors outline-none hover:bg-active hover:text-fg-2",
-                "data-[state=open]:bg-active",
-              )}
-            >
-              <span className="flex">{current.icon}</span>
-              <span>{t(`search.scope.${scope}` as Key)}</span>
-              <ChevronDown size={11} strokeWidth={2} aria-hidden className="opacity-60" />
-            </button>
-          </DropdownPrimitive.Trigger>
-          <DropdownPrimitive.Portal>
-            <DropdownPrimitive.Content align="end" sideOffset={6} className={menuClass}>
-              <DropdownPrimitive.Label className="px-2 pt-1.5 pb-1 text-[12px] text-fg-3">{t("search.scope")}</DropdownPrimitive.Label>
-              <DropdownPrimitive.RadioGroup value={scope} onValueChange={(next) => changeScope(next as SearchScope)}>
-                {SCOPES.map((entry, index) => (
-                  <div key={entry.value}>
-                    {/* 本机的几处和网上的分开 */}
-                    {index === 4 && <DropdownPrimitive.Separator className="mx-1 my-1 h-px bg-line" />}
-                    <DropdownPrimitive.RadioItem value={entry.value} className={cx(itemClass, "pr-2 text-fg")}>
-                      <span className="flex size-4 items-center justify-center text-fg-2">{entry.icon}</span>
-                      <span className="flex-1">{t(`search.scope.${entry.value}` as Key)}</span>
-                      <DropdownPrimitive.ItemIndicator>
-                        <Check size={14} strokeWidth={2} className="text-accent" />
-                      </DropdownPrimitive.ItemIndicator>
-                    </DropdownPrimitive.RadioItem>
-                  </div>
-                ))}
-              </DropdownPrimitive.RadioGroup>
-            </DropdownPrimitive.Content>
-          </DropdownPrimitive.Portal>
-        </DropdownPrimitive.Root>
-      </div>
+    <div ref={box} className="@container relative w-full max-w-[400px] min-w-[180px]">
+      <ContextMenu items={SEARCH_SCOPES.map((value) => ({
+        label: t(`search.scope.${value}`),
+        checked: shortcuts.includes(value),
+        onSelect: () => {
+          const { searchShortcuts, set } = usePrefs.getState();
+          set({ searchShortcuts: searchShortcuts.includes(value) ? searchShortcuts.filter((entry) => entry !== value) : [...searchShortcuts, value] });
+        },
+      }))}>
+        <div className="flex h-7 items-center gap-1.5 rounded-md border border-transparent bg-hover pr-1 focus-within:border-accent">
+          <label className="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-2.5">
+            <Search size={14} strokeWidth={1.75} aria-hidden className="shrink-0 text-fg-3" />
+            <input
+              ref={input}
+              type="text"
+              value={text}
+              spellCheck={false}
+              role="combobox"
+              aria-label={placeholder}
+              aria-expanded={shown}
+              aria-controls="search-results"
+              placeholder={placeholder}
+              onChange={(event) => {
+                setText(event.target.value);
+                setOpen(true);
+              }}
+              onFocus={() => setOpen(true)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  // 先收起结果；结果已经收起了再清空
+                  if (shown) setOpen(false);
+                  else {
+                    setText("");
+                    event.currentTarget.blur();
+                  }
+                } else if (event.key === "ArrowDown" && shown && flat.length > 0) {
+                  event.preventDefault();
+                  setActive((index) => Math.min(flat.length - 1, index + 1));
+                } else if (event.key === "ArrowUp" && shown && flat.length > 0) {
+                  event.preventDefault();
+                  setActive((index) => Math.max(0, index - 1));
+                } else if (event.key === "Enter" && shown && active >= 0 && flat[active]) {
+                  event.preventDefault();
+                  choose(flat[active]);
+                }
+              }}
+              className="h-full min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-fg-3"
+            />
+          </label>
+          <div className="flex shrink-0 items-center gap-0.5">
+            {text && (
+              <button
+                type="button"
+                aria-label={t("common.close")}
+                onClick={() => {
+                  setText("");
+                  input.current?.focus();
+                }}
+                className="flex size-5 items-center justify-center rounded text-fg-3 hover:text-fg"
+              >
+                <X size={13} strokeWidth={2} />
+              </button>
+            )}
+            {shortcuts.length > 0 && <SearchShortcuts order={shortcuts} scope={scope} onChange={changeScope} />}
+            <SearchScopePicker scope={scope} onChange={changeScope} />
+          </div>
+        </div>
+      </ContextMenu>
 
       {shown && (
         <div
@@ -351,6 +336,151 @@ export function SearchBox() {
         </div>
       )}
     </div>
+  );
+}
+
+const SHORTCUT_HOLD_MS = 225;
+
+interface ShortcutPreview {
+  order: SearchScope[];
+  value: SearchScope;
+  offset: number;
+}
+
+function SearchShortcuts({ order, scope, onChange }: { order: SearchScope[]; scope: SearchScope; onChange: (next: SearchScope) => void }) {
+  const t = useT();
+  const strip = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ id: number; timer: number; preview: ShortcutPreview | null; from: number; startX: number; centers: number[] } | null>(null);
+  const [preview, setPreview] = useState<ShortcutPreview | null>(null);
+  const suppressClick = useRef(false);
+
+  useEffect(() => () => window.clearTimeout(drag.current?.timer), []);
+
+  const start = (event: ReactPointerEvent<HTMLButtonElement>, value: SearchScope) => {
+    if (event.button !== 0 || event.ctrlKey || drag.current || !strip.current) return;
+    // 触屏在快捷图标上长按用于拖拽，避免父级同时弹出右键菜单。
+    if (event.pointerType !== "mouse") event.stopPropagation();
+    suppressClick.current = false;
+    const element = strip.current;
+    const centers = Array.from(element.children).flatMap((button) => {
+      const rect = button.getBoundingClientRect();
+      return rect.width > 0 ? [rect.left + rect.width / 2] : [];
+    });
+    if (centers.length < 2) return;
+    const id = event.pointerId;
+    const timer = window.setTimeout(() => {
+      const active = drag.current;
+      if (!active || active.id !== id) return;
+      // 捕获指针的容器在图标换位时保持不动。
+      element.setPointerCapture(id);
+      suppressClick.current = true;
+      active.preview = { order, value, offset: 0 };
+      setPreview(active.preview);
+    }, SHORTCUT_HOLD_MS);
+    drag.current = { id, timer, preview: null, from: order.indexOf(value), startX: event.clientX, centers };
+  };
+
+  const move = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const active = drag.current;
+    if (!active?.preview || active.id !== event.pointerId) return;
+    const { centers, from, startX } = active;
+    const value = active.preview.value;
+    const x = Math.min(centers[centers.length - 1], Math.max(centers[0], centers[from] + event.clientX - startX));
+    const to = centers.reduce((closest, center, index) => Math.abs(center - x) < Math.abs(centers[closest] - x) ? index : closest, 0);
+    const next = order.filter((entry) => entry !== value);
+    next.splice(to, 0, value);
+    active.preview = { order: next, value, offset: x - centers[to] };
+    setPreview(active.preview);
+  };
+
+  const finish = (event: ReactPointerEvent<HTMLDivElement>, save = false) => {
+    const active = drag.current;
+    if (!active || active.id !== event.pointerId) return;
+    window.clearTimeout(active.timer);
+    drag.current = null;
+    const next = active.preview?.order;
+    if (save && next && next.some((value, index) => value !== order[index])) {
+      usePrefs.getState().set({ searchShortcuts: next });
+    }
+    setPreview(null);
+  };
+
+  return (
+    <div
+      ref={strip}
+      className={cx("flex items-center gap-0.5 border-r border-line pr-1", preview && "cursor-grabbing")}
+      onPointerMove={move}
+      onPointerUp={(event) => finish(event, true)}
+      onPointerCancel={(event) => finish(event)}
+      onPointerLeave={(event) => { if (!drag.current?.preview) finish(event); }}
+      onLostPointerCapture={(event) => { if (event.target === event.currentTarget) finish(event); }}
+    >
+      {(preview?.order ?? order).map((value, index) => {
+        const label = t(`search.scope.${value}`);
+        const dragged = preview?.value === value;
+        return (
+          <button
+            key={value}
+            type="button"
+            aria-label={label}
+            aria-pressed={scope === value}
+            title={label}
+            onPointerDown={(event) => start(event, value)}
+            onClick={(event) => { if (event.detail === 0 || !suppressClick.current) onChange(value); }}
+            style={dragged ? { translate: `${preview.offset}px` } : undefined}
+            className={cx(
+              "size-5 touch-none items-center justify-center rounded text-fg-3",
+              index < 3 ? "flex" : "hidden @[250px]:flex",
+              dragged && "relative z-10 cursor-grabbing bg-active shadow-pop",
+            )}
+          >
+            {SCOPE_ICONS[value]}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function SearchScopePicker({ scope, onChange }: { scope: SearchScope; onChange: (next: SearchScope) => void }) {
+  const t = useT();
+  const currentLabel = t(`search.scope.${scope}`);
+  const item = cx(itemClass, "pr-2 text-fg");
+
+  return (
+    <DropdownPrimitive.Root>
+      <DropdownPrimitive.Trigger asChild>
+        <button
+          type="button"
+          title={`${t("search.scope")} · ${currentLabel}`}
+          aria-label={`${t("search.scope")} · ${currentLabel}`}
+          className="flex h-5 items-center gap-1 rounded px-1.5 text-[12px] text-fg-3 transition-colors hover:bg-active hover:text-fg-2 data-[state=open]:bg-active"
+        >
+          <span className="flex shrink-0">{SCOPE_ICONS[scope]}</span>
+          <span className="hidden max-w-20 truncate @[350px]:inline">{currentLabel}</span>
+          <ChevronDown size={11} strokeWidth={2} aria-hidden className="shrink-0 opacity-60" />
+        </button>
+      </DropdownPrimitive.Trigger>
+      <DropdownPrimitive.Portal>
+        <DropdownPrimitive.Content align="end" sideOffset={6} className={menuClass}>
+          <DropdownPrimitive.Label className="px-2 pt-1.5 pb-1 text-[12px] text-fg-3">{t("search.scope")}</DropdownPrimitive.Label>
+          <DropdownPrimitive.RadioGroup value={scope} onValueChange={(next) => onChange(next as SearchScope)}>
+            {SEARCH_SCOPES.map((value) => (
+              <div key={value}>
+                {value === "github" && <DropdownPrimitive.Separator className="mx-1 my-1 h-px bg-line" />}
+                <DropdownPrimitive.RadioItem value={value} className={item}>
+                  <span className="flex size-4 items-center justify-center text-fg-2">{SCOPE_ICONS[value]}</span>
+                  <span className="flex-1">{t(`search.scope.${value}`)}</span>
+                  <DropdownPrimitive.ItemIndicator>
+                    <Check size={14} strokeWidth={2} className="text-accent" aria-hidden />
+                  </DropdownPrimitive.ItemIndicator>
+                </DropdownPrimitive.RadioItem>
+              </div>
+            ))}
+          </DropdownPrimitive.RadioGroup>
+        </DropdownPrimitive.Content>
+      </DropdownPrimitive.Portal>
+    </DropdownPrimitive.Root>
   );
 }
 
@@ -428,7 +558,6 @@ function useResults(text: string, scope: SearchScope, open: boolean): Section[] 
   const t = useT();
   const query = text.trim();
   const library = useApp((state) => state.library);
-  const root = useApp((state) => state.status?.repoRoot);
   const installed = useApp((state) => state.installed);
   const reveal = useApp((state) => state.reveal);
   const setRoute = useApp((state) => state.setRoute);
@@ -465,7 +594,7 @@ function useResults(text: string, scope: SearchScope, open: boolean): Section[] 
           title: software.name,
           subtitle: software.publisher,
           meta: primaryVersion(software)?.version,
-          icon: <SoftwareIcon name={software.name} icon={software.icon && root ? `${root}/${software.icon}` : null} size={24} />,
+          icon: <RepositorySoftwareIcon software={software} size={24} />,
           run: () => reveal(software.id),
         })),
       });
@@ -481,7 +610,7 @@ function useResults(text: string, scope: SearchScope, open: boolean): Section[] 
           title: app.name,
           subtitle: app.publisher,
           meta: app.version,
-          icon: <SoftwareIcon name={app.name} icon={app.icon} size={24} />,
+          icon: <InstalledSoftwareIcon app={app} size={24} />,
           run: () => {
             setRoute("installed");
             useApp.getState().selectInstalled(app.id);
@@ -525,7 +654,7 @@ function useResults(text: string, scope: SearchScope, open: boolean): Section[] 
             meta: `★ ${compact(hit.stars)}`,
             badge: existing ? t("search.inLibrary") : hit.archived ? t("search.archived") : undefined,
             hint: existing ? undefined : t("search.add"),
-            icon: <BrandTile path={siGithub.path} />,
+            icon: <GitHubOwnerAvatar url={hit.ownerAvatarUrl} />,
             link: hit.url,
             run: () =>
               existing ? reveal(existing.id) : patch({ sourceDialog: { softwareId: null, kind: "github", reference: hit.reference, name: hit.name } }),
@@ -558,5 +687,5 @@ function useResults(text: string, scope: SearchScope, open: boolean): Section[] 
     return sections;
     // wants 和 limit 都由 scope 决定
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, scope, library, root, installed, startup, github, homebrew, t, reveal, setRoute, patch, setPrefs]);
+  }, [query, scope, library, installed, startup, github, homebrew, t, reveal, setRoute, patch, setPrefs]);
 }

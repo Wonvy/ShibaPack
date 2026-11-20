@@ -119,6 +119,8 @@ impl Repo {
         } else {
             repo.write_index()?;
         }
+        // 旧仓库仍然可以打开；临时不能写入时，下次保存会再补一次。
+        let _ = repo.transact(|repo| if repo.embed_legacy_icons() { repo.save() } else { Ok(()) });
         repo.purge_trash();
         Ok(repo)
     }
@@ -182,6 +184,7 @@ impl Repo {
     }
 
     fn write_index(&mut self) -> Result<()> {
+        self.embed_legacy_icons();
         self.lib.format = FORMAT;
         // 临时文件名带上进程号：万一有两个程序同时在存，不会互相写进对方的临时文件
         let tmp = self.root.join(format!("software.json.{}.tmp", std::process::id()));
@@ -202,6 +205,29 @@ impl Repo {
         self.disk_stamp = stamp_of(&self.index_path());
         self.write_catalog();
         Ok(())
+    }
+
+    /// 给旧索引里的本地图标补上可移植的数据，只读取仓库自己的图标文件夹。
+    pub(crate) fn embed_legacy_icons(&mut self) -> bool {
+        if !self.lib.software.iter().any(|s| s.icon.is_some() && s.icon_data.is_none()) {
+            return false;
+        }
+        let icons_dir = self.icons_dir();
+        let canonical_dir = icons_dir.canonicalize().ok().filter(|dir| clean_path(dir) == icons_dir);
+        let Some(canonical_dir) = canonical_dir else { return false };
+        let mut changed = false;
+        for software in self.lib.software.iter_mut().filter(|s| s.icon_data.is_none()) {
+            let Some(name) = software.icon.as_deref().and_then(|path| path.strip_prefix(DATA_DIR)?.strip_prefix("/icons/")) else { continue };
+            if name.is_empty() || name.contains(['/', '\\', ':']) || name == "." || name == ".." {
+                continue;
+            }
+            let path = canonical_dir.join(name);
+            if path.canonicalize().is_ok_and(|resolved| resolved == path) {
+                software.icon_data = crate::icons::portable_icon(&path);
+                changed |= software.icon_data.is_some();
+            }
+        }
+        changed
     }
 
     /// 索引文件被别的程序改过（另一个 ShibaPack、另一台电脑、手动编辑）时重新读入，返回是否重新读了。
@@ -761,6 +787,32 @@ mod tests {
         repo.export_to(&out.path().join("copy.json")).unwrap();
         assert_eq!(fs::read(out.path().join("copy.json")).unwrap(), fs::read(&index).unwrap());
         assert_eq!(fs::read_dir(out.path()).unwrap().count(), 1, "不应留下临时文件");
+    }
+
+    #[test]
+    fn legacy_icon_survives_an_export_and_import_without_its_icon_file() {
+        let source = tempfile::tempdir().unwrap();
+        let icon_dir = source.path().join(DATA_DIR).join("icons");
+        fs::create_dir_all(&icon_dir).unwrap();
+        let icon_file = icon_dir.join("demo.svg");
+        fs::write(&icon_file, r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32"/></svg>"#).unwrap();
+        fs::write(source.path().join(INDEX_FILE), r#"{"format":1,"software":[{"id":"demo","name":"Demo","icon":".shibapack/icons/demo.svg","addedAt":""}]}"#).unwrap();
+
+        let mut repo = Repo::open(source.path()).unwrap();
+        let embedded = repo.lib.software[0].icon_data.clone().unwrap();
+        assert!(embedded.starts_with("data:image/svg+xml;base64,"));
+        assert_eq!(read_library(&repo.index_path()).unwrap().software[0].icon_data, Some(embedded.clone()));
+        fs::remove_file(icon_file).unwrap();
+        let mut tried = HashSet::new();
+        assert_eq!(repo.fill_icons(8, &mut tried, &[]).unwrap(), (false, false));
+        assert!(tried.is_empty());
+
+        let destination = tempfile::tempdir().unwrap();
+        let export = destination.path().join("export.json");
+        repo.export_to(&export).unwrap();
+        let mut restored = Repo::open(destination.path()).unwrap();
+        restored.import_from(&export).unwrap();
+        assert_eq!(restored.lib.software[0].icon_data, Some(embedded));
     }
 
     #[test]

@@ -8,7 +8,7 @@ import { categoryPath, flattenTree } from "../lib/library";
 import { errorText } from "../lib/i18n";
 import { useAiReady, useApp, useLanguage, useT } from "../lib/store";
 import type { AiProgress, Assignment, Software, Suggestion } from "../lib/types";
-import { SoftwareIcon, useSoftwareIcon } from "./SoftwareIcon";
+import { RepositorySoftwareIcon } from "./SoftwareIcon";
 import { Button, Checkbox, Modal, Segmented, Select, cx } from "./ui";
 
 type Mode = "ai" | "rules";
@@ -238,7 +238,6 @@ function Row({
   options: React.ReactNode;
 }) {
   const t = useT();
-  const icon = useSoftwareIcon(software);
   const reason = suggestion.unchanged
     ? t("classify.unchanged")
     : suggestion.reason
@@ -255,7 +254,7 @@ function Row({
       <Checkbox checked={checked} onChange={onCheck}>
         <span className="sr-only">{software.name}</span>
       </Checkbox>
-      <SoftwareIcon name={software.name} icon={icon} size={28} />
+      <RepositorySoftwareIcon software={software} size={28} />
       <div className="min-w-0 flex-1">
         <div className="truncate text-[13px] font-medium">{software.name}</div>
         <div className="truncate text-[12px] text-fg-3" title={reason}>

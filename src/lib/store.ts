@@ -3,7 +3,7 @@
 import { useCallback } from "react";
 import { create } from "zustand";
 import { aiUsable } from "./ai";
-import { api, onCheckProgress, onDownloadProgress, onImportProgress } from "./api";
+import { api, onCheckProgress, onDownloadProgress, onImportProgress, pickFolder } from "./api";
 import { type Key, type Translate, type Vars, errorText, setLangPacks, translate } from "./i18n";
 import { filterSoftware, hasUpdate, needsTranslation } from "./library";
 import { applyTheme } from "./theme";
@@ -188,7 +188,7 @@ interface AppState {
   apply: (task: () => Promise<Library>) => Promise<boolean>;
   /** 执行一个不返回索引的操作，失败时弹出提示。 */
   attempt: <T>(task: () => Promise<T>) => Promise<T | undefined>;
-  chooseRepo: (path: string) => Promise<void>;
+  chooseRepo: (path?: string) => Promise<void>;
   /** 窗口回到前台时调用：索引被别处改过就换上新的。 */
   refreshLibrary: () => Promise<void>;
   /**
@@ -325,7 +325,7 @@ export const useApp = create<AppState>()((set, get) => {
     const library = get().library;
     if (!library?.settings.fetchSummaries || !localIconsDone || fillingIcons || iconFailures >= 3) return;
     for (const software of library.software) {
-      if (software.icon) continue;
+      if (software.iconData) continue;
       const github = software.subscription?.source === "github" ? software.subscription.reference : "";
       const key = `${software.homepage.trim()}\n${github}`;
       if (key === "\n" || askedIcons.get(software.id) === key) continue;
@@ -341,12 +341,12 @@ export const useApp = create<AppState>()((set, get) => {
       iconWorkers++;
       api
         .fetchIcon(id)
-        .then((icon) => {
+        .then((update) => {
           iconFailures = 0;
           const current = get().library;
           // 只改这一个软件的图标，免得用旧的快照盖掉这期间的其他改动
-          if (icon && current) {
-            set({ library: { ...current, software: current.software.map((s) => (s.id === id && !s.icon ? { ...s, icon } : s)) } });
+          if (update && current) {
+            set({ library: { ...current, software: current.software.map((s) => (s.id === id && !s.iconData ? { ...s, ...update } : s)) } });
           }
         })
         .catch((error) => {
@@ -574,13 +574,15 @@ export const useApp = create<AppState>()((set, get) => {
     },
 
     chooseRepo: async (path) => {
-      const status = await get().attempt(() => api.setRepoRoot(path));
+      const folder = path ?? await get().attempt(pickFolder);
+      if (!folder) return;
+      const status = await get().attempt(() => api.setRepoRoot(folder));
       if (!status) return;
       askedSummaries.clear();
       askedIcons.clear();
       set({ status, selectedId: null, selectedIds: [], scope: { kind: "all" }, links: {} });
       await get().apply(() => api.getLibrary());
-      if (get().installed === null) void get().loadInstalled();
+      void get().loadInstalled();
       void api.listLangPacks().then(get().useLangPacks, () => {});
     },
 
@@ -747,7 +749,9 @@ export const useApp = create<AppState>()((set, get) => {
       if (get().installedLoading) return;
       set({ installedLoading: true });
       try {
-        const installed = await api.listInstalled();
+        const root = get().status?.repoRoot;
+        const { apps: installed, cachedIcons } = await api.listInstalled();
+        const library = get().library;
         const selectedInstalledId = installed.some((app) => app.id === get().selectedInstalledId)
           ? get().selectedInstalledId
           : null;
@@ -758,6 +762,7 @@ export const useApp = create<AppState>()((set, get) => {
           selectedInstalledId,
           selectedInstalledIds: get().selectedInstalledIds.filter((id) => stillThere.has(id)),
           installedScannedAt: Date.now(),
+          ...(cachedIcons && library && get().status?.repoRoot === root ? { library: { ...library, installedIcons: cachedIcons } } : {}),
         });
         void refreshLinks();
         void fillIcons();

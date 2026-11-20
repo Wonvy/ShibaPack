@@ -12,10 +12,11 @@ import { ContextMenu, type MenuEntry, cx } from "./ui";
 
 export interface ColumnDef<K extends string = string> {
   key: K;
-  /** 默认宽度和能拖到的范围。min 和 max 一样时不能拖。 */
+  /** 自动列宽的上限及手动调整范围。 */
   initial: number;
   min: number;
   max: number;
+  fixed?: boolean;
   /** 靠右对齐（数字、按钮）。 */
   end?: boolean;
   /** 栏太窄时暂时收起的先后：数字小的先收。不填就不会自动收起。 */
@@ -36,19 +37,55 @@ const NONE: string[] = [];
 
 /** 名称列至少留这么宽，放不下时才收起别的列。 */
 const NAME_MIN = 160;
-/** 列与列之间的空隙，和 `gap-x-3` 一致。 */
-export const COLUMN_GAP = 12;
+/** 列与列之间的空隙，和 `gap-x-2` 一致。 */
+const COLUMN_GAP = 8;
+
+type CellWidth = string | number | { text: string; extra: number };
+export type ColumnSamples<K extends string> = Partial<Record<K, CellWidth>>[];
 
 /** 行里按这个决定画哪几列。 */
 export const ColumnsContext = createContext<Columns>({ visible: [], squeezed: [], widths: {}, template: "minmax(0,1fr)" });
 
 /** 按设置和可用宽度算出现在显示哪几列、各多宽。`available` 是一行里能分给各列的宽度，还没量出来时传 0。 */
-export function useTableColumns<K extends string>(table: TableId, defs: ColumnDef<K>[], available: number): Columns<K> {
+export function useTableColumns<K extends string>(table: TableId, defs: ColumnDef<K>[], available: number, samples: ColumnSamples<K>): Columns<K> {
   const settings = usePrefs((state) => state.tableColumns[table]);
+  const [fontsReady, setFontsReady] = useState(false);
+  useEffect(() => {
+    let active = true;
+    void document.fonts.ready.then(() => { if (active) setFontsReady(true); });
+    return () => { active = false; };
+  }, []);
+  const fitted = useMemo(() => {
+    const context = document.createElement("canvas").getContext("2d");
+    if (!context) return null;
+    context.font = `500 12px ${getComputedStyle(document.body).fontFamily}`;
+    const digits = Math.max(...Array.from("0123456789", (digit) => context.measureText(digit).width));
+    const measured = new Map<string, number>();
+    const textWidth = (text: string) => {
+      const cached = measured.get(text);
+      if (cached !== undefined) return cached;
+      let width = context.measureText(text).width;
+      // 数字列用等宽数字，Canvas 的默认字体特性可能用的是比例数字。
+      for (const digit of text.match(/[0-9]/g) ?? []) width += digits - context.measureText(digit).width;
+      measured.set(text, width);
+      return width;
+    };
+    return Object.fromEntries(defs.map((def) => {
+      let width = def.min;
+      for (const row of samples) {
+        const cell = row[def.key];
+        if (cell === undefined) continue;
+        const size = typeof cell === "number" ? cell : typeof cell === "string" ? textWidth(cell) : textWidth(cell.text) + cell.extra;
+        width = Math.max(width, Math.ceil(size) + 2);
+        if (width >= def.initial) return [def.key, def.initial];
+      }
+      return [def.key, width];
+    })) as Record<K, number>;
+  }, [defs, fontsReady, samples]);
   return useMemo(() => {
     const hidden = settings?.hidden ?? [];
     const custom = settings?.widths ?? {};
-    const widths = Object.fromEntries(defs.map((def) => [def.key, custom[def.key] ?? def.initial])) as Record<K, number>;
+    const widths = Object.fromEntries(defs.map((def) => [def.key, custom[def.key] ?? fitted?.[def.key] ?? def.initial])) as Record<K, number>;
     const need = (keys: K[]) => NAME_MIN + keys.reduce((sum, key) => sum + widths[key] + COLUMN_GAP, 0);
     let visible = defs.map((def) => def.key).filter((key) => !hidden.includes(key));
     const squeezed: K[] = [];
@@ -61,7 +98,7 @@ export function useTableColumns<K extends string>(table: TableId, defs: ColumnDe
     }
     const template = ["minmax(0,1fr)", ...visible.map((key) => `${widths[key]}px`)].join(" ");
     return { visible, squeezed, widths, template };
-  }, [settings, defs, available]);
+  }, [settings, defs, available, fitted]);
 }
 
 /**
@@ -107,7 +144,7 @@ export function TableHeader<K extends string>({
   return (
     <ContextMenu items={menu}>
       <div
-        className={cx("grid h-8 shrink-0 items-stretch gap-x-3 border-b border-line text-[12px] text-fg-3", className)}
+        className={cx("grid h-8 shrink-0 items-stretch gap-x-2 border-b border-line text-[12px] text-fg-3", className)}
         style={{ gridTemplateColumns: columns.template }}
       >
         <div className="flex min-w-0 items-center">{first}</div>
@@ -116,7 +153,7 @@ export function TableHeader<K extends string>({
           return (
             <div key={key} className={cx("relative flex min-w-0 items-center", def.end && "justify-end")}>
               {cells?.[key] ?? <span className="truncate">{labels[key]}</span>}
-              {def.min !== def.max && <ResizeGrip table={table} def={def} width={columns.widths[key]} />}
+              {!def.fixed && <ResizeGrip table={table} def={def} width={columns.widths[key]} />}
             </div>
           );
         })}
@@ -159,7 +196,7 @@ function ResizeGrip({ table, def, width }: { table: TableId; def: ColumnDef; wid
       onDoubleClick={() => setColumnWidth(table, def.key, null, def)}
       onClick={(event) => event.stopPropagation()}
       // 落在两列之间的空隙里，比竖线本身宽一些，好按住
-      className="group/grip absolute top-1 bottom-1 -left-[11px] z-10 flex w-[10px] cursor-col-resize justify-center"
+      className="group/grip absolute top-1 bottom-1 -left-2 z-10 flex w-2 cursor-col-resize justify-center"
     >
       <span
         className={cx(

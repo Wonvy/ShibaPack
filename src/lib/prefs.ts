@@ -3,11 +3,9 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-export const SIDEBAR = { min: 140, max: 360, initial: 180 };
+export const SIDEBAR = { min: 140, max: 360 };
 /** 顶栏的高度：拖动顶栏下沿可以调，双击回到默认。 */
 export const TOPBAR = { min: 40, max: 72, initial: 52 };
-/** 侧栏收起后只剩一列图标时的宽度。 */
-export const RAIL_WIDTH = 52;
 export const DETAIL = { min: 280, max: 560, initial: 380 };
 
 export type SortKey = "name" | "platform" | "size" | "added";
@@ -16,7 +14,8 @@ export type PackageView = "list" | "grid" | "folder";
 export type InstalledView = "list" | "grid";
 
 /** 顶栏搜索的范围：下拉结果里列哪些。本机的几处之外，还可以在 GitHub、Homebrew 上找。 */
-export type SearchScope = "all" | "library" | "installed" | "startup" | "github" | "homebrew";
+export const SEARCH_SCOPES = ["all", "library", "installed", "startup", "github", "homebrew"] as const;
+export type SearchScope = typeof SEARCH_SCOPES[number];
 
 /** 有可调列的表格：软件库、已安装软件、启动项、服务的列表。各记各的列宽和隐藏的列。 */
 export type TableId = "library" | "installed" | "startup" | "service";
@@ -30,9 +29,8 @@ const NO_COLUMNS: TableColumns = { hidden: [], widths: {} };
 
 interface Prefs {
   topBarHeight: number;
-  sidebarWidth: number;
-  /** 侧栏收起成一列图标。展开时回到原来的宽度。 */
-  sidebarCollapsed: boolean;
+  /** 手动调整后的侧栏宽度。`null` 时按导航内容自动计算。 */
+  sidebarWidth: number | null;
   detailWidth: number;
   packageView: PackageView;
   sortKey: SortKey;
@@ -54,6 +52,10 @@ interface Prefs {
   startupTab: "startup" | "service";
   /** 顶栏搜索的范围。 */
   searchScope: SearchScope;
+  /** 固定在搜索框里的搜索范围。 */
+  searchShortcuts: SearchScope[];
+  /** 添加按钮在可拖动区域内的位置比例。`null` 表示默认的右下角。 */
+  addButtonPosition: { x: number; y: number } | null;
   /** 各个表格的列宽和隐藏的列。 */
   tableColumns: Record<TableId, TableColumns>;
   set: (patch: Partial<Omit<Prefs, "set" | "toggleCollapsed" | "sortBy" | "toggleColumn" | "setColumnWidth" | "resetColumns">>) => void;
@@ -72,8 +74,7 @@ export const usePrefs = create<Prefs>()(
   persist(
     (set) => ({
       topBarHeight: TOPBAR.initial,
-      sidebarWidth: SIDEBAR.initial,
-      sidebarCollapsed: false,
+      sidebarWidth: null,
       detailWidth: DETAIL.initial,
       packageView: "list",
       sortKey: "name",
@@ -87,14 +88,19 @@ export const usePrefs = create<Prefs>()(
       installedView: "list",
       startupTab: "startup",
       searchScope: "all",
+      searchShortcuts: ["github", "homebrew"],
+      addButtonPosition: null,
       tableColumns: { library: NO_COLUMNS, installed: NO_COLUMNS, startup: NO_COLUMNS, service: NO_COLUMNS },
       set: (patch) =>
-        set((state) => ({
-          ...patch,
-          topBarHeight: Math.round(clamp(patch.topBarHeight ?? state.topBarHeight, TOPBAR)),
-          sidebarWidth: clamp(patch.sidebarWidth ?? state.sidebarWidth, SIDEBAR),
-          detailWidth: clamp(patch.detailWidth ?? state.detailWidth, DETAIL),
-        })),
+        set((state) => {
+          const { sidebarWidth = state.sidebarWidth } = patch;
+          return {
+            ...patch,
+            topBarHeight: Math.round(clamp(patch.topBarHeight ?? state.topBarHeight, TOPBAR)),
+            sidebarWidth: sidebarWidth === null ? null : clamp(sidebarWidth, SIDEBAR),
+            detailWidth: clamp(patch.detailWidth ?? state.detailWidth, DETAIL),
+          };
+        }),
       toggleCollapsed: (id) =>
         set((state) => ({
           collapsed: state.collapsed.includes(id) ? state.collapsed.filter((x) => x !== id) : [...state.collapsed, id],
@@ -117,6 +123,21 @@ export const usePrefs = create<Prefs>()(
         }),
       resetColumns: (table) => set((state) => ({ tableColumns: { ...state.tableColumns, [table]: NO_COLUMNS } })),
     }),
-    { name: "shibapack.ui" },
+    {
+      name: "shibapack.ui",
+      version: 3,
+      migrate: (persisted, version) => {
+        const saved = persisted as Partial<Prefs> & { sidebarCollapsed?: boolean };
+        delete saved.sidebarCollapsed;
+        // 旧版会把默认的 180px 和其他界面偏好一起保存。
+        if (version < 1 && saved.sidebarWidth === 180) saved.sidebarWidth = null;
+        // 旧版按搜索范围菜单的顺序显示快捷图标。
+        if (version < 2 && Array.isArray(saved.searchShortcuts)) {
+          const shortcuts = saved.searchShortcuts;
+          saved.searchShortcuts = SEARCH_SCOPES.filter((scope) => shortcuts.includes(scope));
+        }
+        return saved;
+      },
+    },
   ),
 );

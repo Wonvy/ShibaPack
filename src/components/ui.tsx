@@ -222,16 +222,16 @@ export function Switch({ checked, onChange, label }: { checked: boolean; onChang
  * 太长时从中间省略，保留开头和结尾。文件名的版本号、架构、扩展名多在结尾，
  * 从末尾截断会把最有用的部分截掉。
  */
-export function MiddleTruncate({ text, tail = 16, title, className }: { text: string; tail?: number; title?: string; className?: string }) {
+export function MiddleTruncate({ text, tail = 16, title = text, className }: { text: string; tail?: number; title?: string | null; className?: string }) {
   if (text.length <= tail + 4) {
     return (
-      <span className={cx("block truncate", className)} title={title ?? text}>
+      <span className={cx("block truncate", className)} title={title ?? undefined}>
         {text}
       </span>
     );
   }
   return (
-    <span className={cx("flex min-w-0", className)} title={title ?? text}>
+    <span className={cx("flex min-w-0", className)} title={title ?? undefined}>
       <span className="truncate">{text.slice(0, text.length - tail)}</span>
       <span className="shrink-0 whitespace-pre">{text.slice(text.length - tail)}</span>
     </span>
@@ -370,12 +370,17 @@ function entries(list: MenuEntry[], Item: typeof DropdownPrimitive.Item, Separat
 }
 
 /** 点按钮弹出的菜单。`children` 是触发它的按钮。 */
-export function Dropdown({ items, align = "end", children }: { items: MenuEntry[]; align?: "start" | "end"; children: ReactNode }) {
+export function Dropdown({ items, align = "end", side = "bottom", children }: {
+  items: MenuEntry[];
+  align?: "start" | "end";
+  side?: "top" | "bottom";
+  children: ReactNode;
+}) {
   return (
     <DropdownPrimitive.Root>
       <DropdownPrimitive.Trigger asChild>{children}</DropdownPrimitive.Trigger>
       <DropdownPrimitive.Portal>
-        <DropdownPrimitive.Content align={align} sideOffset={4} className={menuClass}>
+        <DropdownPrimitive.Content align={align} side={side} sideOffset={4} className={menuClass}>
           {entries(items, DropdownPrimitive.Item, DropdownPrimitive.Separator)}
         </DropdownPrimitive.Content>
       </DropdownPrimitive.Portal>
@@ -384,12 +389,20 @@ export function Dropdown({ items, align = "end", children }: { items: MenuEntry[
 }
 
 /** 右键菜单。`children` 是可以被右键的区域。 */
-export function ContextMenu({ items, children }: { items: MenuEntry[]; children: ReactNode }) {
+export function ContextMenu({
+  items,
+  children,
+  onCloseAutoFocus,
+}: {
+  items: MenuEntry[];
+  children: ReactNode;
+  onCloseAutoFocus?: (event: Event) => void;
+}) {
   return (
     <ContextMenuPrimitive.Root>
       <ContextMenuPrimitive.Trigger asChild>{children}</ContextMenuPrimitive.Trigger>
       <ContextMenuPrimitive.Portal>
-        <ContextMenuPrimitive.Content className={menuClass}>
+        <ContextMenuPrimitive.Content className={menuClass} onCloseAutoFocus={onCloseAutoFocus}>
           {entries(
             items,
             ContextMenuPrimitive.Item as typeof DropdownPrimitive.Item,
@@ -408,8 +421,7 @@ export interface FilterOption<T extends string> {
 }
 
 /**
- * 工具栏上的筛选菜单：按钮上显示当前选中的一项，点开是带图标的选项列表。
- * 第一项是“不筛选”。选了别的项时不加底色、不用强调色（用户要求不高亮），按钮上写着选中的那一项就够了。
+ * 工具栏上的筛选菜单：按钮上显示当前选项，选项可以有图标。
  */
 export function FilterMenu<T extends string>({
   label,
@@ -426,6 +438,7 @@ export function FilterMenu<T extends string>({
   textClassName?: string;
 }) {
   const current = options.find((option) => option.value === value) ?? options[0];
+  const hasIcons = options.some((option) => option.icon);
   return (
     <DropdownPrimitive.Root>
       <DropdownPrimitive.Trigger asChild>
@@ -433,12 +446,11 @@ export function FilterMenu<T extends string>({
           type="button"
           aria-label={`${label} · ${current.label}`}
           title={`${label} · ${current.label}`}
-          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[13px] whitespace-nowrap text-fg-3 transition-colors outline-none hover:bg-hover hover:text-fg data-[state=open]:bg-hover data-[state=open]:text-fg"
+          className="inline-flex h-7 min-w-0 items-center gap-1.5 rounded-md px-2 text-[13px] whitespace-nowrap text-fg-3 transition-colors outline-none hover:bg-hover hover:text-fg data-[state=open]:bg-hover data-[state=open]:text-fg"
         >
-          {current.icon && <span className="flex size-4 items-center justify-center">{current.icon}</span>}
-          {/* 一直显示选中的那一项，不只是图标（栏太窄时可以只留图标，名字在悬停提示里） */}
-          <span className={textClassName}>{current.label}</span>
-          <ChevronDown size={12} strokeWidth={2} aria-hidden className="-ml-0.5 opacity-50" />
+          {current.icon && <span className="flex size-4 shrink-0 items-center justify-center">{current.icon}</span>}
+          <span className={cx("truncate", current.icon ? textClassName : undefined)}>{current.label}</span>
+          <ChevronDown size={12} strokeWidth={2} aria-hidden className="-ml-0.5 shrink-0 opacity-50" />
         </button>
       </DropdownPrimitive.Trigger>
       <DropdownPrimitive.Portal>
@@ -446,7 +458,7 @@ export function FilterMenu<T extends string>({
           <DropdownPrimitive.RadioGroup value={value} onValueChange={(next) => onChange(next as T)}>
             {options.map((option) => (
               <DropdownPrimitive.RadioItem key={option.value} value={option.value} className={cx(itemClass, "pr-2 text-fg")}>
-                <span className="flex size-4 items-center justify-center text-fg-2">{option.icon}</span>
+                {hasIcons && <span className="flex size-4 shrink-0 items-center justify-center text-fg-2">{option.icon}</span>}
                 <span className="flex-1">{option.label}</span>
                 <DropdownPrimitive.ItemIndicator>
                   <Check size={14} strokeWidth={2} className="text-accent" />

@@ -135,7 +135,7 @@ function Dialog({ state }: { state: ImportDialogState }) {
       </>
     ) : phase === "running" ? (
       <>
-        {/* 关掉窗口也照常导入，进度在中间栏顶上 */}
+        {/* 关掉窗口也照常导入，进度在底部状态栏 */}
         <Button variant="ghost" onClick={close}>
           {t("importDialog.background")}
         </Button>

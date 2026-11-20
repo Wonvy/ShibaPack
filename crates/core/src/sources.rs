@@ -314,6 +314,9 @@ pub struct RepoHit {
     pub description: String,
     /// 仓库的网页。
     pub url: String,
+    /// 仓库所有者在 GitHub 上的头像。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_avatar_url: Option<String>,
     pub stars: u64,
     /// 已经归档、不再维护。
     pub archived: bool,
@@ -331,6 +334,10 @@ pub fn parse_github_search(body: &Value) -> Vec<RepoHit> {
                 name: repo["name"].as_str().unwrap_or(&reference).to_string(),
                 description: repo["description"].as_str().unwrap_or("").trim().to_string(),
                 url: repo["html_url"].as_str().map(str::to_string).unwrap_or_else(|| format!("https://github.com/{reference}")),
+                owner_avatar_url: repo["owner"]["avatar_url"]
+                    .as_str()
+                    .filter(|url| url.starts_with("https://avatars.githubusercontent.com/"))
+                    .map(str::to_string),
                 stars: repo["stargazers_count"].as_u64().unwrap_or(0),
                 archived: repo["archived"].as_bool().unwrap_or(false),
                 reference,
@@ -585,7 +592,7 @@ mod tests {
         let body = serde_json::json!({
             "total_count": 2,
             "items": [
-                { "full_name": "obsidianmd/obsidian-releases", "name": "obsidian-releases", "description": " Community plugins list ", "html_url": "https://github.com/obsidianmd/obsidian-releases", "stargazers_count": 14000, "archived": false },
+                { "full_name": "obsidianmd/obsidian-releases", "name": "obsidian-releases", "description": " Community plugins list ", "html_url": "https://github.com/obsidianmd/obsidian-releases", "owner": { "avatar_url": "https://avatars.githubusercontent.com/u/123?v=4" }, "stargazers_count": 14000, "archived": false },
                 { "full_name": "someone/old", "name": "old", "description": null, "stargazers_count": 3, "archived": true },
                 { "name": "no-full-name" }
             ]
@@ -595,7 +602,9 @@ mod tests {
         assert_eq!(hits[0].reference, "obsidianmd/obsidian-releases");
         assert_eq!(hits[0].description, "Community plugins list");
         assert_eq!(hits[0].stars, 14000);
+        assert_eq!(serde_json::to_value(&hits[0]).unwrap()["ownerAvatarUrl"], "https://avatars.githubusercontent.com/u/123?v=4");
         assert_eq!(hits[1].url, "https://github.com/someone/old");
+        assert!(hits[1].owner_avatar_url.is_none());
         assert!(hits[1].archived && hits[1].description.is_empty());
         assert!(parse_github_search(&serde_json::json!({ "message": "API rate limit exceeded" })).is_empty());
     }

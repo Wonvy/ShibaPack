@@ -12,7 +12,6 @@ import {
   Copy,
   ExternalLink,
   FolderOpen,
-  ListFilter,
   LoaderCircle,
   MousePointerClick,
   Play,
@@ -22,14 +21,12 @@ import {
   RotateCw,
   Rocket,
   SearchX,
-  ShieldCheck,
   Sparkles,
   Square,
-  Users,
 } from "lucide-react";
 import { type ReactNode, useContext, useEffect, useMemo, useState } from "react";
-import { DetailToggle } from "../components/chrome";
-import { type ColumnDef, type Columns, ColumnsContext, TableHeader, useTableColumns, useWidth } from "../components/columns";
+import { SummaryCard, useHoverCard } from "../components/HoverCard";
+import { type ColumnDef, type ColumnSamples, type Columns, ColumnsContext, TableHeader, useTableColumns, useWidth } from "../components/columns";
 import { StartupIcon as ItemIcon } from "../components/StartupIcon";
 import { Button, Chip, ContextMenu, Dropdown, EmptyState, FilterMenu, IconButton, type MenuEntry, Segmented, Switch, cx } from "../components/ui";
 import { aiUsable } from "../lib/ai";
@@ -45,21 +42,14 @@ type StatusFilter = "all" | "enabled" | "disabled" | "running";
 type SortColumn = "name" | "source" | "status" | "auto";
 
 // 列表的列：名称一直在，右边几列的宽度在表头上拖，右键表头勾选显示哪几列；栏窄时来源、状态先收起。
-// 启动项和服务各记各的列宽。“自动运行”一列在 Windows 服务里放启动类型的菜单，默认宽一些
+// 启动项和服务各记各的列宽。“自动运行”按开关或启动类型菜单的宽度适配。
 type StartupColumn = "source" | "status" | "auto";
 const STARTUP_COLUMNS: ColumnDef<StartupColumn>[] = [
-  { key: "source", initial: 100, min: 72, max: 220, autoHide: 1 },
-  { key: "status", initial: 84, min: 64, max: 180, autoHide: 2 },
-  { key: "auto", initial: 72, min: 64, max: 180, end: true },
+  { key: "source", initial: 120, min: 28, max: 220, autoHide: 1 },
+  { key: "status", initial: 84, min: 28, max: 180, autoHide: 2 },
+  { key: "auto", initial: 124, min: 32, max: 200, end: true },
 ];
-const SERVICE_COLUMNS: ColumnDef<StartupColumn>[] = [
-  { key: "status", initial: 84, min: 64, max: 180, autoHide: 2 },
-  { key: "auto", initial: 72, min: 64, max: 180, end: true },
-];
-const SERVICE_COLUMNS_WIDE: ColumnDef<StartupColumn>[] = [
-  { key: "status", initial: 84, min: 64, max: 180, autoHide: 2 },
-  { key: "auto", initial: 124, min: 64, max: 200, end: true },
-];
+const SERVICE_COLUMNS = STARTUP_COLUMNS.filter(({ key }) => key !== "source");
 /** 一行里除了各列之外占的宽度：列表的左右留白加上行自己的左右留白。 */
 const ROW_CHROME = 16 + 22;
 
@@ -77,7 +67,7 @@ type OriginFilter = "thirdParty" | "all" | "system";
 /** 系统自带的设置页里有启动项管理的系统。 */
 const SYSTEM_PAGE = hostPlatform === "macos" || hostPlatform === "windows";
 
-export function StartupView() {
+export function StartupView({ detailToggle }: { detailToggle: ReactNode }) {
   const t = useT();
   const items = useStartup((state) => state.items);
   const notes = useStartup((state) => state.notes);
@@ -136,9 +126,22 @@ export function StartupView() {
   }, [byOrigin, tab, status, search, sort, t]);
   // 第三方的看完了，提一句还有多少系统自带的没列出来
   const hiddenSystem = origin === "thirdParty" ? (items ?? []).filter((item) => item.system && item.kind === tab).length : 0;
-  // “自动运行”一列：Windows 服务要放启动类型的菜单，宽一些；别的只有开关
-  const defs = tab === "startup" ? STARTUP_COLUMNS : list.some((item) => item.startTypes.length > 0) ? SERVICE_COLUMNS_WIDE : SERVICE_COLUMNS;
-  const columns = useTableColumns(tab, defs, frameWidth - ROW_CHROME);
+  const defs = tab === "startup" ? STARTUP_COLUMNS : SERVICE_COLUMNS;
+  const samples = useMemo<ColumnSamples<StartupColumn>>(() => [
+    {
+      source: { text: t("startup.col.source"), extra: 16 },
+      status: { text: t("startup.col.status"), extra: 16 },
+      auto: { text: t("startup.col.auto"), extra: 16 },
+    },
+    ...list.map((item) => ({
+      source: t(`startup.source.${item.source}` as Key),
+      status: item.running === null ? "—" : { text: t(item.running ? "startup.running" : "startup.stopped"), extra: 12 },
+      auto: item.startTypes.length > 0
+        ? { text: startTypeLabel(item.startType ?? ""), extra: 32 }
+        : item.canToggle ? 32 : item.startType ? startTypeLabel(item.startType) : "—",
+    })),
+  ], [list, t]);
+  const columns = useTableColumns(tab, defs, frameWidth - ROW_CHROME, samples);
   // 选中的：多选时是 selectedIds，单选时就是 selectedId 那一个
   const chosen = selectedIds.length > 0 ? selectedIds : selectedId ? [selectedId] : [];
 
@@ -196,8 +199,8 @@ export function StartupView() {
   return (
     <div ref={frame} className="@container flex min-h-0 flex-1 flex-col">
       {/* 和别的列表一样分三段：左边是标题（这里是两个分页），正中间是筛选，右边是按钮 */}
-      <div className="grid h-11 shrink-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 border-b border-line pr-2 pl-3">
-        <div className="flex min-w-0 items-center">
+      <div className="grid h-17 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 border-b border-line py-1 pr-2 pl-3 @[440px]:h-11 @[440px]:grid-cols-[auto_minmax(0,1fr)_auto] @[440px]:py-0">
+        <div className="col-start-1 row-start-1 flex min-w-0 items-center">
           <Segmented<"startup" | "service">
             value={tab}
             onChange={(value) => setPrefs({ startupTab: value })}
@@ -207,14 +210,14 @@ export function StartupView() {
             ]}
           />
         </div>
-        <div className="flex min-w-0 items-center justify-center gap-0.5">
+        <div className="col-span-2 col-start-1 row-start-2 flex min-w-0 items-center justify-center gap-0.5 @[440px]:col-span-1 @[440px]:col-start-2 @[440px]:row-start-1">
           <FilterMenu<StatusFilter>
             textClassName="hidden @[600px]:inline"
             label={t("startup.filter.status")}
             value={status}
             onChange={setStatus}
             options={[
-              { value: "all", label: t("startup.filter.all"), icon: <ListFilter size={15} strokeWidth={1.75} /> },
+              { value: "all", label: t("startup.filter.all") },
               { value: "enabled", label: t("startup.filter.enabled"), icon: <Power size={15} strokeWidth={1.75} /> },
               { value: "disabled", label: t("startup.filter.disabled"), icon: <PowerOff size={15} strokeWidth={1.75} /> },
               { value: "running", label: t("startup.filter.running"), icon: <Play size={15} strokeWidth={1.75} /> },
@@ -226,13 +229,13 @@ export function StartupView() {
             value={origin}
             onChange={setOrigin}
             options={[
-              { value: "thirdParty", label: t("startup.origin.thirdParty"), icon: <Users size={15} strokeWidth={1.75} /> },
-              { value: "all", label: t("startup.origin.all"), icon: <ListFilter size={15} strokeWidth={1.75} /> },
-              { value: "system", label: t("startup.origin.system"), icon: <ShieldCheck size={15} strokeWidth={1.75} /> },
+              { value: "thirdParty", label: t("startup.origin.thirdParty") },
+              { value: "all", label: t("startup.origin.all") },
+              { value: "system", label: t("startup.origin.system") },
             ]}
           />
         </div>
-        <div className="flex items-center justify-end gap-0.5">
+        <div className="col-start-2 row-start-1 flex items-center justify-end gap-0.5 @[440px]:col-start-3">
           <IconButton label={t("startup.refresh")} disabled={loading} onClick={() => void load()}>
             <RefreshCw size={15} strokeWidth={1.75} className={loading ? "animate-spin" : ""} />
           </IconButton>
@@ -241,7 +244,7 @@ export function StartupView() {
               <ExternalLink size={15} strokeWidth={1.75} />
             </IconButton>
           )}
-          <DetailToggle />
+          {detailToggle}
         </div>
       </div>
 
@@ -280,7 +283,7 @@ export function StartupView() {
               auto: header("auto", t("startup.col.auto")),
             }}
           />
-          <div className="min-h-0 flex-1 overflow-y-auto px-2 pt-1 pb-3">
+          <div className="min-h-0 flex-1 overflow-y-auto px-2 pt-1 pb-16">
             {list.map((item) => (
               <StartupRow
                 key={item.id}
@@ -486,19 +489,35 @@ function StartupRow({
   const explaining = useStartup((state) => Boolean(state.explaining[item.id]));
   const select = useStartup((state) => state.select);
   const line = subtitle(item, explanation);
+  const paths = [];
+  if (item.command) paths.push({ label: t("startup.fact.command"), values: [item.command] });
+  if (item.location && item.location !== item.command) paths.push({ label: t("startup.fact.location"), values: [item.location] });
+  const hover = useHoverCard(
+    <SummaryCard
+      name={item.name}
+      publisher={item.publisher}
+      text={item.description && item.description !== item.name ? item.description : explanation}
+      paths={paths.length ? paths : [{ values: [] }]}
+    />,
+  );
   return (
     <ContextMenu items={menu}>
       <div
         role="button"
         tabIndex={0}
         aria-pressed={selected}
+        {...hover.handlers}
         onClick={onSelect}
         // 右键的不在多选里时，先单选它，菜单作用于它自己
-        onContextMenu={() => !group && !selected && select(item.id)}
+        onContextMenu={() => {
+          hover.handlers.onContextMenu();
+          if (!group && !selected) select(item.id);
+        }}
         onKeyDown={(event) => event.target === event.currentTarget && event.key === "Enter" && onSelect(event)}
         style={{ gridTemplateColumns: columns.template }}
-        className={cx("group grid min-h-[50px] items-center gap-x-3 rounded-md py-1.5 pr-3 pl-2.5 transition-colors", selected ? "bg-active" : "hover:bg-hover")}
+        className={cx("group grid min-h-[50px] items-center gap-x-2 rounded-md py-1.5 pr-3 pl-2.5 transition-colors", selected ? "bg-active" : "hover:bg-hover")}
       >
+        {hover.card}
         <div className="flex min-w-0 items-center gap-2.5">
           <span className={cx("flex", !item.enabled && "opacity-50 grayscale")}>
             <ItemIcon item={item} size={28} />
@@ -509,7 +528,7 @@ function StartupRow({
               {item.system && <Chip className="h-[18px] px-1">{t("startup.system")}</Chip>}
               {explaining && <LoaderCircle size={12} strokeWidth={2} className="shrink-0 animate-spin text-accent" aria-label={t("startup.explaining")} />}
             </div>
-            <div className={cx("truncate text-[12px]", explanation && line === explanation ? "text-fg-2" : "text-fg-3")} title={line}>
+            <div className={cx("truncate text-[12px]", explanation && line === explanation ? "text-fg-2" : "text-fg-3")}>
               {line}
             </div>
           </div>

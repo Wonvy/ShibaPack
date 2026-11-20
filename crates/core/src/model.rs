@@ -1,7 +1,7 @@
 //! `software.json` 的数据结构。字段名在文件里用 camelCase。
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 pub const FORMAT: u32 = 1;
 
@@ -43,6 +43,9 @@ pub struct Library {
     /// 联网取回的软件摘要，按软件名缓存，离线也能显示。
     #[serde(default)]
     pub summaries: BTreeMap<String, Summary>,
+    /// 本机扫描到的图标，按软件显示名缓存，可以随索引一起迁移。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub installed_icons: BTreeMap<String, Arc<str>>,
     #[serde(default)]
     pub settings: Settings,
 }
@@ -54,6 +57,7 @@ impl Default for Library {
             categories: Vec::new(),
             software: Vec::new(),
             summaries: BTreeMap::new(),
+            installed_icons: BTreeMap::new(),
             settings: Settings::default(),
         }
     }
@@ -92,6 +96,9 @@ pub struct Software {
     /// 图标，相对仓库根目录的路径。
     #[serde(default)]
     pub icon: Option<String>,
+    /// 图标内容，供离线显示和跨系统迁移使用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_data: Option<Arc<str>>,
     #[serde(default)]
     pub default_version_id: Option<String>,
     pub added_at: String,

@@ -19,7 +19,7 @@ const MULTI_EXTS: &[&str] = &["pkg.tar.zst", "tar.gz", "tar.xz", "tar.bz2", "tar
 
 /// 扫描文件夹时认作安装包的扩展名。
 const INSTALLER_EXTS: &[&str] = &[
-    "exe", "msi", "msix", "msixbundle", "appx", "appxbundle", "dmg", "pkg", "mpkg", "deb", "rpm", "appimage",
+    "exe", "msi", "appinstaller", "msix", "msixbundle", "appx", "appxbundle", "dmg", "pkg", "mpkg", "deb", "rpm", "appimage",
     "flatpak", "snap", "run", "pkg.tar.zst", "apk", "xapk", "apks", "apkm", "ipa", "zip", "7z", "rar", "tar.gz",
     "tgz", "tar.xz", "tar.bz2", "tar.zst", "iso", "jar",
 ];
@@ -45,7 +45,8 @@ pub fn split_ext(file_name: &str) -> (String, String) {
     }
     if let Some(dot) = file_name.rfind('.') {
         let ext = &file_name[dot + 1..];
-        if dot > 0 && !ext.is_empty() && ext.len() <= 10 && ext.chars().all(|c| c.is_ascii_alphanumeric()) {
+        if dot > 0 && !ext.is_empty() && (ext.len() <= 10 || ext.eq_ignore_ascii_case("appinstaller"))
+            && ext.chars().all(|c| c.is_ascii_alphanumeric()) {
             return (file_name[..dot].to_string(), ext.to_ascii_lowercase());
         }
     }
@@ -60,7 +61,7 @@ pub fn is_installer(file_name: &str) -> bool {
 
 fn platform_from_ext(ext: &str) -> Option<Platform> {
     Some(match ext {
-        "exe" | "msi" | "msix" | "msixbundle" | "appx" | "appxbundle" => Platform::Windows,
+        "exe" | "msi" | "appinstaller" | "msix" | "msixbundle" | "appx" | "appxbundle" => Platform::Windows,
         "dmg" | "pkg" | "mpkg" => Platform::Macos,
         "deb" | "rpm" | "appimage" | "flatpak" | "snap" | "run" | "pkg.tar.zst" => Platform::Linux,
         "apk" | "xapk" | "apks" | "apkm" => Platform::Android,
@@ -319,6 +320,7 @@ mod tests {
         check("Postman-win64-11.23.0-Setup.exe", "Postman", "11.23.0", Platform::Windows, "x64");
         check("Docker Desktop Installer.exe", "Docker Desktop", "", Platform::Windows, "");
         check("WeChatSetup.exe", "WeChat", "", Platform::Windows, "");
+        check("Shapr3D.Package.appinstaller", "Shapr3D.Package", "", Platform::Windows, "");
         check("tsetup-x64.5.9.0.exe", "tsetup", "5.9.0", Platform::Windows, "x64");
         check("QQ9.9.15.240925_x64.exe", "QQ", "9.9.15.240925", Platform::Windows, "x64");
         check("OBS-Studio-31.0.0-Windows-Installer.exe", "OBS-Studio", "31.0.0", Platform::Windows, "");
@@ -357,6 +359,7 @@ mod tests {
         assert_eq!(split_ext("readme"), ("readme".into(), "".into()));
         assert_eq!(split_ext(".bashrc"), (".bashrc".into(), "".into()));
         assert!(is_installer("x.AppImage"));
+        assert!(is_installer("x.APPINSTALLER"));
         assert!(!is_installer("notes.txt"));
     }
 

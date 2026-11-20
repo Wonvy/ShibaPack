@@ -15,7 +15,7 @@ use shibapack_core::{
     SoftwareEdit, SourceKind, Stats, Storage, Subscription, Suggestion, VerifyReport, VersionEdit, VersionRef, webicon,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -24,7 +24,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, Window};
 use tauri_plugin_opener::OpenerExt;
 
 struct AppState {
@@ -34,7 +34,7 @@ struct AppState {
     open_failure: Mutex<Option<(String, String)>>,
     /// 仓库之外唯一的文件：记录仓库根目录在哪。
     config_file: PathBuf,
-    /// 已安装软件的图标缓存。只和这台电脑有关，所以放在系统的缓存目录而不是仓库里。
+    /// 本机提取图标时用的磁盘缓存。实际图标也随仓库索引保存。
     icon_cache: PathBuf,
     /// 最近一次列出的已安装软件。卸载、定位时按 id 在这里查，不接受前端传来的路径。
     installed: Mutex<Vec<InstalledApp>>,
@@ -276,6 +276,83 @@ fn trash_external(paths: Vec<PathBuf>) {
 #[tauri::command]
 fn get_status(state: State<AppState>) -> Status {
     status_of(&state)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DetailWindowResize {
+    open: bool,
+    detail_width: u32,
+    before: u32,
+    after: u32,
+}
+
+/// 让窗口宽度跟随右栏，在最小宽度或屏幕边缘截断时也可以还原。
+#[tauri::command]
+async fn resize_detail_window(
+    window: Window,
+    open: bool,
+    detail_width: f64,
+    dock_min_width: f64,
+    previous: Option<DetailWindowResize>,
+) -> Result<Option<DetailWindowResize>, String> {
+    resize_detail(&window, open, detail_width, dock_min_width, previous).map_err(|err| err.to_string())
+}
+
+fn resize_detail(
+    window: &Window,
+    open: bool,
+    detail_width: f64,
+    dock_min_width: f64,
+    previous: Option<DetailWindowResize>,
+) -> tauri::Result<Option<DetailWindowResize>> {
+    if window.is_maximized()? || window.is_fullscreen()? || window.is_minimized()? || !window.is_resizable()? {
+        return Ok(None);
+    }
+    let size = window.inner_size()?;
+    let scale = window.scale_factor()?;
+    let pixels = |logical: f64| (logical * scale).round() as u32;
+    let detail_width = pixels(detail_width);
+    let restored = previous.filter(|last| last.open != open && last.detail_width == detail_width && last.after.abs_diff(size.width) <= 1);
+    let desired = if let Some(last) = restored {
+        last.before
+    } else if open {
+        size.width.saturating_add(detail_width)
+    } else if size.width >= pixels(dock_min_width) {
+        size.width.saturating_sub(detail_width)
+    } else {
+        // 浮动详情没有占用中栏宽度，收起时无需缩小原窗口。
+        return Ok(None);
+    };
+
+    let mut width = desired;
+    if width < size.width {
+        let min = window.app_handle().config().app.windows.iter().find(|config| config.label == window.label())
+            .and_then(|config| config.min_width).unwrap_or_default();
+        width = width.max(pixels(min).min(size.width));
+    } else if width > size.width {
+        if let Some(monitor) = window.current_monitor()? {
+            let area = monitor.work_area();
+            let frame = window.outer_size()?.width.saturating_sub(size.width);
+            width = width.min(area.size.width.saturating_sub(frame).max(size.width));
+            if width > size.width {
+                let position = window.outer_position()?;
+                let left = i64::from(area.position.x);
+                let right = left + i64::from(area.size.width);
+                let max_left = right - i64::from(width) - i64::from(frame);
+                let x = i64::from(position.x).clamp(left, max_left);
+                if x != i64::from(position.x) && window.set_position(PhysicalPosition::new(x as i32, position.y)).is_err() {
+                    let available = (right - i64::from(position.x) - i64::from(frame)).max(0) as u32;
+                    width = width.min(available.max(size.width));
+                }
+            }
+        }
+    }
+    if width == size.width {
+        return Ok(None);
+    }
+    window.set_size(PhysicalSize::new(width, size.height))?;
+    Ok(Some(DetailWindowResize { open, detail_width, before: size.width, after: width }))
 }
 
 #[tauri::command]
@@ -635,15 +712,35 @@ async fn empty_trash(app: AppHandle) -> CmdResult<Stats> {
 
 // ── 已安装软件 ───────────────────────────────────────────────
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstalledListing {
+    apps: Vec<InstalledApp>,
+    cached_icons: Option<BTreeMap<String, Arc<str>>>,
+}
+
 /// 列出这台电脑上已安装的软件（会重新扫描）。
 #[tauri::command]
-async fn list_installed(app: AppHandle) -> Vec<InstalledApp> {
+async fn list_installed(app: AppHandle) -> InstalledListing {
     blocking(app, move |_app, state| {
         let apps = installed::list_installed(&state.icon_cache);
-        if let Ok(mut cached) = state.installed.lock() {
+        let changed = if let Ok(mut cached) = state.installed.lock() {
+            let changed = !cached.iter().map(|app| (&app.id, &app.icon)).eq(apps.iter().map(|app| (&app.id, &app.icon)));
             *cached = apps.clone();
+            changed
+        } else {
+            false
+        };
+        if changed {
+            if let Ok(mut tried) = state.icon_tried.lock() {
+                tried.clear();
+            }
         }
-        apps
+        let cached_icons = with_repo(&state, |repo| {
+            repo.cache_installed_icons(&apps)?;
+            Ok(repo.lib.installed_icons.clone())
+        }).ok();
+        InstalledListing { apps, cached_icons }
     })
     .await
 }
@@ -1121,15 +1218,26 @@ async fn fill_file_info(app: AppHandle) -> CmdResult<FillResult> {
 }
 
 /// 联网给一个软件找图标：软件主页的网站图标，或者 GitHub 仓库主人的头像。
-/// 返回图标的相对路径，没找到返回 null；没开“联网获取”时什么都不做。网络不通时返回 `offline`。
+/// 返回图标的相对路径和缓存内容，没找到返回 null。网络不通时返回 `offline`。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IconUpdate {
+    icon: String,
+    icon_data: Option<Arc<str>>,
+}
+
 #[tauri::command]
-async fn fetch_icon(app: AppHandle, id: String) -> CmdResult<Option<String>> {
+async fn fetch_icon(app: AppHandle, id: String) -> CmdResult<Option<IconUpdate>> {
     blocking(app, move |_app, state| {
         let query = with_repo(&state, |repo| if repo.lib.settings.fetch_summaries { repo.web_icon_query(&id) } else { Ok(None) })?;
         let Some(query) = query else { return Ok(None) };
         // 联网期间不占着仓库的锁
         let found = webicon::fetch_web_icon(&query.homepage, query.github.as_deref()).map_err(|_| "offline".to_string())?;
-        with_repo(&state, |repo| repo.set_web_icon(&id, &query, found))
+        with_repo(&state, |repo| {
+            let Some(icon) = repo.set_web_icon(&id, &query, found)? else { return Ok(None) };
+            let icon_data = repo.lib.software.iter().find(|software| software.id == id).and_then(|software| software.icon_data.clone());
+            Ok(Some(IconUpdate { icon, icon_data }))
+        })
     })
     .await
 }
@@ -1688,6 +1796,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_status,
+            resize_detail_window,
             set_repo_root,
             get_library,
             refresh_library,

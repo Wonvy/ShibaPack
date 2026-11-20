@@ -20,6 +20,7 @@ import type {
   Platform,
   Progress,
   Release,
+  RepoHit,
   Settings,
   Software,
   SoftwareEdit,
@@ -41,9 +42,31 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const english = new URLSearchParams(location.search).has("en");
 const tr = (zh: string, en: string) => (english ? en : zh);
 
+const githubExamples: RepoHit[] = [
+  {
+    reference: "Molunerfinn/PicGo",
+    name: "PicGo",
+    description: tr("支持多种图床的图片上传工具", "Image uploader for multiple hosting services"),
+    url: "https://github.com/Molunerfinn/PicGo",
+    ownerAvatarUrl: "https://avatars.githubusercontent.com/u/12621342?v=4",
+    stars: 27506,
+    archived: false,
+  },
+  {
+    reference: "LuckSiege/PictureSelector",
+    name: "PictureSelector",
+    description: tr("Android 图片选择器", "Image picker for Android"),
+    url: "https://github.com/LuckSiege/PictureSelector",
+    ownerAvatarUrl: "https://avatars.githubusercontent.com/u/24836954?v=4",
+    stars: 13576,
+    archived: false,
+  },
+];
+
 const EXT_PLATFORM: Record<string, Platform> = {
   exe: "windows",
   msi: "windows",
+  appinstaller: "windows",
   dmg: "macos",
   pkg: "macos",
   deb: "linux",
@@ -718,6 +741,8 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
     case "github_search": {
       await sleep(700);
       const query = String(args.query).trim();
+      const examples = githubExamples.filter((repo) => repo.reference.toLowerCase().includes(query.toLowerCase()));
+      if (query && examples.length > 0) return examples;
       const slug = query.toLowerCase().replace(/[^a-z0-9]+/g, "-");
       if (!slug) return [];
       return [
@@ -795,7 +820,7 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       return langPacks;
     case "list_installed":
       await sleep(400);
-      return installedApps;
+      return { apps: installedApps, cachedIcons: null };
     case "measure_installed":
       await sleep(900);
       return installedSizes;
@@ -917,7 +942,7 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
           size: isDir ? null : 48 * MB,
           package: isDir && portable,
           installers: isDir && !/\.app$/i.test(name) ? (portable ? 1 : 3) : 0,
-          installer: !isDir && /\.(exe|msi|dmg|pkg|deb|rpm|zip|appimage)$/i.test(name),
+          installer: !isDir && /\.(exe|msi|appinstaller|dmg|pkg|deb|rpm|zip|appimage)$/i.test(name),
           guessName: (match?.[1] ?? name.replace(/\.\w+$/, "")).replace(/[-_]/g, " ").trim(),
           guessVersion: match?.[2] ?? (portable ? "2.4.1" : ""),
         };

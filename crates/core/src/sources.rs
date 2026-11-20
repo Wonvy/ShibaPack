@@ -321,6 +321,8 @@ fn agent(response_timeout: u64) -> ureq::Agent {
     let config = ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(10)))
         .timeout_recv_response(Some(Duration::from_secs(response_timeout)))
+        // 读数据卡住超过 60 秒就算失败（比如 20 MB 的 Homebrew 目录下到一半网断了），不一直挂着
+        .timeout_per_read(Some(Duration::from_secs(60)))
         .user_agent(USER_AGENT)
         .proxy(ureq::Proxy::try_from_env())
         .build();

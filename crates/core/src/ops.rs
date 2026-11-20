@@ -4,7 +4,7 @@ use crate::{
     catalog::CATALOG_FILE,
     icons,
     identify::{is_installer, normalize_name, same_software},
-    import::{sha256_file, ImportHint, ImportReport},
+    import::{sha256_file, ImportHint, ImportItem, ImportReport},
     installed::InstalledApp,
     model::*,
     store::{sanitize, unique_path, Repo, DATA_DIR, INDEX_FILE},
@@ -23,6 +23,12 @@ const WEB_SUFFIX: &str = "-web";
 
 fn is_web_icon(icon: &str) -> bool {
     Path::new(icon).file_stem().is_some_and(|stem| stem.to_string_lossy().ends_with(WEB_SUFFIX))
+}
+
+/// 用软件 id 拼文件名时只留字母、数字、`-`、`_`。自己生成的 id 本来就是这样；
+/// 被改过的索引里的 id 也不会拼出 `../` 这种跑到别处的路径。
+pub(crate) fn id_stem(id: &str) -> String {
+    id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
 }
 
 /// 还没有图标，或者只有联网取的图标。
@@ -208,29 +214,31 @@ impl Repo {
         let v = self.version_at(s, version_id)?;
         let files = &self.lib.software[s].versions[v].files;
         let f = files.iter().position(|x| x.id == file_id).ok_or(Error::Code("not_found"))?;
-        let file = self.lib.software[s].versions[v].files.remove(f);
-        let external = self.discard(&[file], delete_from_disk)?;
-        // 版本里没有文件了，这个版本也就没有意义
-        if self.lib.software[s].versions[v].files.is_empty() {
-            let removed = self.lib.software[s].versions.remove(v);
-            if self.lib.software[s].default_version_id.as_deref() == Some(removed.id.as_str()) {
-                self.lib.software[s].default_version_id = None;
+        let file = files[f].clone();
+        self.remove_records(&[file], delete_from_disk, |lib| {
+            let software = &mut lib.software[s];
+            software.versions[v].files.remove(f);
+            // 版本里没有文件了，这个版本也就没有意义
+            if software.versions[v].files.is_empty() {
+                let removed = software.versions.remove(v);
+                if software.default_version_id.as_deref() == Some(removed.id.as_str()) {
+                    software.default_version_id = None;
+                }
             }
-        }
-        self.save()?;
-        Ok(external)
+        })
     }
 
     pub fn delete_version(&mut self, software_id: &str, version_id: &str, delete_files: bool) -> Result<Vec<PathBuf>> {
         let s = self.software_at(software_id)?;
         let v = self.version_at(s, version_id)?;
-        let removed = self.lib.software[s].versions.remove(v);
-        if self.lib.software[s].default_version_id.as_deref() == Some(removed.id.as_str()) {
-            self.lib.software[s].default_version_id = None;
-        }
-        let external = self.discard(&removed.files, delete_files)?;
-        self.save()?;
-        Ok(external)
+        let files = self.lib.software[s].versions[v].files.clone();
+        self.remove_records(&files, delete_files, |lib| {
+            let software = &mut lib.software[s];
+            let removed = software.versions.remove(v);
+            if software.default_version_id.as_deref() == Some(removed.id.as_str()) {
+                software.default_version_id = None;
+            }
+        })
     }
 
     pub fn delete_software(&mut self, id: &str, delete_files: bool) -> Result<Vec<PathBuf>> {
@@ -243,47 +251,74 @@ impl Repo {
         if !self.lib.software.iter().any(|s| wanted.contains(s.id.as_str())) {
             return Err(Error::Code("not_found"));
         }
-        let (removed, kept): (Vec<Software>, Vec<Software>) =
-            std::mem::take(&mut self.lib.software).into_iter().partition(|s| wanted.contains(s.id.as_str()));
-        self.lib.software = kept;
-        let files: Vec<PackageFile> = removed.into_iter().flat_map(|s| s.versions).flat_map(|v| v.files).collect();
-        let external = self.discard(&files, delete_files)?;
-        self.save()?;
-        Ok(external)
+        let files: Vec<PackageFile> = self
+            .lib
+            .software
+            .iter()
+            .filter(|s| wanted.contains(s.id.as_str()))
+            .flat_map(|s| &s.versions)
+            .flat_map(|v| v.files.iter().cloned())
+            .collect();
+        self.remove_records(&files, delete_files, |lib| lib.software.retain(|s| !wanted.contains(s.id.as_str())))
     }
 
     /// 一次删掉多个版本（清理旧版本），只存一次索引。找不到的跳过；
     /// 删掉的版本正好是默认版本时，改回“始终用最新版本”。
     pub fn delete_versions(&mut self, targets: &[VersionRef], delete_files: bool) -> Result<Vec<PathBuf>> {
-        let mut files = Vec::new();
-        for target in targets {
-            let Ok(s) = self.software_at(&target.software_id) else { continue };
-            let Ok(v) = self.version_at(s, &target.version_id) else { continue };
-            let removed = self.lib.software[s].versions.remove(v);
-            if self.lib.software[s].default_version_id.as_deref() == Some(removed.id.as_str()) {
-                self.lib.software[s].default_version_id = None;
-            }
-            files.extend(removed.files);
-        }
+        let wanted: HashSet<(&str, &str)> = targets.iter().map(|t| (t.software_id.as_str(), t.version_id.as_str())).collect();
+        let files: Vec<PackageFile> = self
+            .lib
+            .software
+            .iter()
+            .flat_map(|s| s.versions.iter().filter(|v| wanted.contains(&(s.id.as_str(), v.id.as_str()))))
+            .flat_map(|v| v.files.iter().cloned())
+            .collect();
         if files.is_empty() {
             return Ok(Vec::new());
         }
-        let external = self.discard(&files, delete_files)?;
-        self.save()?;
-        Ok(external)
+        self.remove_records(&files, delete_files, |lib| {
+            for software in &mut lib.software {
+                let id = software.id.clone();
+                software.versions.retain(|v| !wanted.contains(&(id.as_str(), v.id.as_str())));
+                if software.default_version_id.as_deref().is_some_and(|d| !software.versions.iter().any(|v| v.id == d)) {
+                    software.default_version_id = None;
+                }
+            }
+        })
     }
 
-    /// 处理被删记录对应的磁盘文件，返回需要调用方送进系统回收站的外部文件。
-    fn discard(&self, files: &[PackageFile], delete_from_disk: bool) -> Result<Vec<PathBuf>> {
-        let mut external = Vec::new();
-        if !delete_from_disk {
-            return Ok(external);
-        }
-        for file in files {
-            match file.storage {
-                Storage::Managed => self.trash_managed(&file.path)?,
-                Storage::Indexed => external.push(PathBuf::from(&file.path)),
+    /// 删除记录的公共部分，顺序是为了任何一步失败都不丢东西：
+    ///
+    /// 1. 要删文件时，先把托管文件移进仓库回收站。有一个移不动就全部放回原处、记录也不动，直接报错。
+    /// 2. 改记录（`edit`），先备份一份改动前的索引再保存。
+    /// 3. 保存失败就把文件放回原处（内存里的记录由 `Repo::transact` 退回）。
+    ///
+    /// 别的记录还在用的同一个文件不移走。返回需要调用方送进系统回收站的外部文件。
+    fn remove_records(&mut self, files: &[PackageFile], delete_from_disk: bool, edit: impl FnOnce(&mut Library)) -> Result<Vec<PathBuf>> {
+        let (mut managed, mut external) = (Vec::new(), Vec::new());
+        if delete_from_disk {
+            let removing: HashSet<&str> = files.iter().map(|f| f.id.as_str()).collect();
+            let still_used: HashSet<&str> = self
+                .lib
+                .software
+                .iter()
+                .flat_map(|s| &s.versions)
+                .flat_map(|v| &v.files)
+                .filter(|f| !removing.contains(f.id.as_str()))
+                .map(|f| f.path.as_str())
+                .collect();
+            for file in files.iter().filter(|f| !still_used.contains(f.path.as_str())) {
+                match file.storage {
+                    Storage::Managed => managed.push(file.path.clone()),
+                    Storage::Indexed => external.push(PathBuf::from(&file.path)),
+                }
             }
+        }
+        let moved = self.trash_all(&managed)?;
+        edit(&mut self.lib);
+        if let Err(err) = self.save_with_backup() {
+            self.untrash(&moved);
+            return Err(err);
         }
         Ok(external)
     }
@@ -346,14 +381,15 @@ impl Repo {
 
     /// 从一个文件里取图标存进仓库，返回可以写进 `Software.icon` 的相对路径。
     pub(crate) fn icon_from(&self, software_id: &str, source: &Path) -> Option<String> {
-        let path = icons::extract_icon(source, &self.icons_dir(), software_id)?;
+        let path = icons::extract_icon(source, &self.icons_dir(), &id_stem(software_id))?;
         Some(format!("{DATA_DIR}/icons/{}", path.file_name()?.to_string_lossy()))
     }
 
     /// 给软件换上从安装包里取的图标。原来的图标是联网取的，就把那个文件删掉。
     pub(crate) fn set_local_icon(&mut self, s: usize, icon: String) {
         if let Some(old) = self.lib.software[s].icon.replace(icon) {
-            if is_web_icon(&old) {
+            // 只删仓库图标文件夹里联网取的那个文件，索引被改过也不会删到别处
+            if is_web_icon(&old) && old.starts_with(&format!("{DATA_DIR}/icons/")) {
                 let _ = fs::remove_file(self.root_join(&old));
             }
         }
@@ -375,7 +411,7 @@ impl Repo {
         if query.homepage.is_empty() && query.github.is_none() {
             return Ok(None);
         }
-        let marker = self.icons_dir().join(format!("{software_id}.none"));
+        let marker = self.icons_dir().join(format!("{}.none", id_stem(software_id)));
         if fs::read_to_string(marker).is_ok_and(|asked| asked == query.key()) {
             return Ok(None);
         }
@@ -391,12 +427,12 @@ impl Repo {
         }
         let dir = self.icons_dir();
         fs::create_dir_all(&dir)?;
-        let marker = dir.join(format!("{software_id}.none"));
+        let marker = dir.join(format!("{}.none", id_stem(software_id)));
         let Some(found) = found else {
             fs::write(marker, query.key())?;
             return Ok(None);
         };
-        let name = format!("{software_id}{WEB_SUFFIX}.{}", found.ext);
+        let name = format!("{}{WEB_SUFFIX}.{}", id_stem(software_id), found.ext);
         fs::write(dir.join(&name), &found.bytes)?;
         let _ = fs::remove_file(marker);
         let icon = format!("{DATA_DIR}/icons/{name}");
@@ -543,27 +579,58 @@ impl Repo {
                 !name.starts_with('.') && name != INDEX_FILE && name != CATALOG_FILE && !name.starts_with("software.json") && is_installer(&name)
             })
             .collect();
-        let mut moved = Vec::new();
+        // 一个文件挪不动（比如正被占用）只记一笔失败，别的照常整理：已经挪走的文件一定要登记上
+        let (mut placed, mut renamed, mut failed) = (Vec::new(), HashSet::new(), Vec::new());
         for path in loose {
-            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-            let id = crate::identify::identify(&name);
-            let version_dir = if id.version.is_empty() { "unknown".to_string() } else { sanitize(&id.version) };
-            // 仓库里已经有这个软件时，放进它现有的文件夹（名字可能被改过）
-            let key = normalize_name(&id.name);
-            let folder = self.lib.software.iter().find(|s| normalize_name(&s.name) == key).map_or(id.name.clone(), |s| s.name.clone());
-            let dir = self.root().join(sanitize(&folder)).join(version_dir);
-            fs::create_dir_all(&dir)?;
-            let dest = dir.join(&name);
-            // 目标位置已经有一个内容相同的文件：根目录这份是多余的，收进回收站
-            if dest.exists() && sha256_file(&dest).ok() == sha256_file(&path).ok() {
-                self.trash_managed(&name)?;
-                continue;
+            match self.tidy_one(&path) {
+                Ok((dest, was_moved)) => {
+                    if was_moved {
+                        renamed.insert(dest.to_string_lossy().to_string());
+                    }
+                    placed.push(dest);
+                }
+                Err(err) => failed.push(ImportItem {
+                    path: path.to_string_lossy().to_string(),
+                    status: "failed".into(),
+                    software_id: None,
+                    message: Some(err.to_string()),
+                }),
             }
-            let dest = unique_path(dest);
-            fs::rename(&path, &dest)?;
-            moved.push(dest);
         }
-        self.import_paths(&moved, Storage::Managed, &ImportHint::default(), &mut |_| {})
+        let mut report = self.import_paths(&placed, Storage::Managed, &ImportHint::default(), &mut |_| {})?;
+        // 挪过去之后才认出是重复的（同一个软件同一个版本里已经有内容相同的文件）：这份多余，收进回收站，
+        // 不留一个没登记的文件在那儿
+        for item in report.items.iter().filter(|item| item.status == "duplicate" && renamed.contains(&item.path)) {
+            if let Ok(rel) = Path::new(&item.path).strip_prefix(self.root()) {
+                let rel = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+                let _ = self.trash_managed(&rel);
+            }
+        }
+        report.failed += failed.len();
+        report.items.extend(failed);
+        Ok(report)
+    }
+
+    /// 把根目录里的一个安装包挪进它的 `软件名/版本号/` 文件夹。返回它现在的位置，以及是不是这次挪过去的。
+    fn tidy_one(&self, path: &Path) -> Result<(PathBuf, bool)> {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let id = crate::identify::identify(&name);
+        let version_dir = if id.version.is_empty() { "unknown".to_string() } else { sanitize(&id.version) };
+        // 仓库里已经有这个软件时，放进它现有的文件夹（名字可能被改过）
+        let key = normalize_name(&id.name);
+        let folder = self.lib.software.iter().find(|s| normalize_name(&s.name) == key).map_or(id.name.clone(), |s| s.name.clone());
+        let dir = self.root().join(sanitize(&folder)).join(version_dir);
+        fs::create_dir_all(&dir)?;
+        let dest = dir.join(&name);
+        // 目标位置已经有一个内容相同的文件：根目录这份是多余的，收进回收站。
+        // 那一份交给导入去登记：已经登记过的会被当成重复跳过，没登记过的就地登记
+        if dest.exists() && sha256_file(&dest).ok() == sha256_file(path).ok() {
+            self.trash_managed(&name)?;
+            return Ok((dest, false));
+        }
+        let dest = unique_path(dest);
+        fs::rename(path, &dest)?;
+        Ok((dest, true))
     }
 
     /// 放语言包的文件夹。
@@ -930,5 +997,65 @@ mod tests {
         repo.set_starred(&id, false).unwrap();
         assert!(!Repo::open(repo.root()).unwrap().lib.software[0].starred);
         assert!(repo.set_starred("nope", true).is_err());
+    }
+
+    /// 根目录里那份挪过去之后才认出是重复的（文件名不同、内容相同）：收进回收站，不留一个没登记的文件。
+    #[test]
+    fn tidying_trashes_duplicates_it_moved() {
+        let (_r, _s, mut repo) = repo_with(&[("Git-2.47.1.exe", b"git")]);
+        let root = repo.root().to_path_buf();
+        fs::write(root.join("Git-2.47.1-64-bit.exe"), b"git").unwrap();
+        let report = repo.tidy_root().unwrap();
+        assert_eq!((report.imported, report.duplicates), (0, 1));
+        assert!(!root.join("Git-2.47.1-64-bit.exe").exists());
+        assert!(!root.join("Git/2.47.1/Git-2.47.1-64-bit.exe").exists(), "没登记的副本不应留在文件夹里");
+        assert!(root.join("Git/2.47.1/Git-2.47.1.exe").is_file(), "登记着的那份不能动");
+    }
+
+    /// 删除时有一个文件移不动（Windows 上常见：安装包正被占用）：已经移走的放回原处，记录和索引都不变。
+    #[test]
+    #[cfg(unix)]
+    fn delete_is_all_or_nothing_when_a_file_cannot_be_moved() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_r, _s, mut repo) = repo_with(&[("Aaa-1.0.exe", b"a"), ("Zzz-1.0.exe", b"z")]);
+        let ids: Vec<String> = repo.lib.software.iter().map(|s| s.id.clone()).collect();
+        let files: Vec<PathBuf> = repo.lib.software.iter().map(|s| repo.abs_path(&s.versions[0].files[0])).collect();
+        // 第二个文件所在的文件夹只读：里面的文件挪不出去
+        let locked = files[1].parent().unwrap().to_path_buf();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+        let backups_before = repo.backups().len();
+
+        let result = repo.transact(|repo| repo.delete_software_many(&ids, true));
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(result.is_err());
+        assert!(files.iter().all(|f| f.is_file()), "已经移进回收站的那个应当放回原处");
+        assert_eq!(repo.lib.software.len(), 2, "内存里的记录退回原样");
+        assert_eq!(Repo::open(repo.root()).unwrap().lib.software.len(), 2, "索引文件没被改动");
+        assert_eq!(repo.backups().len(), backups_before, "什么都没删，也就没有多出备份");
+    }
+
+    #[test]
+    fn deleting_backs_up_first_and_keeps_shared_files() {
+        let (_r, _s, mut repo) = repo_with(&[("Tool-1.0.exe", b"tool")]);
+        repo.create_backup().unwrap();
+        let before = repo.backups().len();
+        // 再登记一个记录，指向同一个托管文件
+        let mut copy = repo.lib.software[0].clone();
+        copy.id = crate::new_id();
+        copy.name = "Tool copy".into();
+        copy.versions[0].files[0].id = crate::new_id();
+        let shared = repo.abs_path(&copy.versions[0].files[0]);
+        repo.lib.software.push(copy);
+        repo.save().unwrap();
+
+        let first = repo.lib.software[0].id.clone();
+        repo.delete_software(&first, true).unwrap();
+        assert!(shared.is_file(), "别的记录还在用的文件不能移走");
+        assert!(repo.backups().len() > before, "删除前不管隔多久都先备份一次");
+
+        let second = repo.lib.software[0].id.clone();
+        repo.delete_software(&second, true).unwrap();
+        assert!(!shared.exists(), "最后一个用它的记录删掉后才移进回收站");
     }
 }

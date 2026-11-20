@@ -17,7 +17,7 @@ Everything lives in a folder you choose. The index is a plain `software.json` fi
 - **Installed software.** Lists the apps installed on this computer, matches them with your library, and shows which ones can be upgraded from an installer you already have. Install, upgrade and uninstall from one place.
 - **Online sources.** Link an app to Homebrew Cask, GitHub Releases or winget to check for new versions and download them into the library.
 - **Real icons.** Icons are taken from installers and installed apps. For apps with a homepage or a GitHub repository, ShibaPack can also use the site icon or the repository owner's avatar. Apps without an icon get a plain gray letter tile.
-- **Safe by default.** The index is backed up automatically (last 8 copies), deleted files go to a trash folder for 30 days, and a check finds files that went missing or changed size.
+- **Safe by default.** The index is backed up automatically (the last 8 copies, plus one per day for two weeks) and always right before a delete, deleted files go to a trash folder for 30 days, and a check finds files that went missing or changed size.
 - **Offline catalog.** Optionally writes an `index.html` at the library root, so you can browse the library in any browser, even without ShibaPack.
 - **Updates itself.** ShibaPack checks GitHub Releases and can install its own updates.
 - Light and dark themes, English and Chinese interface, and importable language packs.
@@ -108,7 +108,7 @@ To work on the interface without the desktop window, run it in a browser with mo
 npm run dev
 ```
 
-Then open <http://localhost:1430>. Add `?setup` to the address to see the first-run screen, `?empty` for an empty library, or `?en` for English demo data.
+Then open <http://localhost:1430>. Add `?setup` to the address to see the first-run screen, `?offline` for the screen shown when the last repository can't be opened, `?empty` for an empty library, or `?en` for English demo data.
 
 ### Checks
 

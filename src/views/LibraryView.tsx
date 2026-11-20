@@ -188,12 +188,14 @@ export function LibraryView() {
         if (app.selectedIds.length > 0) app.select(null);
         return;
       }
-      const chosen = ordered.filter((s) => app.selectedIds.includes(s.id));
-      if ((event.key === "Delete" || event.key === "Backspace") && chosen.length > 0) {
+      // 删除作用于全部选中的软件，包括搜索后暂时不在列表里的：和右键菜单、详情栏的批量面板一致，
+      // 确认框里写着一共几个
+      if ((event.key === "Delete" || event.key === "Backspace") && app.selectedIds.length > 0) {
         event.preventDefault();
-        void deleteSoftwareMany(chosen);
+        void deleteSoftwareMany(selectedSoftware(app.selectedIds));
         return;
       }
+      const chosen = ordered.filter((s) => app.selectedIds.includes(s.id));
       if (event.key === "Enter" && chosen.length === 1) {
         // 焦点停在另一行上时（用 Tab 移过去的），Enter 先选中那一行
         const row = target?.closest<HTMLElement>("[data-software-id]");
@@ -446,7 +448,8 @@ function useItem(software: Software) {
     state.selectedIds.length > 1 && state.selectedIds.includes(software.id) ? state.selectedIds : null,
   );
   const dropping = useApp((state) => state.dropSoftwareId === software.id);
-  const chosen = () => ordered.filter((s) => group?.includes(s.id));
+  // 多选时作用于全部选中的软件，包括搜索后暂时不在列表里的（和详情栏的批量面板一致）
+  const chosen = () => selectedSoftware(group ?? []);
   const menu: MenuEntry[] = group
     ? [
         {
@@ -897,4 +900,10 @@ function FolderNode({ software, selected }: { software: Software; selected: bool
         })}
     </div>
   );
+}
+
+/** 按 id 取出选中的软件（保持选中的顺序），已经不在库里的跳过。 */
+function selectedSoftware(ids: string[]): Software[] {
+  const byId = new Map(useApp.getState().library?.software.map((s) => [s.id, s]));
+  return ids.flatMap((id) => byId.get(id) ?? []);
 }

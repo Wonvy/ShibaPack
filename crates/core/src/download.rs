@@ -121,24 +121,37 @@ pub fn download(
     fs::create_dir_all(dir)?;
     let key = hex::encode(Sha256::digest(url.as_bytes()));
     let part = dir.join(format!("{}.part", &key[..16]));
+    // 和 .part 放在一起的是服务器当时给的版本标记（ETag 或 Last-Modified）。续传时带上它（If-Range），
+    // 服务器上的文件换过就会整个重发，不会把旧文件的前半截和新文件的后半截拼在一起
+    let validator_file = dir.join(format!("{}.part.etag", &key[..16]));
 
-    // 只限制连接和等待响应的时间：大文件下多久都正常，不能设总超时
+    // 不能设总超时（大文件下多久都正常），但每次读数据最多等 60 秒：网络卡死时报错，而不是一直挂着，
+    // 后面排队的下载和“取消”也就不会跟着卡住
     let config = ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(15)))
         .timeout_recv_response(Some(Duration::from_secs(30)))
+        .timeout_per_read(Some(Duration::from_secs(60)))
         .user_agent("ShibaPack/0.1 (desktop app)")
         .proxy(ureq::Proxy::try_from_env())
         .build();
     let agent = ureq::Agent::new_with_config(config);
 
+    let saved_validator = fs::read_to_string(&validator_file).ok().filter(|v| !v.trim().is_empty());
     let request = |from: u64| {
         let mut request = agent.get(url);
         if from > 0 {
             request = request.header("Range", format!("bytes={from}-"));
+            if let Some(validator) = &saved_validator {
+                request = request.header("If-Range", validator.trim());
+            }
         }
         request.call()
     };
-    let mut existing = fs::metadata(&part).map(|meta| meta.len()).unwrap_or(0);
+    // 没有版本标记就没法确认服务器上还是同一个文件，从头下
+    let mut existing = match &saved_validator {
+        Some(_) => fs::metadata(&part).map(|meta| meta.len()).unwrap_or(0),
+        None => 0,
+    };
     let mut response = match request(existing) {
         // 断点超出了文件范围（多半是上次其实已经下完）：从头再来
         Err(ureq::Error::StatusCode(416)) if existing > 0 => {
@@ -152,8 +165,19 @@ pub fn download(
         _ => DownloadError::Unreachable,
     })?;
 
-    // 服务器不支持续传时会直接返回整个文件（200），那就丢掉已有的部分
+    // 服务器不支持续传、或者文件已经换过时会直接返回整个文件（200），那就丢掉已有的部分
     let resumed = existing > 0 && response.status().as_u16() == 206;
+    if !resumed {
+        // 记下这次的版本标记，下次续传用。弱 ETag（W/ 开头）不能用于 If-Range，退而用 Last-Modified
+        let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::trim).map(String::from);
+        let validator = header("etag").filter(|etag| !etag.starts_with("W/")).or_else(|| header("last-modified"));
+        match validator {
+            Some(validator) => fs::write(&validator_file, validator)?,
+            None => {
+                let _ = fs::remove_file(&validator_file);
+            }
+        }
+    }
     let disposition = response.headers().get("content-disposition").and_then(|v| v.to_str().ok()).map(String::from);
     let file_name = pick_name(disposition.as_deref(), &response.get_uri().to_string(), fallback_name);
     let remaining = response.body().content_length();
@@ -200,6 +224,7 @@ pub fn download(
     }
 
     let sha256 = hex::encode(hasher.finalize());
+    let _ = fs::remove_file(&validator_file);
     if expected_sha256.is_some_and(|expected| !expected.eq_ignore_ascii_case(&sha256)) {
         let _ = fs::remove_file(&part);
         return Err(DownloadError::HashMismatch);
@@ -229,7 +254,8 @@ mod tests {
     }
 
     /// 本机上的小服务器：只为测试，不访问外网。返回地址和“被请求了几次”的计数。
-    fn serve(body: &'static [u8], disposition: Option<&'static str>, ranges: bool) -> (String, Arc<AtomicUsize>) {
+    /// `etag` 是服务器上这个文件现在的版本标记；请求带的 If-Range 和它对不上时，照规矩返回整个文件。
+    fn serve(body: &'static [u8], disposition: Option<&'static str>, ranges: bool, etag: Option<&'static str>) -> (String, Arc<AtomicUsize>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let hits = Arc::new(AtomicUsize::new(0));
@@ -238,21 +264,29 @@ mod tests {
             for stream in listener.incoming().flatten() {
                 counter.fetch_add(1, Ordering::SeqCst);
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut start = None;
+                let (mut start, mut if_range) = (None, None);
                 loop {
                     let mut line = String::new();
                     if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
                         break;
                     }
-                    if let Some(range) = line.to_lowercase().strip_prefix("range: bytes=") {
+                    let lower = line.to_lowercase();
+                    if let Some(range) = lower.strip_prefix("range: bytes=") {
                         start = range.trim().trim_end_matches('-').parse::<usize>().ok();
                     }
+                    if lower.starts_with("if-range:") {
+                        if_range = Some(line["if-range:".len()..].trim().to_string());
+                    }
                 }
+                let same_file = if_range.as_deref().is_none_or(|v| Some(v) == etag);
                 let (status, slice) = match start {
-                    Some(from) if ranges && from <= body.len() => ("206 Partial Content", &body[from..]),
+                    Some(from) if ranges && same_file && from <= body.len() => ("206 Partial Content", &body[from..]),
                     _ => ("200 OK", body),
                 };
-                let extra = disposition.map(|d| format!("Content-Disposition: {d}\r\n")).unwrap_or_default();
+                let mut extra = disposition.map(|d| format!("Content-Disposition: {d}\r\n")).unwrap_or_default();
+                if let Some(etag) = etag {
+                    extra.push_str(&format!("ETag: {etag}\r\n"));
+                }
                 let head = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n{extra}\r\n", slice.len());
                 let mut stream = stream;
                 let _ = stream.write_all(head.as_bytes());
@@ -271,7 +305,7 @@ mod tests {
     #[test]
     #[cfg(feature = "network")]
     fn downloads_verifies_and_names_the_file() {
-        let (base, _) = serve(BODY, Some(r#"attachment; filename="Tool-2.0-x64.exe""#), true);
+        let (base, _) = serve(BODY, Some(r#"attachment; filename="Tool-2.0-x64.exe""#), true, Some("\"v1\""));
         let dir = tempfile::tempdir().unwrap();
         let mut last = (0, None);
         let done = download(&format!("{base}/get/latest"), dir.path(), "fallback.exe", Some(&sha(BODY)), &AtomicBool::new(false), &mut |r, t| last = (r, t)).unwrap();
@@ -282,15 +316,22 @@ mod tests {
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "不应留下 .part 文件");
     }
 
+    /// 假装上次下到一半断了：留下前 `len` 个字节，以及当时服务器给的版本标记。
+    fn leave_part(dir: &Path, url: &str, bytes: &[u8], etag: Option<&str>) {
+        let key = hex::encode(Sha256::digest(url.as_bytes()));
+        fs::write(dir.join(format!("{}.part", &key[..16])), bytes).unwrap();
+        if let Some(etag) = etag {
+            fs::write(dir.join(format!("{}.part.etag", &key[..16])), etag).unwrap();
+        }
+    }
+
     #[test]
     #[cfg(feature = "network")]
     fn resumes_from_a_partial_file() {
-        let (base, hits) = serve(BODY, None, true);
+        let (base, hits) = serve(BODY, None, true, Some("\"v1\""));
         let dir = tempfile::tempdir().unwrap();
         let url = format!("{base}/files/Tool-2.0.dmg");
-        // 假装上次下到一半断了
-        let key = hex::encode(Sha256::digest(url.as_bytes()));
-        fs::write(dir.path().join(format!("{}.part", &key[..16])), &BODY[..20]).unwrap();
+        leave_part(dir.path(), &url, &BODY[..20], Some("\"v1\""));
 
         let mut first = None;
         let done = download(&url, dir.path(), "x", Some(&sha(BODY)), &AtomicBool::new(false), &mut |r, _| {
@@ -301,16 +342,45 @@ mod tests {
         assert_eq!(fs::read(&done.path).unwrap(), BODY);
         assert_eq!(done.path.file_name().unwrap(), "Tool-2.0.dmg");
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "下完不应留下 .part 和版本标记");
+    }
+
+    /// 地址没变、文件换过（比如 Homebrew 里不带版本号的下载地址）：不能把旧文件的前半截接上新文件。
+    #[test]
+    #[cfg(feature = "network")]
+    fn starts_over_when_the_file_changed_upstream() {
+        let (base, _) = serve(BODY, None, true, Some("\"v2\""));
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("{base}/stable");
+        leave_part(dir.path(), &url, b"OLD-VERSION-BYTES-xx", Some("\"v1\""));
+        let mut first = None;
+        let done = download(&url, dir.path(), "tool.dmg", None, &AtomicBool::new(false), &mut |r, _| {
+            first.get_or_insert(r);
+        })
+        .unwrap();
+        assert_eq!(first, Some(0), "文件换过就从头下");
+        assert_eq!(fs::read(&done.path).unwrap(), BODY);
+    }
+
+    /// 没有记下版本标记（比如旧版本留下的 .part）：确认不了是不是同一个文件，从头下。
+    #[test]
+    #[cfg(feature = "network")]
+    fn starts_over_without_a_saved_validator() {
+        let (base, _) = serve(BODY, None, true, None);
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("{base}/Tool.exe");
+        leave_part(dir.path(), &url, b"stale bytes from an older file", None);
+        let done = download(&url, dir.path(), "x", Some(&sha(BODY)), &AtomicBool::new(false), &mut |_, _| {}).unwrap();
+        assert_eq!(fs::read(&done.path).unwrap(), BODY);
     }
 
     #[test]
     #[cfg(feature = "network")]
     fn restarts_when_the_server_ignores_ranges() {
-        let (base, _) = serve(BODY, None, false);
+        let (base, _) = serve(BODY, None, false, Some("\"v1\""));
         let dir = tempfile::tempdir().unwrap();
         let url = format!("{base}/Tool.exe");
-        let key = hex::encode(Sha256::digest(url.as_bytes()));
-        fs::write(dir.path().join(format!("{}.part", &key[..16])), b"stale bytes from an older file").unwrap();
+        leave_part(dir.path(), &url, b"stale bytes from an older file", Some("\"v1\""));
         let done = download(&url, dir.path(), "x", Some(&sha(BODY)), &AtomicBool::new(false), &mut |_, _| {}).unwrap();
         assert_eq!(fs::read(&done.path).unwrap(), BODY);
     }
@@ -318,7 +388,7 @@ mod tests {
     #[test]
     #[cfg(feature = "network")]
     fn rejects_a_wrong_hash_and_honours_cancel() {
-        let (base, _) = serve(BODY, None, true);
+        let (base, _) = serve(BODY, None, true, None);
         let dir = tempfile::tempdir().unwrap();
         let url = format!("{base}/Tool.exe");
         let wrong = "0".repeat(64);

@@ -1,5 +1,6 @@
 // 浏览器预览用的假后端：数据只在内存里，刷新就复原。
-// 只有不在桌面窗口里（没有 Tauri）时才会加载这个文件。地址后加 ?setup 可以预览首次启动的引导页。
+// 只有不在桌面窗口里（没有 Tauri）时才会加载这个文件。地址后加 ?setup 可以预览首次启动的引导页，
+// 加 ?offline 预览上次的仓库没打开时的引导页。
 
 import { newId } from "./library";
 import type {
@@ -277,7 +278,7 @@ let installedApps: InstalledApp[] = [
   app("DataGrip", "2024.3", "JetBrains s.r.o", 2260, 45),
   app("VLC", "3.0.21", "VideoLAN", 148, 320),
 ];
-let configured = !location.search.includes("setup");
+let configured = !location.search.includes("setup") && !location.search.includes("offline");
 // 地址后加 ?empty：仓库是空的，用来看欢迎页
 if (location.search.includes("empty")) {
   lib.software = [];
@@ -371,9 +372,22 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
     case "get_status":
     case "set_repo_root": {
       if (command === "set_repo_root") configured = true;
-      const status: Status = { configured, repoRoot: configured ? ROOT : null, recovered: null, version: "0.1.0", arch: "arm64", selftest: null };
+      // ?offline：上次的仓库在 NAS 上、这会儿没连上
+      const offline = !configured && location.search.includes("offline");
+      const status: Status = {
+        configured,
+        repoRoot: configured ? ROOT : null,
+        recovered: null,
+        lastRoot: offline ? "/Volumes/NAS/Installers" : null,
+        openError: offline ? "missing" : null,
+        version: "0.1.0",
+        arch: "arm64",
+        selftest: null,
+      };
       return status;
     }
+    case "refresh_library":
+      return null;
     case "get_library":
       return snapshot();
     case "import_paths":

@@ -14,10 +14,14 @@ use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 /// 扫描文件夹时最多往下走几层。
 const MAX_SCAN_DEPTH: usize = 6;
+/// 导入时每新登记这么多个文件，或者离上次保存过了这么久，就先存一次索引。
+const SAVE_EVERY_FILES: usize = 20;
+const SAVE_EVERY: Duration = Duration::from_secs(30);
 
 /// 导入时手动指定的信息，覆盖从文件名识别的结果。
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -86,6 +90,8 @@ impl Repo {
             .collect();
 
         let mut report = ImportReport::default();
+        // 导入大批文件时分批保存：中途崩溃或断电，已经复制进仓库的文件大多也已登记
+        let (mut saved, mut last_save) = (0, Instant::now());
         for (i, file) in files.iter().enumerate() {
             let label = file.file_name().unwrap_or_default().to_string_lossy().to_string();
             on_progress(Progress { phase: "import".into(), current: i + 1, total, file: label });
@@ -110,8 +116,12 @@ impl Repo {
                 }
             };
             report.items.push(item);
+            if report.imported > saved && (report.imported - saved >= SAVE_EVERY_FILES || last_save.elapsed() >= SAVE_EVERY) {
+                self.save()?;
+                (saved, last_save) = (report.imported, Instant::now());
+            }
         }
-        if report.imported > 0 {
+        if report.imported > saved {
             self.save()?;
         }
         on_progress(Progress { phase: "done".into(), current: total, total, file: String::new() });

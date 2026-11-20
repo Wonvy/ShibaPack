@@ -167,6 +167,9 @@ export interface Status {
   repoRoot: string | null;
   /** 启动时索引损坏并做了恢复：所用的备份文件名；空字符串表示没有可用备份。 */
   recovered: string | null;
+  /** 上次用的仓库没打开时：它的路径，和原因（`missing` 表示文件夹不在，否则是错误代码）。 */
+  lastRoot?: string | null;
+  openError?: string | null;
   version: string;
   /** 这台电脑的处理器架构：x64 或 arm64。 */
   arch: string;

@@ -26,6 +26,9 @@ use tauri_plugin_opener::OpenerExt;
 
 struct AppState {
     repo: Mutex<Option<Repo>>,
+    /// 启动时上次用的仓库没打开：（仓库路径，原因）。原因是 `missing`（文件夹不在，比如 NAS 没连上）
+    /// 或者打开时的错误。选好仓库后清掉。
+    open_failure: Mutex<Option<(String, String)>>,
     /// 仓库之外唯一的文件：记录仓库根目录在哪。
     config_file: PathBuf,
     /// 已安装软件的图标缓存。只和这台电脑有关，所以放在系统的缓存目录而不是仓库里。
@@ -57,6 +60,9 @@ struct Status {
     repo_root: Option<String>,
     /// 启动时索引损坏并做了恢复：恢复所用的备份文件名，空字符串表示没有可用备份。
     recovered: Option<String>,
+    /// 上次用的仓库没打开时，它的路径和原因（见 `AppState::open_failure`）。
+    last_root: Option<String>,
+    open_error: Option<String>,
     version: String,
     /// 这台电脑的处理器架构：x64 或 arm64。用来挑适合本机的安装包。
     arch: String,
@@ -118,10 +124,11 @@ struct ImportResult {
 
 type CmdResult<T> = Result<T, String>;
 
+/// 在仓库上做一件事。先读入别处对索引的改动；失败时内存里的索引退回原样（见 `Repo::transact`）。
 fn with_repo<T>(state: &State<AppState>, run: impl FnOnce(&mut Repo) -> shibapack_core::Result<T>) -> CmdResult<T> {
     let mut guard = state.repo.lock().map_err(|_| "internal".to_string())?;
     let repo = guard.as_mut().ok_or_else(|| "not_configured".to_string())?;
-    run(repo).map_err(|e| e.to_string())
+    repo.transact(run).map_err(|e| e.to_string())
 }
 
 /// 做一次修改，然后把修改后的索引交回前端。
@@ -135,10 +142,13 @@ fn mutate(state: &State<AppState>, run: impl FnOnce(&mut Repo) -> shibapack_core
 fn status_of(state: &State<AppState>) -> Status {
     let guard = state.repo.lock().ok();
     let repo = guard.as_ref().and_then(|g| g.as_ref());
+    let failure = state.open_failure.lock().ok().and_then(|f| f.clone());
     Status {
         configured: repo.is_some(),
         repo_root: repo.map(|r| r.root().to_string_lossy().to_string()),
         recovered: repo.and_then(|r| r.recovered.clone()),
+        last_root: failure.as_ref().map(|(root, _)| root.clone()),
+        open_error: failure.map(|(_, reason)| reason),
         version: state.version.clone(),
         arch: match std::env::consts::ARCH {
             "x86_64" => "x64",
@@ -186,6 +196,9 @@ fn set_repo_root(app: AppHandle, state: State<AppState>, path: String) -> CmdRes
     let json = serde_json::to_vec_pretty(&bootstrap).map_err(|e| e.to_string())?;
     fs::write(&state.config_file, json).map_err(|e| e.to_string())?;
     *state.repo.lock().map_err(|_| "internal".to_string())? = Some(repo);
+    if let Ok(mut failure) = state.open_failure.lock() {
+        *failure = None;
+    }
     if let Ok(mut tried) = state.icon_tried.lock() {
         tried.clear();
     }
@@ -195,6 +208,15 @@ fn set_repo_root(app: AppHandle, state: State<AppState>, path: String) -> CmdRes
 #[tauri::command(async)]
 fn get_library(state: State<AppState>) -> CmdResult<Library> {
     with_repo(&state, |repo| Ok(repo.lib.clone()))
+}
+
+/// 窗口回到前台时调用：索引被别处改过（另一台电脑、手动编辑）就重新读入并交回前端，没改过返回 null。
+#[tauri::command(async)]
+fn refresh_library(state: State<AppState>) -> CmdResult<Option<Library>> {
+    let mut guard = state.repo.lock().map_err(|_| "internal".to_string())?;
+    let repo = guard.as_mut().ok_or_else(|| "not_configured".to_string())?;
+    let changed = repo.reload_if_changed().map_err(|e| e.to_string())?;
+    Ok(changed.then(|| repo.lib.clone()))
 }
 
 /// 导入文件或文件夹。进度通过 `import://progress` 事件发给前端。
@@ -667,7 +689,20 @@ fn export_lang_pack(dest: String, pack: serde_json::Map<String, serde_json::Valu
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    // 同一台电脑上只开一个 ShibaPack：两个窗口各存各的索引，会互相盖掉对方的改动。
+    // 再打开一次时只把已有的窗口叫到前面。用 SHIBAPACK_CONFIG 换了引导文件（开发、自检）时不限制
+    #[cfg(desktop)]
+    if std::env::var_os("SHIBAPACK_CONFIG").is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }));
+    }
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         // 应用自己的在线更新：检查、下载、验证签名、安装；装完用 process 插件重启
@@ -686,18 +721,25 @@ pub fn run() {
             };
             let _ = app.asset_protocol_scope().allow_directory(&icon_cache, true);
 
-            // 上次用的仓库还在就直接打开；不在了（比如移动硬盘没插）就回到引导页
-            let repo = fs::read(&config_file)
+            // 上次用的仓库还在就直接打开；不在了（比如移动硬盘没插）或打不开，就回到引导页并说明原因
+            let last_root = fs::read(&config_file)
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Bootstrap>(&bytes).ok())
-                .and_then(|bootstrap| bootstrap.repo_root)
-                .filter(|root| Path::new(root).is_dir())
-                .and_then(|root| Repo::open(Path::new(&root)).ok());
+                .and_then(|bootstrap| bootstrap.repo_root);
+            let (repo, open_failure) = match last_root {
+                None => (None, None),
+                Some(root) if !Path::new(&root).is_dir() => (None, Some((root, "missing".to_string()))),
+                Some(root) => match Repo::open(Path::new(&root)) {
+                    Ok(repo) => (Some(repo), None),
+                    Err(err) => (None, Some((root, err.to_string()))),
+                },
+            };
             if let Some(repo) = &repo {
                 allow_repo_icons(app.handle(), repo);
             }
             app.manage(AppState {
                 repo: Mutex::new(repo),
+                open_failure: Mutex::new(open_failure),
                 config_file,
                 icon_cache,
                 installed: Mutex::new(Vec::new()),
@@ -713,6 +755,7 @@ pub fn run() {
             get_status,
             set_repo_root,
             get_library,
+            refresh_library,
             import_paths,
             update_software,
             update_version,

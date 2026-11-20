@@ -1,9 +1,9 @@
 // 首次启动的引导页、设置对话框。
 
-import { FolderOpen } from "lucide-react";
+import { FolderOpen, TriangleAlert } from "lucide-react";
 import { api, pickFolder, pickJsonFile, pickSavePath } from "../lib/api";
-import { effectivePack, languages } from "../lib/i18n";
-import { useApp, useT } from "../lib/store";
+import { effectivePack, errorText, languages } from "../lib/i18n";
+import { useApp, useLanguage, useT } from "../lib/store";
 import { ACCENTS, ACCENT_NAMES } from "../lib/theme";
 import { checkForUpdate, startUpdate } from "../lib/updater";
 import type { Storage, Theme } from "../lib/types";
@@ -13,7 +13,10 @@ import { Button, Modal, Segmented, Select, Switch, cx } from "./ui";
 /** 还没选仓库文件夹时显示。选好之前别的界面都不出现。 */
 export function SetupGuide() {
   const t = useT();
+  const language = useLanguage();
   const chooseRepo = useApp((state) => state.chooseRepo);
+  const lastRoot = useApp((state) => state.status?.lastRoot);
+  const openError = useApp((state) => state.status?.openError);
   const choose = async () => {
     const folder = await pickFolder();
     if (folder) await chooseRepo(folder);
@@ -22,6 +25,22 @@ export function SetupGuide() {
     <div className="flex min-h-0 flex-1 items-center justify-center p-8">
       <div className="flex w-full max-w-[420px] flex-col items-center text-center">
         <Logo size={56} />
+        {lastRoot && openError && (
+          // 上次的仓库没打开（NAS 没连上、索引是新版本写的……）：说清楚，而不是像第一次用一样
+          <div className="mt-5 w-full rounded-lg border border-line bg-panel p-3 text-left">
+            <div className="flex items-center gap-2 text-[13px] font-medium text-warning">
+              <TriangleAlert size={15} strokeWidth={1.75} aria-hidden className="shrink-0" />
+              {t("setup.failedTitle")}
+            </div>
+            <p className="mt-1.5 mb-0 text-[12px] break-all text-fg-2">{lastRoot}</p>
+            <p className="mt-1.5 mb-0 text-[12px] leading-relaxed text-fg-2">
+              {openError === "missing" ? t("setup.missing") : errorText(language, openError)}
+            </p>
+            <Button className="mt-2.5" onClick={() => void chooseRepo(lastRoot)}>
+              {t("setup.retry")}
+            </Button>
+          </div>
+        )}
         <h1 className="mt-5 mb-0 text-[17px] font-semibold">{t("setup.title")}</h1>
         <p className="mt-2 mb-0 text-[13px] leading-relaxed text-fg-2">{t("setup.body")}</p>
         <Button variant="primary" className="mt-6 h-8 px-3.5" onClick={() => void choose()}>

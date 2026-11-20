@@ -136,6 +136,8 @@ interface AppState {
   /** 执行一个不返回索引的操作，失败时弹出提示。 */
   attempt: <T>(task: () => Promise<T>) => Promise<T | undefined>;
   chooseRepo: (path: string) => Promise<void>;
+  /** 窗口回到前台时调用：索引被别处改过就换上新的。 */
+  refreshLibrary: () => Promise<void>;
   /** `hint.name` 给了时，所有文件都归到这个软件下（拖到某个软件上导入）。 */
   importPaths: (paths: string[], mode?: Storage, hint?: ImportHint) => Promise<void>;
   saveSettings: (patch: Partial<Settings>) => Promise<void>;
@@ -434,6 +436,16 @@ export const useApp = create<AppState>()((set, get) => {
       await get().apply(() => api.getLibrary());
       if (get().installed === null) void get().loadInstalled();
       void api.listLangPacks().then(get().useLangPacks, () => {});
+    },
+
+    refreshLibrary: async () => {
+      if (!get().library) return;
+      try {
+        const library = await api.refreshLibrary();
+        if (library) adopt(library);
+      } catch (error) {
+        get().notify(errorText(language(), error), "error");
+      }
     },
 
     importPaths: async (paths, mode, hint) => {

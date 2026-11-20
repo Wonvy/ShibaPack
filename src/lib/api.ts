@@ -51,6 +51,8 @@ export const api = {
   getStatus: () => call<Status>("get_status"),
   setRepoRoot: (path: string) => call<Status>("set_repo_root", { path }),
   getLibrary: () => call<Library>("get_library"),
+  /** 索引被别处改过时返回新的索引，没改过返回 null。 */
+  refreshLibrary: () => call<Library | null>("refresh_library"),
   importPaths: (paths: string[], mode: Storage, hint?: ImportHint) =>
     call<ImportResult>("import_paths", { paths, mode, hint: hint ?? null }),
   updateSoftware: (id: string, edit: SoftwareEdit) => call<Library>("update_software", { id, edit }),

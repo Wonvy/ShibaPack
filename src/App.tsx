@@ -65,12 +65,14 @@ export default function App() {
     return () => void off.then((stop) => stop());
   }, []);
 
-  // 窗口回到前台时重新列一遍已安装的软件：在外面装完、卸完回来，本机版本马上对得上。
-  // 至少隔 15 秒一次，免得来回切窗口时反复扫描
+  // 窗口回到前台时：索引被别处改过（另一台电脑、手动编辑）就换上新的；
+  // 再重新列一遍已安装的软件，在外面装完、卸完回来，本机版本马上对得上。
+  // 已安装的软件至少隔 15 秒才扫一次，免得来回切窗口时反复扫描
   useEffect(() => {
     const rescan = () => {
       if (document.visibilityState === "hidden") return;
       const app = useApp.getState();
+      void app.refreshLibrary();
       if (app.installed === null || app.installedLoading || Date.now() - app.installedScannedAt < 15_000) return;
       void app.loadInstalled();
     };

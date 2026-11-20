@@ -28,11 +28,19 @@ type Request =
 const useDialog = create<{ request: Request | null }>(() => ({ request: null }));
 
 export function confirm(options: ConfirmOptions): Promise<{ ok: boolean; checked: boolean }> {
-  return new Promise((resolve) => useDialog.setState({ request: { kind: "confirm", resolve, ...options } }));
+  return new Promise((resolve) => show({ kind: "confirm", resolve, ...options }));
 }
 
 export function prompt(options: PromptOptions): Promise<string | null> {
-  return new Promise((resolve) => useDialog.setState({ request: { kind: "prompt", resolve, ...options } }));
+  return new Promise((resolve) => show({ kind: "prompt", resolve, ...options }));
+}
+
+/** 换上新的对话框。前一个还开着的话当作取消，等它结果的地方不会一直挂着。 */
+function show(next: Request) {
+  const previous = useDialog.getState().request;
+  if (previous?.kind === "confirm") previous.resolve({ ok: false, checked: false });
+  if (previous?.kind === "prompt") previous.resolve(null);
+  useDialog.setState({ request: next });
 }
 
 export function DialogHost() {
@@ -96,10 +104,11 @@ export function DialogHost() {
       width={400}
       footer={
         <>
-          <Button variant="ghost" onClick={() => finish(false)}>
+          {/* 删除这类危险操作默认停在“取消”上：按 Delete 再顺手按回车，不会直接删掉 */}
+          <Button variant="ghost" onClick={() => finish(false)} autoFocus={request.danger}>
             {t("common.cancel")}
           </Button>
-          <Button variant={request.danger ? "danger" : "primary"} onClick={() => finish(true)} autoFocus>
+          <Button variant={request.danger ? "danger" : "primary"} onClick={() => finish(true)} autoFocus={!request.danger}>
             {request.confirmLabel ?? t("common.confirm")}
           </Button>
         </>

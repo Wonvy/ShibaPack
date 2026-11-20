@@ -787,8 +787,8 @@ pub fn noise_place(path: &str) -> bool {
         "/bam/",
         "/classes/local settings/",
         "/software/microsoft/windows nt/currentversion/winlogon/",
+        // ShibaPack 自己的仓库数据。不要写成 "/shibapack/"：那样连用户自己叫 ShibaPack 的文件夹也算噪音了
         "/.shibapack/",
-        "/shibapack/",
     ];
     PARTS.iter().any(|s| p.contains(s))
 }
@@ -1066,6 +1066,9 @@ mod tests {
         assert!(is_noise("/Users/me/Library/Application Support/Foo/.DS_Store"));
         assert!(is_noise("/Users/me/Library/Application Support/Code/DawnGraphiteCache/data_1"));
         assert!(!is_noise("/Applications/Foo.app"));
+        // 只是文件夹名里有 ShibaPack 的不算（用户的项目、CI 的检出目录）
+        assert!(!is_noise("/Users/me/Desktop/ShibaPack/build/app.dat"));
+        assert!(is_noise("/Volumes/NAS/Installers/.shibapack/software.json"));
         // 安装程序自己的临时文件：按位置不算噪音（实时监听记临时文件时用），按文件名算
         assert!(!noise_place("/Users/me/Library/Application Support/Foo/setup.tmp"));
         assert!(is_noise("/Users/me/Library/Application Support/Foo/setup.tmp"));

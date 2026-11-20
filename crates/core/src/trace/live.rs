@@ -226,13 +226,17 @@ mod tests {
 
     #[test]
     fn counts_files_and_remembers_temporary_ones() {
-        let dir = tempfile::tempdir().unwrap();
-        // macOS 的临时文件夹在 /var 下，是 /private/var 的链接；FSEvents 报的是真实路径
+        // 不放在系统临时文件夹里：Linux 上是 /tmp，整个算噪音。放在仓库的 target 下面
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/trace-tests");
+        fs::create_dir_all(&base).unwrap();
+        let dir = tempfile::tempdir_in(&base).unwrap();
+        // macOS 上临时路径可能经过链接；FSEvents 报的是真实路径
         let root = dir.path().canonicalize().unwrap();
+        // 先建好文件夹再开始监听：Linux 的 inotify 要等新文件夹建好才给它加上监听，紧接着写进去的文件会漏掉
+        fs::create_dir_all(root.join("Foo")).unwrap();
         let scope = Scope { roots: vec![Root { path: root.clone(), depth: 4 }], registry: vec![], exclude: vec![] };
         let watch = LiveWatch::start(&scope).expect("watch");
         std::thread::sleep(Duration::from_millis(300));
-        fs::create_dir_all(root.join("Foo")).unwrap();
         fs::write(root.join("Foo/keep.bin"), "1").unwrap();
         fs::write(root.join("Foo/temp.tmp"), "2").unwrap();
         std::thread::sleep(Duration::from_millis(300));

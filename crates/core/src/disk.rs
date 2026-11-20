@@ -436,6 +436,47 @@ fn build(node: &Node, path: Vec<String>, depth: usize, threshold: u64) -> ViewNo
     }
 }
 
+/// `path` 那个文件夹（连同下面所有层）里最大的 `limit` 个文件，从大到小。
+/// 返回每个文件的路径段（相对扫描根）和大小。小于 1 MB 的文件扫描时没单独记，不会出现在这里。
+pub fn largest_files(tree: &Node, path: &[String], limit: usize) -> Option<Vec<(Vec<String>, u64)>> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    let start = find(tree, path)?;
+    // 小顶堆只留最大的 limit 个：比堆里最小的还小就不用看了
+    let mut heap: BinaryHeap<Reverse<(u64, Vec<String>)>> = BinaryHeap::new();
+    let mut stack: Vec<(&Node, Vec<String>)> = vec![(start, path.to_vec())];
+    while let Some((node, at)) = stack.pop() {
+        for child in &node.children {
+            match child.kind {
+                NodeKind::File => {
+                    if limit == 0 || (heap.len() >= limit && heap.peek().is_some_and(|Reverse((min, _))| child.size <= *min)) {
+                        continue;
+                    }
+                    let mut file = at.clone();
+                    file.push(child.name.clone());
+                    heap.push(Reverse((child.size, file)));
+                    if heap.len() > limit {
+                        heap.pop();
+                    }
+                }
+                NodeKind::Dir => {
+                    // 整个文件夹都比堆里最小的小，里面不会有更大的文件
+                    if heap.len() >= limit && heap.peek().is_some_and(|Reverse((min, _))| child.size <= *min) {
+                        continue;
+                    }
+                    let mut dir = at.clone();
+                    dir.push(child.name.clone());
+                    stack.push((child, dir));
+                }
+                NodeKind::Small | NodeKind::Other => {}
+            }
+        }
+    }
+    let mut out: Vec<(Vec<String>, u64)> = heap.into_iter().map(|Reverse((size, path))| (path, size)).collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    Some(out)
+}
+
 /// 删掉（移到回收站以后）树上的一项，把上面每一层的大小和文件数减掉。返回去掉的那一项。
 pub fn remove(tree: &mut Node, path: &[String]) -> Option<u64> {
     let (first, rest) = path.split_first()?;
@@ -548,6 +589,31 @@ pub fn protected(path: &Path, root: &Path, repo: Option<&Path>) -> Option<&'stat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn largest_files_across_levels() {
+        let file = |name: &str, size: u64| Node { name: name.into(), kind: NodeKind::File, size, files: 1, children: vec![] };
+        let dir = |name: &str, children: Vec<Node>| Node {
+            name: name.into(),
+            kind: NodeKind::Dir,
+            size: children.iter().map(|c| c.size).sum(),
+            files: children.iter().map(|c| c.files).sum(),
+            children,
+        };
+        let tree = dir("root", vec![
+            dir("a", vec![file("big.iso", 900), dir("deep", vec![file("huge.vmdk", 2000), file("tiny", 5)])]),
+            dir("b", vec![file("mid.mp4", 500), Node { name: String::new(), kind: NodeKind::Small, size: 3000, files: 99, children: vec![] }]),
+            file("top.dmg", 700),
+        ]);
+        let top = largest_files(&tree, &[], 3).unwrap();
+        let names: Vec<String> = top.iter().map(|(p, s)| format!("{}={s}", p.join("/"))).collect();
+        assert_eq!(names, vec!["a/deep/huge.vmdk=2000", "a/big.iso=900", "top.dmg=700"]);
+        // 只看某个文件夹里的
+        let in_a = largest_files(&tree, &["a".into()], 10).unwrap();
+        assert_eq!(in_a.len(), 3);
+        assert_eq!(in_a[0].0, vec!["a", "deep", "huge.vmdk"]);
+        assert!(largest_files(&tree, &["nope".into()], 10).is_none());
+    }
 
     fn write(path: &Path, bytes: usize) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

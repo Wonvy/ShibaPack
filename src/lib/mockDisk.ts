@@ -1,6 +1,6 @@
 // 浏览器预览里的“磁盘分析”：一棵假的文件夹树，扫描时假装走一会儿。
 
-import type { DiskLocation, DiskNode, DiskProgress, DiskSummary } from "./types";
+import type { DiskLocation, DiskNode, DiskProgress, DiskSummary, LargeFile } from "./types";
 
 const GB = 1024 ** 3;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -41,6 +41,11 @@ const TREE: Fake = dir("demo", [
     file("Xcode_16.dmg", 7.9 * GB),
     file("ubuntu-24.04-desktop-amd64.iso", 5.7 * GB),
     file("Figma-124.dmg", 0.4 * GB),
+    file("Docker.dmg", 0.6 * GB),
+    file("node-v22.pkg", 0.08 * GB),
+    file("资料备份.zip", 3.4 * GB),
+    file("播客合集.mp3", 0.3 * GB),
+    file("设计稿.psd", 1.1 * GB),
     file("会议录像-2026-10.mp4", 2.3 * GB),
     leaf("旧照片备份", 9.6 * GB, 4200),
     small(0.6 * GB, 830),
@@ -184,6 +189,19 @@ export async function mockDiskCall(command: string, args: Record<string, unknown
     case "disk_cancel":
       cancelled = true;
       return null;
+    case "disk_largest": {
+      const start = find(args.path as string[]);
+      if (!start) throw "not_found";
+      const out: LargeFile[] = [];
+      const walk = (node: Fake, at: string[]) => {
+        for (const child of node.children ?? []) {
+          if (child.kind === "file") out.push({ path: [...at, child.name], name: child.name, size: child.size ?? 0, folder: `~/${at.join("/")}`, modifiedMs: Date.now() - (child.size ?? 0) / 4000 });
+          else if (child.children) walk(child, [...at, child.name]);
+        }
+      };
+      walk(start, args.path as string[]);
+      return out.sort((a, b) => b.size - a.size).slice(0, args.limit as number);
+    }
     case "disk_view": {
       const node = find(args.path as string[]);
       if (!node) throw "not_found";

@@ -39,6 +39,7 @@ import type {
   DiskNode,
   DiskProgress,
   DiskSummary,
+  LargeFile,
   SystemSample,
   Library,
   Progress,
@@ -149,6 +150,8 @@ export const api = {
   /** 扫一个文件夹或一块盘（只读）。进度见 `onDiskProgress`；停下了返回 `cancelled`。 */
   diskScan: (root: string) => call<DiskSummary>("disk_scan", { root }),
   diskCancel: () => call<void>("disk_cancel"),
+  /** `path` 那个文件夹（连同下面所有层）里最大的 `limit` 个文件，从大到小。小于 1 MB 的不列。 */
+  diskLargest: (path: string[], limit: number) => call<LargeFile[]>("disk_largest", { path, limit }),
   /** 安装监控：先拍基线（进度见 `onTraceProgress`），拍完运行安装包。取消了返回 `cancelled`。 */
   traceStart: (ref: FileRef, deep: boolean) => call<void>("trace_start", { ...ref, deep }),
   /** 正在监控的安装，没有时是 null。 */

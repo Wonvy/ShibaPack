@@ -1549,6 +1549,47 @@ async fn disk_view(app: AppHandle, path: Vec<String>, depth: usize, min_ratio: f
     .await
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LargeFile {
+    /// 相对扫描根的路径段，定位、移到回收站都按它。
+    path: Vec<String>,
+    name: String,
+    size: u64,
+    /// 所在文件夹（用户文件夹写成 ~）。
+    folder: String,
+    /// 修改时间，从 1970 年起的毫秒（读不到时是 null）。
+    modified_ms: Option<u64>,
+}
+
+/// 磁盘分析：`path` 那个文件夹里（连同下面所有层）最大的 `limit` 个文件，从大到小。只从扫完的树里取，不重新扫。
+#[tauri::command]
+async fn disk_largest(app: AppHandle, path: Vec<String>, limit: usize) -> CmdResult<Vec<LargeFile>> {
+    blocking(app, move |_app, state| {
+        let (root, found) = {
+            let slot = state.disk.lock().map_err(|_| "internal".to_string())?;
+            let scan = slot.as_ref().ok_or_else(|| "not_found".to_string())?;
+            let found = shibapack_core::disk::largest_files(&scan.tree, &path, limit.min(1000)).ok_or_else(|| "not_found".to_string())?;
+            (scan.root.clone(), found)
+        };
+        let home = if cfg!(windows) { std::env::var_os("USERPROFILE") } else { std::env::var_os("HOME") }.map(PathBuf::from);
+        Ok(found
+            .into_iter()
+            .map(|(path, size)| {
+                let full = shibapack_core::disk::full_path(&root, &path);
+                let modified_ms = fs::metadata(&full)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as u64);
+                let folder = full.parent().map(|p| shibapack_core::disk::display_path(p, home.as_deref())).unwrap_or_default();
+                LargeFile { name: path.last().cloned().unwrap_or_default(), path, size, folder, modified_ms }
+            })
+            .collect())
+    })
+    .await
+}
+
 /// 磁盘分析里文件夹（或大文件）是做什么的。`mode` 是 `cached`（只看缓存，不问 AI）或 `ask`（没记下的问 AI）。
 /// 缓存单独放在仓库的 `.shibapack/cache/ai-folders.json`。返回：路径段用 / 连起来 → 解释。
 #[tauri::command]
@@ -2897,6 +2938,7 @@ pub fn run() {
             disk_locations,
             disk_scan,
             disk_cancel,
+            disk_largest,
             trace_start,
             trace_status,
             trace_finish,

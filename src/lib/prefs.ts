@@ -9,6 +9,8 @@ export const SIDEBAR_RAIL = 48;
 /** 顶栏的高度：拖动顶栏下沿可以调，双击回到默认。 */
 export const TOPBAR = { min: 40, max: 72, initial: 52 };
 export const DETAIL = { min: 280, max: 560, initial: 380 };
+/** 磁盘分析右边列表的宽度：拖动中间的分隔线调，双击回到默认。 */
+export const DISK_LIST = { min: 180, max: 520, initial: 240 };
 
 export type SortKey = "name" | "platform" | "size" | "added";
 export type PackageView = "list" | "grid" | "folder";
@@ -69,7 +71,12 @@ interface Prefs {
   /** 清理页里手动展开或收起过的类别（类别 → 展开没有）。没动过的按默认：有勾选的展开，没有的收起。 */
   cleanupOpen: Record<string, boolean>;
   /** 磁盘分析用扇形图还是矩形图。 */
-  diskChart: "sunburst" | "treemap";
+  /** list：当前文件夹里最大的文件，不分层级。 */
+  diskChart: "sunburst" | "treemap" | "list";
+  /** 磁盘分析右边列表的宽度。 */
+  diskListWidth: number;
+  /** 主页“最近安装”用列表还是图标。 */
+  homeRecentView: "list" | "icons";
   /** 安装监控用深度范围。 */
   traceDeep: boolean;
   /** 点“安装”时默认勾上“监控这次安装”。 */
@@ -112,6 +119,8 @@ export const usePrefs = create<Prefs>()(
       cleanupChecked: {},
       cleanupOpen: {},
       diskChart: "sunburst",
+      diskListWidth: DISK_LIST.initial,
+      homeRecentView: "list",
       traceDeep: false,
       traceInstalls: false,
       set: (patch) =>
@@ -122,6 +131,7 @@ export const usePrefs = create<Prefs>()(
             topBarHeight: Math.round(clamp(patch.topBarHeight ?? state.topBarHeight, TOPBAR)),
             sidebarWidth: sidebarWidth === null ? null : clamp(sidebarWidth, SIDEBAR),
             detailWidth: clamp(patch.detailWidth ?? state.detailWidth, DETAIL),
+            diskListWidth: Math.round(clamp(patch.diskListWidth ?? state.diskListWidth ?? DISK_LIST.initial, DISK_LIST)),
           };
         }),
       toggleCollapsed: (id) =>

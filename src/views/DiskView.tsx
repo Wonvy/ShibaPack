@@ -8,27 +8,37 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  Disc,
   ExternalLink,
+  File,
+  FileArchive,
+  FileAudio,
+  FileImage,
+  FileVideo,
+  Folder,
   FolderOpen,
   FolderSearch,
   HardDrive,
   House,
   LayoutDashboard,
+  List,
   LoaderCircle,
+  Package,
   RefreshCw,
   Trash2,
   X,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ResizeHandle } from "../components/chrome";
 import { confirm } from "../components/dialogs";
 import { Button, ContextMenu, Dropdown, IconButton, IconSegmented, type MenuEntry, cx } from "../components/ui";
 import { api, isMac, pickFolder } from "../lib/api";
 import { explainable, useDisk, VIEW_DEPTH } from "../lib/disk";
 import { type Key, errorText } from "../lib/i18n";
-import { formatSize } from "../lib/library";
-import { usePrefs } from "../lib/prefs";
+import { formatDate, formatSize } from "../lib/library";
+import { DISK_LIST, usePrefs } from "../lib/prefs";
 import { useAiReady, useApp, useLanguage, useT } from "../lib/store";
-import type { DiskNode } from "../lib/types";
+import type { DiskNode, LargeFile } from "../lib/types";
 
 export function DiskView() {
   const t = useT();
@@ -79,6 +89,7 @@ export function DiskView() {
             options={[
               { value: "sunburst", label: t("disk.sunburst"), icon: <ChartPie size={14} strokeWidth={1.75} /> },
               { value: "treemap", label: t("disk.treemap"), icon: <LayoutDashboard size={14} strokeWidth={1.75} /> },
+              { value: "list", label: t("disk.list"), icon: <List size={14} strokeWidth={1.75} /> },
             ]}
           />
         )}
@@ -173,12 +184,14 @@ function Scanning() {
 }
 
 /** 扫完：上面是路径和合计，左边是图，右边是这一层的列表。 */
-function Result({ chart }: { chart: "sunburst" | "treemap" }) {
+function Result({ chart }: { chart: "sunburst" | "treemap" | "list" }) {
   const { summary, view, path, open } = useDisk();
   const [tip, setTip] = useState<{ node: DiskNode; x: number; y: number } | null>(null);
   const [target, setTarget] = useState<DiskNode | null>(null);
   const colors = useColors(view);
   const menu = useNodeMenu(target ?? view);
+  const listWidth = usePrefs((state) => state.diskListWidth);
+  const setPrefs = usePrefs((state) => state.set);
   const aiReady = useAiReady();
   const lookUp = useDisk((state) => state.lookUp);
   const ask = useDisk((state) => state.ask);
@@ -226,10 +239,20 @@ function Result({ chart }: { chart: "sunburst" | "treemap" }) {
       <ContextMenu items={menu}>
         {/* 右键空白处就是现在这一层；点到色块或列表里的一项时，那一项先把自己记成目标 */}
         <div className="@container flex min-h-0 flex-1" onContextMenuCapture={() => setTarget(null)}>
-          <div className="relative min-w-0 flex-1" onMouseLeave={() => setTip(null)}>
-            {chart === "sunburst" ? <Sunburst view={view} {...handlers} /> : <Treemap view={view} {...handlers} />}
-          </div>
-          <ChildList view={view} {...handlers} />
+          {chart === "list" ? (
+            <LargestFiles view={view} title={[rootName, ...path].pop() ?? rootName} onTarget={setTarget} />
+          ) : (
+            <>
+              <div className="relative min-w-0 flex-1" onMouseLeave={() => setTip(null)}>
+                {chart === "sunburst" ? <Sunburst view={view} {...handlers} /> : <Treemap view={view} {...handlers} />}
+              </div>
+              {/* 中间的分隔线拖动调右边列表的宽度，双击回到默认 */}
+              <div className="hidden @[600px]:flex">
+                <ResizeHandle edge="right" width={listWidth} onResize={(width) => setPrefs({ diskListWidth: width })} onReset={() => setPrefs({ diskListWidth: DISK_LIST.initial })} />
+              </div>
+              <ChildList view={view} width={listWidth} {...handlers} />
+            </>
+          )}
         </div>
       </ContextMenu>
       {tip && <Tooltip node={tip.node} x={tip.x} y={tip.y} total={view.size} ai={aiReady} />}
@@ -274,6 +297,16 @@ function tint(color: string | undefined, percent: number): string {
   return `color-mix(in srgb, ${color ?? GRAY} ${percent}%, var(--bg))`;
 }
 
+/** 鼠标停在某一项上（图表或右边的列表），另一边跟着高亮。没停在任何一项上时是 null。 */
+const setHoverKey = (key: string | null) => {
+  if (useDisk.getState().hover !== key) useDisk.setState({ hover: key });
+};
+
+/** `key` 这一项要不要高亮：就是停着的那项，或者在它里面（停在列表的文件夹上时，扇形图里它外圈的子项也亮）。 */
+function lit(key: string, hover: string | null): boolean {
+  return hover !== null && (key === hover || key.startsWith(`${hover}/`));
+}
+
 function keyOf(node: DiskNode, parent: string[]): string {
   return node.path.length > 0 ? node.path.join("/") : `${parent.join("/")}/:${node.kind}`;
 }
@@ -309,7 +342,7 @@ function Sunburst({ view, colors, onHover, onOpen, onTarget }: { view: DiskNode 
   const { width, height } = useSize(frame);
   const path = useDisk((state) => state.path);
   const open = useDisk((state) => state.open);
-  const [hovered, setHovered] = useState<DiskNode | null>(null);
+  const hover = useDisk((state) => state.hover);
 
   const arcs = useMemo(() => {
     const out: Arc[] = [];
@@ -331,6 +364,7 @@ function Sunburst({ view, colors, onHover, onOpen, onTarget }: { view: DiskNode 
   const outer = size / 2;
   const inner = outer * 0.3;
   const ring = (outer - inner) / VIEW_DEPTH;
+  const hovered = arcs.find((arc) => arc.key === hover)?.node ?? null;
   const center = hovered ?? view;
 
   return (
@@ -344,13 +378,13 @@ function Sunburst({ view, colors, onHover, onOpen, onTarget }: { view: DiskNode 
               fill={tint(colors.get(arc.key), [86, 70, 56, 44][arc.depth - 1] ?? 40)}
               stroke="var(--bg)"
               strokeWidth={1}
-              className={cx("transition-opacity", hovered && hovered !== arc.node && "opacity-70", arc.node.hasChildren && "cursor-pointer")}
+              className={cx("transition-opacity", hover !== null && !lit(arc.key, hover) && "opacity-60", arc.node.hasChildren && "cursor-pointer")}
               onMouseMove={(event) => {
-                setHovered(arc.node);
+                setHoverKey(arc.key);
                 onHover(arc.node, event);
               }}
               onMouseLeave={() => {
-                setHovered(null);
+                setHoverKey(null);
                 onHover(null);
               }}
               onClick={() => onOpen(arc.node)}
@@ -412,35 +446,22 @@ interface Box {
   y: number;
   w: number;
   h: number;
-  depth: number;
-  /** 文件夹画成带标题的框，里面再放子项。 */
-  frame: boolean;
 }
 
-/** 文件夹框的标题高度、框和里面的子项之间的留白、色块之间的缝。 */
-const HEADER = 22;
-const PAD = 3;
-const GAP = 1;
+/** 色块之间的缝（带圆角，缝稍宽一点才看得出一块一块）。 */
+const GAP = 2;
 
 function Treemap({ view, colors, onHover, onOpen, onTarget }: { view: DiskNode } & ChartHandlers) {
   const label = useLabel();
   const frame = useRef<HTMLDivElement>(null);
   const { width, height } = useSize(frame);
+  const hover = useDisk((state) => state.hover);
 
-  const boxes = useMemo(() => {
-    const out: Box[] = [];
-    const lay = (node: DiskNode, x: number, y: number, w: number, h: number, depth: number) => {
-      const items = node.children.filter((c) => c.size > 0);
-      for (const cell of squarify(items, x, y, w, h)) {
-        const child = cell.item;
-        const key = keyOf(child, node.path);
-        const roomy = child.children.length > 0 && cell.w > 96 && cell.h > 64 && depth < 3;
-        out.push({ node: child, key, x: cell.x, y: cell.y, w: cell.w, h: cell.h, depth, frame: roomy });
-        if (roomy) lay(child, cell.x + PAD, cell.y + HEADER, cell.w - PAD * 2, cell.h - HEADER - PAD, depth + 1);
-      }
-    };
-    if (width > 0 && height > 0) lay(view, 0, 0, width, height, 0);
-    return out;
+  // 只画当前文件夹里的一层，不在方块里再套子方块；点文件夹进去看下一层
+  const boxes = useMemo((): Box[] => {
+    if (width <= 0 || height <= 0) return [];
+    const items = view.children.filter((c) => c.size > 0);
+    return squarify(items, 0, 0, width, height).map((cell) => ({ node: cell.item, key: keyOf(cell.item, view.path), x: cell.x, y: cell.y, w: cell.w, h: cell.h }));
   }, [view, width, height]);
 
   return (
@@ -448,43 +469,47 @@ function Treemap({ view, colors, onHover, onOpen, onTarget }: { view: DiskNode }
       {boxes.map((box) => {
         const base = colors.get(box.key);
         const muted = box.node.kind === "small" || box.node.kind === "other";
-        // 框：很浅的底，标题行写名字和大小；色块：越深的层越浅，文件比文件夹再浅一点
-        const fill = box.frame ? tint(base, 12 + box.depth * 10) : tint(base, muted ? 34 : Math.max(34, 74 - box.depth * 10 - (box.node.kind === "file" ? 12 : 0)));
+        // 字是白的，底色要够深：文件比文件夹浅一点，“其他”和零碎的更浅
+        const fill = tint(base, muted ? 55 : box.node.kind === "file" ? 82 : 94);
         const w = box.w - GAP;
         const h = box.h - GAP;
         const name = w > 48 && h > 22;
-        const size = !box.frame && w > 56 && h > 42;
+        const size = w > 56 && h > 42;
+        // 文件夹在名字左边放一个小文件夹图标，地方够才放
+        const icon = box.node.kind === "dir" && w > 64;
         return (
           <div
             key={box.key}
             className={cx(
-              "absolute overflow-hidden transition-shadow hover:shadow-[inset_0_0_0_1.5px_var(--fg-2)]",
+              // 停着的那块（图上或右边列表里）整块提亮一点，不加轮廓
+              "absolute overflow-hidden rounded-md transition-[filter] duration-150",
+              lit(box.key, hover) && "brightness-110 saturate-[1.15]",
               box.node.hasChildren ? "cursor-pointer" : "cursor-default",
             )}
             style={{ left: box.x, top: box.y, width: w, height: h, background: fill }}
             onMouseMove={(event) => {
               event.stopPropagation();
+              setHoverKey(box.key);
               onHover(box.node, event);
             }}
-            onMouseLeave={() => onHover(null)}
+            onMouseLeave={() => {
+              setHoverKey(null);
+              onHover(null);
+            }}
             onClick={(event) => {
               event.stopPropagation();
               onOpen(box.node);
             }}
             onContextMenu={() => onTarget(box.node)}
           >
-            {box.frame ? (
-              <div className="pointer-events-none flex h-[22px] items-center gap-1.5 px-2 text-[12px] leading-none">
-                <span className="truncate font-semibold text-fg">{label(box.node)}</span>
-                <span className="tabular shrink-0 text-fg-3">{formatSize(box.node.size)}</span>
-              </div>
-            ) : (
-              name && (
-                <div className="pointer-events-none px-2 pt-1.5 text-[12px] leading-[16px]">
-                  <div className={cx("truncate font-medium", muted ? "text-fg-2" : "text-fg")}>{label(box.node)}</div>
-                  {size && <div className="tabular truncate text-fg-2">{formatSize(box.node.size)}</div>}
+            {name && (
+              <div className="pointer-events-none flex h-full flex-col items-center justify-center px-2 text-center text-[12px] leading-[16px] text-white [text-shadow:0_1px_2px_rgb(0_0_0/0.25)]">
+                <div className="flex max-w-full items-center gap-1">
+                  {icon && <Folder size={13} strokeWidth={2} aria-hidden className="shrink-0 drop-shadow-[0_1px_2px_rgb(0_0_0/0.25)]" />}
+                  <span className="min-w-0 truncate font-medium">{label(box.node)}</span>
                 </div>
-              )
+                {size && <div className="tabular max-w-full truncate text-white/85">{formatSize(box.node.size)}</div>}
+              </div>
             )}
           </div>
         );
@@ -537,10 +562,11 @@ function worstRatio(row: { area: number }[], short: number): number {
 // ── 列表、提示、右键菜单 ────────────────────────────────────
 
 /** 右边：这一层的每一项，颜色和图上对得上。 */
-function ChildList({ view, colors, onOpen, onTarget }: { view: DiskNode } & ChartHandlers) {
+function ChildList({ view, width, colors, onOpen, onTarget }: { view: DiskNode; width: number } & ChartHandlers) {
   const label = useLabel();
+  const hover = useDisk((state) => state.hover);
   return (
-    <div className="hidden w-[240px] shrink-0 flex-col overflow-y-auto border-l border-line p-1.5 @[600px]:flex">
+    <div className="hidden shrink-0 flex-col overflow-y-auto p-1.5 @[600px]:flex" style={{ width }}>
       {view.children.map((child) => {
         const key = keyOf(child, view.path);
         const share = view.size > 0 ? child.size / view.size : 0;
@@ -550,7 +576,9 @@ function ChildList({ view, colors, onOpen, onTarget }: { view: DiskNode } & Char
               type="button"
               onClick={() => onOpen(child)}
               onContextMenu={() => onTarget(child)}
-              className={cx("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-hover", !child.hasChildren && "cursor-default")}
+              onMouseEnter={() => setHoverKey(key)}
+              onMouseLeave={() => setHoverKey(null)}
+              className={cx("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left", hover !== null && (hover === key || hover.startsWith(`${key}/`)) && "bg-hover", !child.hasChildren && "cursor-default")}
             >
               <span className="size-2.5 shrink-0" style={{ background: tint(colors.get(key), 86) }} />
               <span className="min-w-0 flex-1">
@@ -563,6 +591,122 @@ function ChildList({ view, colors, onOpen, onTarget }: { view: DiskNode } & Char
                 </span>
               </span>
             </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── 最大的文件 ─────────────────────────────────────────────────
+
+/** 一次列多少个。 */
+const LARGEST = 200;
+
+type FileType = "video" | "audio" | "image" | "archive" | "installer" | "diskImage" | "vm" | "other";
+
+const EXTENSIONS: Record<Exclude<FileType, "other">, string[]> = {
+  video: ["mp4", "mov", "mkv", "avi", "m4v", "webm", "wmv", "flv", "mts"],
+  audio: ["mp3", "m4a", "wav", "flac", "aac", "aiff", "ogg"],
+  image: ["jpg", "jpeg", "png", "heic", "cr2", "nef", "arw", "psd", "tif", "tiff", "dng"],
+  archive: ["zip", "rar", "7z", "tar", "gz", "tgz", "xz", "bz2", "zst"],
+  installer: ["pkg", "mpkg", "exe", "msi", "msix", "appx", "deb", "rpm", "appimage", "apk", "xip"],
+  diskImage: ["dmg", "iso", "img", "sparseimage", "sparsebundle"],
+  // .raw 多半是虚拟机磁盘（Docker 的 Docker.raw）
+  vm: ["vmdk", "vdi", "vhd", "vhdx", "qcow2", "hdd", "raw", "utm", "ova"],
+};
+
+function fileType(name: string): FileType {
+  const ext = name.includes(".") ? name.split(".").pop()!.toLowerCase() : "";
+  for (const [type, list] of Object.entries(EXTENSIONS)) if (list.includes(ext)) return type as FileType;
+  return "other";
+}
+
+const TYPE_ICON: Record<FileType, typeof File> = {
+  video: FileVideo,
+  audio: FileAudio,
+  image: FileImage,
+  archive: FileArchive,
+  installer: Package,
+  diskImage: Disc,
+  vm: HardDrive,
+  other: File,
+};
+
+/** 当前文件夹（连同下面所有层）里最大的文件，不分层级排在一起。右键和图上的一样：打开、定位、拷贝路径、移到废纸篓。 */
+function LargestFiles({ view, title, onTarget }: { view: DiskNode; title: string; onTarget: (node: DiskNode | null) => void }) {
+  const t = useT();
+  const language = useLanguage();
+  const [files, setFiles] = useState<LargeFile[] | null>(null);
+  const [error, setError] = useState<unknown>(null);
+
+  // 打开别的文件夹、删了东西以后（view 换了）重新取
+  useEffect(() => {
+    let alive = true;
+    setError(null);
+    api.diskLargest(view.path, LARGEST).then(
+      (list) => alive && setFiles(list),
+      (reason) => alive && setError(reason),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [view]);
+
+  if (error) return <p className="m-0 p-4 text-[12px] text-danger">{errorText(language, error)}</p>;
+  if (!files) {
+    return (
+      <div className="flex flex-1 items-center justify-center gap-2 text-[12px] text-fg-3">
+        <LoaderCircle size={14} strokeWidth={1.75} className="animate-spin" aria-hidden />
+        {t("disk.listLoading")}
+      </div>
+    );
+  }
+  if (files.length === 0) return <p className="m-0 flex flex-1 items-center justify-center text-[13px] text-fg-3">{t("disk.listEmpty")}</p>;
+
+  const biggest = files[0]?.size ?? 1;
+  const total = files.reduce((sum, f) => sum + f.size, 0);
+  const asNode = (file: LargeFile): DiskNode => ({ name: file.name, path: file.path, kind: "file", size: file.size, files: 1, hasChildren: false, children: [] });
+
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
+      <div className="mb-1.5 flex items-baseline gap-2 px-1">
+        <span className="min-w-0 truncate text-[12px] font-semibold text-fg-2">{t("disk.listTitle", { where: title, n: files.length })}</span>
+        <span className="tabular shrink-0 text-[12px] text-fg-3">{formatSize(total)}</span>
+        <span className="ml-auto hidden shrink-0 text-[12px] text-fg-4 @[640px]:inline">{t("disk.listNote")}</span>
+      </div>
+      {files.map((file, i) => {
+        const type = fileType(file.name);
+        const Icon = TYPE_ICON[type];
+        return (
+          <button
+            key={file.path.join("/")}
+            type="button"
+            title={`${file.folder}/${file.name}`}
+            onClick={() => void api.diskReveal(file.path, false).catch(() => {})}
+            onContextMenu={() => onTarget(asNode(file))}
+            className="group flex w-full items-center gap-3 rounded-md px-1 py-1.5 text-left hover:bg-hover"
+          >
+            <span className="tabular w-6 shrink-0 text-right text-[12px] text-fg-4">{i + 1}</span>
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-hover text-fg-2 group-hover:bg-active">
+              <Icon size={16} strokeWidth={1.75} aria-hidden />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="flex items-baseline gap-2">
+                <span className="min-w-0 truncate text-[13px] font-medium">{file.name}</span>
+                <span className="shrink-0 text-[12px] text-fg-4">{t(`disk.type.${type}` as Key)}</span>
+              </span>
+              <span className="block truncate text-[12px] text-fg-3">{file.folder}</span>
+            </span>
+            <span className="hidden w-[84px] shrink-0 text-right text-[12px] text-fg-3 @[560px]:block">
+              {file.modifiedMs ? formatDate(new Date(file.modifiedMs).toISOString(), language) : ""}
+            </span>
+            <span className="flex w-[110px] shrink-0 flex-col items-end gap-1">
+              <span className="tabular text-[13px] font-medium">{formatSize(file.size)}</span>
+              <span className="block h-[3px] w-full overflow-hidden rounded-full bg-hover">
+                <span className="block h-full rounded-full bg-accent" style={{ width: `${(file.size / biggest) * 100}%` }} />
+              </span>
+            </span>
+          </button>
         );
       })}
     </div>

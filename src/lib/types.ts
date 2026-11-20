@@ -711,6 +711,17 @@ export interface DiskNode {
   children: DiskNode[];
 }
 
+/** 磁盘分析里的一个大文件。 */
+export interface LargeFile {
+  /** 相对扫描根的路径段。 */
+  path: string[];
+  name: string;
+  size: number;
+  /** 所在文件夹（用户文件夹写成 ~）。 */
+  folder: string;
+  modifiedMs: number | null;
+}
+
 // ── 安装监控 ─────────────────────────────────────────────────
 
 export type TraceDepth = "standard" | "deep";

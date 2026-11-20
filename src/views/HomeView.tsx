@@ -3,7 +3,7 @@
 //
 // 数据只在这一页开着、窗口在前面时每 2 秒读一次（lib/system.ts），什么都不存。
 
-import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, CircleX, Copy, Info, Search, Skull, SquareTerminal } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, CircleX, Copy, Info, LayoutGrid, List, Search, Skull, SquareTerminal } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { confirm } from "../components/dialogs";
 import { InstalledSoftwareIcon, SoftwareIcon } from "../components/SoftwareIcon";
@@ -12,6 +12,7 @@ import { api } from "../lib/api";
 import { errorText } from "../lib/i18n";
 import { formatDate, formatSize, hasUpdate } from "../lib/library";
 import { useCleanup } from "../lib/cleanup";
+import { usePrefs } from "../lib/prefs";
 import { useStartup } from "../lib/startup";
 import { useApp, useLanguage, useT } from "../lib/store";
 import { useSampling, useSystem } from "../lib/system";
@@ -328,34 +329,77 @@ function RecentInstalls() {
   const installed = useApp((state) => state.installed);
   const setRoute = useApp((state) => state.setRoute);
   const selectInstalled = useApp((state) => state.selectInstalled);
+  const view = usePrefs((state) => state.homeRecentView);
+  const setPrefs = usePrefs((state) => state.set);
+  const icons = view === "icons";
   const recent = useMemo(
-    () => [...(installed ?? [])].filter((app) => app.installedAt).sort((a, b) => b.installedAt.localeCompare(a.installedAt)).slice(0, 6),
+    () => [...(installed ?? [])].filter((app) => app.installedAt).sort((a, b) => b.installedAt.localeCompare(a.installedAt)).slice(0, 8),
     [installed],
   );
   if (recent.length === 0) return null;
+  const open = (app: InstalledApp) => {
+    setRoute("installed");
+    selectInstalled(app.id);
+  };
+  const toggle = (value: "list" | "icons", label: string, Icon: typeof List) => (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      aria-pressed={view === value}
+      onClick={() => setPrefs({ homeRecentView: value })}
+      className={cx("flex size-6 items-center justify-center rounded", view === value ? "bg-active text-fg" : "text-fg-3 hover:text-fg-2")}
+    >
+      <Icon size={13} strokeWidth={1.75} aria-hidden />
+    </button>
+  );
   return (
     <Card>
-      <CardTitle>{t("home.recent")}</CardTitle>
-      <div className="flex flex-col">
-        {recent.map((app) => (
-          <button
-            key={app.id}
-            type="button"
-            onClick={() => {
-              setRoute("installed");
-              selectInstalled(app.id);
-            }}
-            className="-mx-1.5 flex h-7 min-w-0 items-center gap-2 rounded-md px-1.5 text-left text-[13px] hover:bg-hover"
-          >
-            <InstalledSoftwareIcon app={app} size={16} />
-            <span className="min-w-0 flex-1 truncate">
-              {app.name}
-              {app.version && <span className="ml-1.5 text-[12px] text-fg-4">{app.version}</span>}
-            </span>
-            <span className="tabular shrink-0 text-[12px] text-fg-3">{formatDate(app.installedAt, language)}</span>
-          </button>
-        ))}
-      </div>
+      <CardTitle
+        action={
+          <span className="flex items-center gap-0.5">
+            {toggle("list", t("home.viewList"), List)}
+            {toggle("icons", t("home.viewIcons"), LayoutGrid)}
+          </span>
+        }
+      >
+        {t("home.recent")}
+      </CardTitle>
+      {icons ? (
+        <div className="-mx-1 grid grid-cols-[repeat(auto-fill,minmax(76px,1fr))] gap-1">
+          {recent.map((app) => (
+            <button
+              key={app.id}
+              type="button"
+              title={[app.name, app.version, formatDate(app.installedAt, language)].filter(Boolean).join(" · ")}
+              onClick={() => open(app)}
+              className="flex min-w-0 flex-col items-center gap-1 rounded-md px-1 pt-2 pb-1.5 hover:bg-hover"
+            >
+              <InstalledSoftwareIcon app={app} size={32} />
+              <span className="w-full truncate text-center text-[12px]">{app.name}</span>
+              <span className="tabular -mt-1 text-[12px] text-fg-4">{formatDate(app.installedAt, language)}</span>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="flex flex-col">
+          {recent.slice(0, 6).map((app) => (
+            <button
+              key={app.id}
+              type="button"
+              onClick={() => open(app)}
+              className="-mx-1.5 flex h-7 min-w-0 items-center gap-2 rounded-md px-1.5 text-left text-[13px] hover:bg-hover"
+            >
+              <InstalledSoftwareIcon app={app} size={16} />
+              <span className="min-w-0 flex-1 truncate">
+                {app.name}
+                {app.version && <span className="ml-1.5 text-[12px] text-fg-4">{app.version}</span>}
+              </span>
+              <span className="tabular shrink-0 text-[12px] text-fg-3">{formatDate(app.installedAt, language)}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </Card>
   );
 }

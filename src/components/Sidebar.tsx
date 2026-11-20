@@ -10,6 +10,7 @@ import {
   ChevronsUpDown,
   FolderPlus,
   Inbox,
+  ChartPie,
   House,
   LayoutGrid,
   type LucideIcon,
@@ -162,10 +163,11 @@ export function Sidebar({ onAutoWidthChange }: { onAutoWidthChange: (width: numb
   return (
     <nav id="app-sidebar" ref={nav} className="flex shrink-0 flex-col bg-side" style={{ width: width ?? "max-content", minWidth: SIDEBAR.min, maxWidth: SIDEBAR.max }}>
       <div className="flex flex-col gap-px p-2 pb-0">
-        {/* 主页和管本机的几项（启动与服务、清理、已安装）在上面，和软件库的入口用分隔线隔开 */}
+        {/* 主页和管本机的几项（启动与服务、清理、磁盘分析、已安装）在上面，和软件库的入口用分隔线隔开 */}
         <NavRow icon={House} label={t("nav.home")} active={route === "home"} onClick={() => setRoute("home")} />
         <NavRow icon={Rocket} label={t("nav.startup")} count={startupCount} active={route === "startup"} onClick={() => setRoute("startup")} />
         <NavRow icon={BrushCleaning} label={t("nav.cleanup")} badge={cleanupTotal} active={route === "cleanup"} onClick={() => setRoute("cleanup")} />
+        <NavRow icon={ChartPie} label={t("nav.disk")} active={route === "disk"} onClick={() => setRoute("disk")} />
         {/* 这台电脑上装的软件，和启动、清理一样是管本机的，放在清理下面 */}
         <NavRow
           icon={MonitorCheck}
@@ -182,6 +184,21 @@ export function Sidebar({ onAutoWidthChange }: { onAutoWidthChange: (width: numb
           active={isScope({ kind: "all" })}
           onClick={() => setScope({ kind: "all" })}
           menu={classifyMenu(library.software.map((s) => s.id))}
+          action={
+            // 新建分类：鼠标停在这一行上时出现（分类树就接在下面，不再用分隔线隔开）
+            <span className="hidden group-hover:flex group-focus-within:flex">
+              <IconButton
+                label={t("cat.new")}
+                className="size-6"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setEditing({ mode: "new", parentId: null });
+                }}
+              >
+                <Plus size={14} strokeWidth={1.75} />
+              </IconButton>
+            </span>
+          }
         />
         <NavRow icon={Star} label={t("nav.starred")} count={starred} active={isScope({ kind: "starred" })} onClick={() => setScope({ kind: "starred" })} />
         <NavRow
@@ -193,7 +210,7 @@ export function Sidebar({ onAutoWidthChange }: { onAutoWidthChange: (width: numb
           onClick={() => setScope({ kind: "updates" })}
           action={
             // 检查在线更新：鼠标停在这一行上时出现，检查期间一直转着
-            <span className={cx("flex", !checking && "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100")}>
+            <span className={cx("flex", !checking && "hidden group-hover:flex group-focus-within:flex")}>
               <IconButton
                 label={t("scan.updates")}
                 className="size-6"
@@ -210,20 +227,9 @@ export function Sidebar({ onAutoWidthChange }: { onAutoWidthChange: (width: numb
         />
       </div>
 
-      <ContextMenu items={sectionMenu}>
-        {/* 不写“分类”两个字：一条细线把上面的入口和分类树隔开，右端是新建分类 */}
-        <div role="group" aria-label={t("nav.categories")} className="px-2">
-          <Divider>
-            <IconButton label={t("cat.new")} className="size-6" onClick={() => setEditing({ mode: "new", parentId: null })}>
-              <Plus size={14} strokeWidth={1.75} />
-            </IconButton>
-          </Divider>
-        </div>
-      </ContextMenu>
-
       {/* 右键分类以外的空白处：新建分类、全部展开或折叠。右键某个分类时出它自己的菜单 */}
       <ContextMenu items={sectionMenu}>
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+      <div role="group" aria-label={t("nav.categories")} className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         <Tree
           parentId={null}
           depth={0}

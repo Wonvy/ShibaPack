@@ -544,6 +544,32 @@ pub fn explain_cleanup_many(
     explain_many_with(&mut |system, user| service.chat(system, user, true, 0.2), &explain_cleanup_prompt(language), items, cancel, progress)
 }
 
+/// 磁盘分析里一批文件夹（或大文件）一起解释是做什么的。`items` 是（键，`disk::facts` 的内容）。
+pub fn explain_folders_many(
+    service: &Service,
+    language: &str,
+    items: &[(String, String)],
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<Vec<(String, String)>, AiError> {
+    explain_many_with(&mut |system, user| service.chat(system, user, true, 0.2), &explain_folders_prompt(language), items, cancel, progress)
+}
+
+fn explain_folders_prompt(language: &str) -> String {
+    let lang = language_name(language);
+    let length = if compact(language) { "at most 60 characters" } else { "at most 30 words" };
+    format!(
+        "You help people understand what takes up space on their disk. Each item is a folder or a large file, with its path \
+(the home folder is written as ~), its size and the names of its largest contents. For each item, say in {lang}, in one or two \
+short plain sentences ({length}): what it most likely is and which software or system part it belongs to, and whether it is \
+usually safe to delete (cache that is rebuilt, something that must be downloaded again, or personal data, settings or system \
+files that should be kept). State only what you are confident about; if you do not recognize it, say so briefly. No Markdown, \
+no lists, no quotation marks inside the text.\n\
+Answer with JSON only, in exactly this shape, including every item once:\n\
+{{\"items\":[{{\"id\":\"e1\",\"text\":\"...\"}}]}}"
+    )
+}
+
 fn explain_cleanup_prompt(language: &str) -> String {
     let lang = language_name(language);
     let length = if compact(language) { "at most 150 characters" } else { "at most 80 words" };

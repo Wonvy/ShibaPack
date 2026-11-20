@@ -59,6 +59,36 @@ impl AiCache {
     }
 }
 
+/// 磁盘分析里文件夹的作用：和 `ai.json` 分开存在 `ai-folders.json`，扫的文件夹多了也不会把别的解释挤掉，
+/// 想清掉时也可以单独删。键是 `系统|路径（用户文件夹写成 ~）|界面语言`。
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderCache {
+    #[serde(default)]
+    pub folders: BTreeMap<String, CachedText>,
+}
+
+const FOLDER_FILE: &str = "ai-folders.json";
+
+impl FolderCache {
+    pub fn load(dir: &Path) -> FolderCache {
+        std::fs::read(dir.join(FOLDER_FILE)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+    }
+
+    pub fn save(&mut self, dir: &Path) -> std::io::Result<()> {
+        trim(&mut self.folders, |entry| entry.at.clone());
+        std::fs::create_dir_all(dir)?;
+        let tmp = dir.join(format!("{FOLDER_FILE}.tmp"));
+        std::fs::write(&tmp, serde_json::to_vec(self)?)?;
+        std::fs::rename(tmp, dir.join(FOLDER_FILE))
+    }
+}
+
+/// 文件夹解释的键。
+pub fn folder_key(os: &str, path: &str, language: &str) -> String {
+    format!("{os}|{path}|{language}")
+}
+
 /// 超过上限时按时间丢掉最旧的。
 fn trim<T>(map: &mut BTreeMap<String, T>, at: impl Fn(&T) -> String) {
     if map.len() <= MAX_ENTRIES {
@@ -101,6 +131,17 @@ pub fn explain_key(os: &str, source: &str, label: &str, language: &str) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folder_cache_is_its_own_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cache = FolderCache::default();
+        let key = folder_key("macos", "~/Library/Caches", "zh-CN");
+        cache.folders.insert(key.clone(), CachedText { text: "缓存".into(), model: "m".into(), at: "2026-11-20".into() });
+        cache.save(dir.path()).unwrap();
+        assert!(dir.path().join("ai-folders.json").is_file() && !dir.path().join("ai.json").exists());
+        assert_eq!(FolderCache::load(dir.path()).folders[&key].text, "缓存");
+    }
 
     fn library() -> Library {
         let mut lib = Library::default();

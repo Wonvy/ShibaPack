@@ -15,10 +15,12 @@ import {
   ScanSearch,
   Square,
   X,
+  TriangleAlert,
 } from "lucide-react";
 import { type PointerEvent, useRef, useState } from "react";
 import { api, isMac, isTauri, pickFiles, pickFolder, windowControls } from "../lib/api";
 import { useCleanup } from "../lib/cleanup";
+import { useDisk } from "../lib/disk";
 import { fileCount, formatSize, softwareSize } from "../lib/library";
 import { TOPBAR, usePrefs } from "../lib/prefs";
 import { useApp, useT } from "../lib/store";
@@ -403,7 +405,9 @@ export function StatusBar() {
       {progress ? (
         <ImportProgress progress={progress} />
       ) : (
-        route === "cleanup" ? (
+        route === "disk" ? (
+          <DiskStatus />
+        ) : route === "cleanup" ? (
           // 清理页：状态栏写选了多少、直接删除和移到回收站各多少
           <span className="flex min-w-0 items-center gap-1.5">
             <span className={cx("size-1.5 shrink-0 rounded-full", cleanupBusy ? "bg-accent" : "bg-success")} />
@@ -550,5 +554,50 @@ export function ToastView() {
         </div>
       ))}
     </div>
+  );
+}
+
+/** 磁盘分析页的状态栏：扫描进度；扫完后写现在这一层多大、多少个文件、整个位置多大、用了多久、几个文件夹没有权限。 */
+function DiskStatus() {
+  const t = useT();
+  const scanning = useDisk((state) => state.scanning);
+  const progress = useDisk((state) => state.progress);
+  const summary = useDisk((state) => state.summary);
+  const view = useDisk((state) => state.view);
+  const path = useDisk((state) => state.path);
+  const dot = <span className={cx("size-1.5 shrink-0 rounded-full", scanning ? "bg-accent" : "bg-success")} />;
+  if (scanning) {
+    return (
+      <span className="flex min-w-0 items-center gap-1.5">
+        {dot}
+        <span className="tabular truncate">
+          {progress ? t("disk.scanned", { files: progress.files.toLocaleString(), size: formatSize(progress.bytes) }) : t("disk.starting")}
+        </span>
+      </span>
+    );
+  }
+  if (!summary || !view) {
+    return (
+      <span className="flex min-w-0 items-center gap-1.5">
+        {dot}
+        <span className="truncate">{t("disk.status.idle")}</span>
+      </span>
+    );
+  }
+  return (
+    <>
+      <span className="flex min-w-0 items-center gap-1.5">
+        {dot}
+        <span className="tabular truncate">{t("disk.status.level", { size: formatSize(view.size), files: view.files.toLocaleString() })}</span>
+      </span>
+      {path.length > 0 && <span className="tabular shrink-0">{t("disk.status.total", { size: formatSize(summary.size) })}</span>}
+      <span className="tabular shrink-0">{t("disk.status.time", { seconds: (summary.elapsedMs / 1000).toFixed(1) })}</span>
+      {summary.denied > 0 && (
+        <span className="flex shrink-0 items-center gap-1 text-warning" title={summary.deniedExamples.join("\n")}>
+          <TriangleAlert size={12} strokeWidth={1.75} aria-hidden />
+          {t("disk.denied", { n: summary.denied })}
+        </span>
+      )}
+    </>
   );
 }

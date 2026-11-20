@@ -76,6 +76,9 @@ struct AppState {
     cleanup_turn: Mutex<()>,
     /// 用户点了取消扫描。
     cleanup_cancel: AtomicBool,
+    /// 磁盘分析：最近一次扫完的树（只在内存里），和停止扫描的开关。
+    disk: Mutex<Option<shibapack_core::disk::Scan>>,
+    disk_cancel: AtomicBool,
     /// 失败日志放在哪（应用自己的日志文件夹，只和这台电脑有关）。
     log_dir: PathBuf,
 }
@@ -1077,6 +1080,200 @@ async fn process_icons(app: AppHandle, exes: Vec<String>) -> CmdResult<HashMap<S
 #[tauri::command]
 async fn end_process(app: AppHandle, pid: u32, force: bool) -> CmdResult<()> {
     blocking(app, move |_app, state| with_monitor(&state, |monitor| monitor.end(pid, force))).await
+}
+
+// ── 磁盘分析 ─────────────────────────────────────────────────
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiskLocation {
+    path: String,
+    name: String,
+    /// home：用户文件夹；disk：一块盘。
+    kind: String,
+    total: u64,
+    available: u64,
+}
+
+/// 可以分析的地方：用户文件夹和每一块盘。
+#[tauri::command]
+async fn disk_locations(app: AppHandle) -> Vec<DiskLocation> {
+    blocking(app, move |app, _state| {
+        let mut out = Vec::new();
+        if let Ok(home) = app.path().home_dir() {
+            out.push(DiskLocation { name: home.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), path: home.to_string_lossy().to_string(), kind: "home".into(), total: 0, available: 0 });
+        }
+        for mount in shibapack_core::disk::mounts() {
+            if out.iter().any(|l: &DiskLocation| l.path == mount.path) {
+                continue;
+            }
+            out.push(DiskLocation { name: mount.name, path: mount.path, kind: "disk".into(), total: mount.total, available: mount.available });
+        }
+        out
+    })
+    .await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiskSummary {
+    root: String,
+    size: u64,
+    files: u64,
+    denied: u64,
+    denied_examples: Vec<String>,
+    elapsed_ms: u64,
+}
+
+/// 扫一个文件夹或一块盘（只读）。扫的时候发 `disk://progress`；停下了返回 `cancelled`。
+#[tauri::command]
+async fn disk_scan(app: AppHandle, root: String) -> CmdResult<DiskSummary> {
+    blocking(app, move |app, state| {
+        let root = PathBuf::from(&root);
+        if !root.is_dir() {
+            return Err("file_missing".into());
+        }
+        state.disk_cancel.store(false, Ordering::SeqCst);
+        let scan = shibapack_core::disk::scan(&root, &state.disk_cancel, &|progress| {
+            let _ = app.emit("disk://progress", progress);
+        })
+        .ok_or_else(|| "cancelled".to_string())?;
+        let summary = DiskSummary {
+            root: scan.root.to_string_lossy().to_string(),
+            size: scan.tree.size,
+            files: scan.tree.files,
+            denied: scan.denied,
+            denied_examples: scan.denied_examples.clone(),
+            elapsed_ms: scan.elapsed_ms,
+        };
+        if let Ok(mut slot) = state.disk.lock() {
+            *slot = Some(scan);
+        }
+        Ok(summary)
+    })
+    .await
+}
+
+#[tauri::command]
+fn disk_cancel(state: State<AppState>) {
+    state.disk_cancel.store(true, Ordering::SeqCst);
+}
+
+/// 从扫完的树里取一块给界面画：`path` 是相对扫描根的路径段，往下 `depth` 层，太小的合成“其他”。
+#[tauri::command]
+async fn disk_view(app: AppHandle, path: Vec<String>, depth: usize, min_ratio: f64) -> CmdResult<shibapack_core::disk::ViewNode> {
+    blocking(app, move |_app, state| {
+        let slot = state.disk.lock().map_err(|_| "internal".to_string())?;
+        let scan = slot.as_ref().ok_or_else(|| "not_found".to_string())?;
+        shibapack_core::disk::view(&scan.tree, &path, depth.min(8), min_ratio.clamp(0.0, 0.5)).ok_or_else(|| "not_found".to_string())
+    })
+    .await
+}
+
+/// 磁盘分析里文件夹（或大文件）是做什么的。`mode` 是 `cached`（只看缓存，不问 AI）或 `ask`（没记下的问 AI）。
+/// 缓存单独放在仓库的 `.shibapack/cache/ai-folders.json`。返回：路径段用 / 连起来 → 解释。
+#[tauri::command]
+async fn ai_explain_folders(app: AppHandle, paths: Vec<Vec<String>>, mode: String) -> CmdResult<HashMap<String, String>> {
+    blocking(app, move |_app, state| {
+        let home = if cfg!(windows) { std::env::var_os("USERPROFILE") } else { std::env::var_os("HOME") }.map(PathBuf::from);
+        // （界面上的键，缓存的键，问 AI 时给的事实）
+        let items: Vec<(String, String, String)> = {
+            let slot = state.disk.lock().map_err(|_| "internal".to_string())?;
+            let scan = slot.as_ref().ok_or_else(|| "not_found".to_string())?;
+            paths
+                .iter()
+                .filter_map(|path| {
+                    let facts = shibapack_core::disk::facts(&scan.root, &scan.tree, path, home.as_deref())?;
+                    let shown = shibapack_core::disk::display_path(&shibapack_core::disk::full_path(&scan.root, path), home.as_deref());
+                    Some((path.join("/"), shown, facts))
+                })
+                .collect()
+        };
+        let dir = cache_dir(&state)?;
+        let language = with_repo(&state, |repo| Ok(repo.lib.settings.language.clone()))?;
+        let key_of = |shown: &str| aicache::folder_key(std::env::consts::OS, shown, &language);
+        let mut out = HashMap::new();
+        let mut todo = Vec::new();
+        {
+            let _turn = state.ai_cache_turn.lock().unwrap_or_else(|e| e.into_inner());
+            let cache = aicache::FolderCache::load(&dir);
+            for item in &items {
+                match cache.folders.get(&key_of(&item.1)) {
+                    Some(hit) => {
+                        out.insert(item.0.clone(), hit.text.clone());
+                    }
+                    None => todo.push(item),
+                }
+            }
+        }
+        if mode != "ask" || todo.is_empty() {
+            return Ok(out);
+        }
+        let (service, library) = repo_ai(&state)?;
+        let questions: Vec<(String, String)> = todo.iter().map(|item| (item.0.clone(), item.2.clone())).collect();
+        let cancel = AtomicBool::new(false);
+        let answers = ai::explain_folders_many(&service, &library.settings.language, &questions, &cancel, &mut |_, _| {}).map_err(|e| e.code())?;
+        let at = shibapack_core::now();
+        let model = service.model().to_string();
+        let _turn = state.ai_cache_turn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = aicache::FolderCache::load(&dir);
+        for (key, text) in answers {
+            let Some(item) = todo.iter().find(|item| item.0 == key) else { continue };
+            cache.folders.insert(key_of(&item.1), CachedText { text: text.clone(), model: model.clone(), at: at.clone() });
+            out.insert(key, text);
+        }
+        let _ = cache.save(&dir);
+        Ok(out)
+    })
+    .await
+}
+
+/// 扫过的树里某一项的完整路径（不在树里的不认）。
+fn disk_path(state: &State<AppState>, path: &[String]) -> CmdResult<(PathBuf, PathBuf)> {
+    let slot = state.disk.lock().map_err(|_| "internal".to_string())?;
+    let scan = slot.as_ref().ok_or_else(|| "not_found".to_string())?;
+    shibapack_core::disk::find(&scan.tree, path).ok_or_else(|| "not_found".to_string())?;
+    Ok((shibapack_core::disk::full_path(&scan.root, path), scan.root.clone()))
+}
+
+/// 在文件管理器里显示（`open` 为真时用默认程序打开）。
+#[tauri::command]
+async fn disk_reveal(app: AppHandle, path: Vec<String>, open: bool) -> CmdResult<()> {
+    blocking(app, move |app, state| {
+        let (full, _) = disk_path(&state, &path)?;
+        if !full.exists() {
+            return Err("file_missing".into());
+        }
+        if open {
+            app.opener().open_path(full.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+        } else {
+            app.opener().reveal_item_in_dir(&full).map_err(|e| e.to_string())
+        }
+    })
+    .await
+}
+
+/// 某一项的完整路径，复制用。
+#[tauri::command]
+async fn disk_full_path(app: AppHandle, path: Vec<String>) -> CmdResult<String> {
+    blocking(app, move |_app, state| Ok(disk_path(&state, &path)?.0.to_string_lossy().to_string())).await
+}
+
+/// 移到回收站（废纸篓），并从树上去掉。系统文件夹、用户文件夹本身、应用程序、仓库这些不行，返回 `protected:<原因>`。
+#[tauri::command]
+async fn disk_trash(app: AppHandle, path: Vec<String>) -> CmdResult<u64> {
+    blocking(app, move |_app, state| {
+        let (full, root) = disk_path(&state, &path)?;
+        let repo = state.repo.lock().ok().and_then(|r| r.as_ref().map(|r| r.root().to_path_buf()));
+        if let Some(reason) = shibapack_core::disk::protected(&full, &root, repo.as_deref()) {
+            return Err(format!("disk_protected:{reason}"));
+        }
+        trash::delete(&full).map_err(|e| e.to_string())?;
+        let mut slot = state.disk.lock().map_err(|_| "internal".to_string())?;
+        let scan = slot.as_mut().ok_or_else(|| "not_found".to_string())?;
+        Ok(shibapack_core::disk::remove(&mut scan.tree, &path).unwrap_or(0))
+    })
+    .await
 }
 
 // ── 启动项与服务 ─────────────────────────────────────────────
@@ -2257,6 +2454,8 @@ pub fn run() {
                 measure_turn: Mutex::new(()),
                 uninstall: Mutex::new(HashMap::new()),
                 monitor: Mutex::new(None),
+                disk: Mutex::new(None),
+                disk_cancel: AtomicBool::new(false),
                 process_icons: Mutex::new(HashMap::new()),
                 startup: Mutex::new(Vec::new()),
                 startup_turn: Mutex::new(()),
@@ -2306,6 +2505,14 @@ pub fn run() {
             match_installed,
             analyze_uninstall,
             system_overview,
+            disk_locations,
+            disk_scan,
+            disk_cancel,
+            disk_view,
+            disk_reveal,
+            disk_full_path,
+            disk_trash,
+            ai_explain_folders,
             system_sample,
             process_icons,
             end_process,

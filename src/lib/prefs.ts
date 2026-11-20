@@ -62,6 +62,8 @@ interface Prefs {
   cleanupChecked: Record<string, boolean>;
   /** 清理页里手动展开或收起过的类别（类别 → 展开没有）。没动过的按默认：有勾选的展开，没有的收起。 */
   cleanupOpen: Record<string, boolean>;
+  /** 磁盘分析用扇形图还是矩形图。 */
+  diskChart: "sunburst" | "treemap";
   set: (patch: Partial<Omit<Prefs, "set" | "toggleCollapsed" | "sortBy" | "toggleColumn" | "setColumnWidth" | "resetColumns">>) => void;
   toggleCollapsed: (id: string) => void;
   sortBy: (key: SortKey) => void;
@@ -97,6 +99,7 @@ export const usePrefs = create<Prefs>()(
       tableColumns: { library: NO_COLUMNS, installed: NO_COLUMNS, startup: NO_COLUMNS, service: NO_COLUMNS },
       cleanupChecked: {},
       cleanupOpen: {},
+      diskChart: "sunburst",
       set: (patch) =>
         set((state) => {
           const { sidebarWidth = state.sidebarWidth } = patch;

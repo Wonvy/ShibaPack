@@ -35,6 +35,10 @@ import type {
   LangPack,
   LeftoverScan,
   SystemOverview,
+  DiskLocation,
+  DiskNode,
+  DiskProgress,
+  DiskSummary,
   SystemSample,
   Library,
   Progress,
@@ -134,6 +138,20 @@ export const api = {
   systemOverview: () => call<SystemOverview>("system_overview"),
   /** 主页：此刻的 CPU、内存、系统盘和所有进程。 */
   systemSample: () => call<SystemSample>("system_sample"),
+  /** 磁盘分析：可以分析的地方（用户文件夹和每一块盘）。 */
+  diskLocations: () => call<DiskLocation[]>("disk_locations"),
+  /** 扫一个文件夹或一块盘（只读）。进度见 `onDiskProgress`；停下了返回 `cancelled`。 */
+  diskScan: (root: string) => call<DiskSummary>("disk_scan", { root }),
+  diskCancel: () => call<void>("disk_cancel"),
+  /** 从扫完的结果里取一块：相对扫描根的路径段，往下几层，占比太小的合成“其他”。 */
+  diskView: (path: string[], depth: number, minRatio: number) => call<DiskNode>("disk_view", { path, depth, minRatio }),
+  /** 在文件管理器里显示；`open` 为真时用默认程序打开。 */
+  diskReveal: (path: string[], open: boolean) => call<void>("disk_reveal", { path, open }),
+  diskFullPath: (path: string[]) => call<string>("disk_full_path", { path }),
+  /** 移到回收站，返回腾出的大小。受保护的返回 `disk_protected:原因`。 */
+  diskTrash: (path: string[]) => call<number>("disk_trash", { path }),
+  /** 磁盘分析里文件夹是做什么的：`cached` 只看缓存，`ask` 没记下的问 AI。返回 路径段用 / 连起来 → 解释。 */
+  aiExplainFolders: (paths: string[][], mode: "cached" | "ask") => call<Record<string, string>>("ai_explain_folders", { paths, mode }),
   /** 进程的图标（按可执行文件）：取不到的不在结果里。 */
   processIcons: (exes: string[]) => call<Record<string, string>>("process_icons", { exes }),
   /** 结束进程：`force` 为假时请它正常退出。 */
@@ -321,6 +339,12 @@ export async function onCleanupScan(handler: (progress: CleanProgress) => void):
 }
 
 /** 清理进度。 */
+export async function onDiskProgress(handler: (progress: DiskProgress) => void): Promise<() => void> {
+  if (!isTauri) return (await import("./mockDisk")).mockOnDiskProgress(handler);
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<DiskProgress>("disk://progress", (event) => handler(event.payload));
+}
+
 export async function onCleanupProgress(handler: (progress: CleanProgress) => void): Promise<() => void> {
   if (!isTauri) return (await import("./mockCleanup")).mockOnCleanupProgress(handler);
   const { listen } = await import("@tauri-apps/api/event");

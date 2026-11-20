@@ -86,7 +86,13 @@ function Dashboard() {
             busy={memoryPercent >= BUSY}
           />
           <Card>
-            <div className="text-[12px] text-fg-3">{t("home.disk")}</div>
+            <div className="flex items-center text-[12px] text-fg-3">
+              {t("home.disk")}
+              <button type="button" className="ml-auto flex items-center text-accent hover:underline" onClick={() => useApp.getState().setRoute("disk")}>
+                {t("home.analyzeDisk")}
+                <ChevronRight size={13} strokeWidth={1.75} aria-hidden />
+              </button>
+            </div>
             <div className="tabular mt-0.5 text-[20px] leading-7 font-semibold">{disk ? t("home.free", { size: formatSize(disk.available) }) : "—"}</div>
             <div className="text-[12px] text-fg-3">{disk ? t("home.ofTotal", { total: formatSize(disk.total), percent: Math.round(diskPercent) }) : ""}</div>
             <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-hover">

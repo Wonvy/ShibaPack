@@ -669,3 +669,44 @@ export interface ProcessInfo {
   /** 不能在这里结束：ShibaPack 自己、系统进程、别的用户的。 */
   protected: boolean;
 }
+
+/** 磁盘分析：可以分析的地方。 */
+export interface DiskLocation {
+  path: string;
+  name: string;
+  /** home：用户文件夹；disk：一块盘。 */
+  kind: "home" | "disk";
+  total: number;
+  available: number;
+}
+
+export interface DiskSummary {
+  root: string;
+  size: number;
+  files: number;
+  /** 没有权限进去的文件夹个数。 */
+  denied: number;
+  deniedExamples: string[];
+  elapsedMs: number;
+}
+
+export interface DiskProgress {
+  files: number;
+  dirs: number;
+  bytes: number;
+  current: string;
+}
+
+/** 磁盘分析画出来的一个节点。 */
+export interface DiskNode {
+  name: string;
+  /** 相对扫描根的路径段；“小文件”“其他”为空。 */
+  path: string[];
+  /** small：一个文件夹里小于 1 MB 的文件合起来；other：太小、合起来显示的。 */
+  kind: "dir" | "file" | "small" | "other";
+  size: number;
+  files: number;
+  /** 还能往里点。 */
+  hasChildren: boolean;
+  children: DiskNode[];
+}

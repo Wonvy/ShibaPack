@@ -305,6 +305,16 @@ export async function runSelftest() {
       await check("主页能读到系统状态", false, String(error));
     }
 
+    // 磁盘分析：扫一遍测试用的仓库文件夹（只读），取一层出来
+    try {
+      const root = status.repoRoot ?? "";
+      const summary = await api.diskScan(root);
+      const view = await api.diskView([], 3, 0.004);
+      await check("磁盘分析", summary.files > 0 && view.size === summary.size && view.children.length > 0, `${summary.files} 个文件 · ${view.children.length} 项 · ${summary.elapsedMs} ms`);
+    } catch (error) {
+      await check("磁盘分析", false, String(error));
+    }
+
     // 界面状态和数据是否一致
     const state = useApp.getState();
     await check("界面已加载索引", state.library !== null);

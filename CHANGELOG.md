@@ -8,6 +8,22 @@ One section per version, titled `## <version>`, with a Chinese and an English pa
 `.github/workflows/release.yml` puts that section into the GitHub Release notes and `latest.json`; the update window
 in ShibaPack (opened from the version number in the bottom-right corner) shows the part that matches the interface language.
 
+## 0.11.0
+
+### 中文
+
+- 侧栏可以收起成一列图标：点“主页”右边的箭头收起，收起后点同一个位置的箭头展开；鼠标停在图标上能看到名字。
+- 侧栏名字更短：启动、磁盘、程序、所有、更新。
+- 主页去掉了标题栏；CPU、内存的走势铺满卡片、放在数字后面；进程单独一行，软件数量和最近安装左右两栏。
+- “程序”页去掉了标题和个数，侧栏里已经写了。
+
+### English
+
+- The sidebar can collapse to a column of icons: click the arrow next to Home to collapse it, and the arrow in the same place to expand it again. Hover over an icon to see its name.
+- Shorter sidebar names: Startup, Disk, Apps, All, Updates.
+- Home no longer has a title bar. CPU and memory trends fill their cards behind the numbers; processes get their own row, with software counts and recently installed apps side by side below.
+- The Apps page no longer repeats its title and count, which are already in the sidebar.
+
 ## 0.10.0
 
 ### 中文

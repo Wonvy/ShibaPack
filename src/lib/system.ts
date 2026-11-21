@@ -1,4 +1,4 @@
-// 主页的系统状态：配置、此刻的 CPU / 内存 / 磁盘、进程，和最近一分钟的走势。
+// 主页的系统状态：配置、此刻的 CPU / 内存 / 显卡 / 网络 / 磁盘、进程，和最近一分钟的走势。
 //
 // 只在主页（或任务管理器）开着、窗口在前面时每 2 秒向后端要一次；切走、最小化就停。什么都不存。
 
@@ -18,6 +18,14 @@ interface SystemState {
   cpuHistory: number[];
   /** 最近的内存占用（0–100）。 */
   memoryHistory: number[];
+  /** 最近的显卡占用（0–100）。 */
+  gpuHistory: number[];
+  /** 最近每秒下载、上传的字节数。 */
+  downHistory: number[];
+  upHistory: number[];
+  /** 最近每秒读、写硬盘的字节数。 */
+  readHistory: number[];
+  writeHistory: number[];
   /** 读不到时后端给的原因，界面上用 errorText 翻译。 */
   error: unknown;
   /** 主页里打开了任务管理器（全部进程）。 */
@@ -34,6 +42,11 @@ export const useSystem = create<SystemState>()((set, get) => ({
   sample: null,
   cpuHistory: [],
   memoryHistory: [],
+  gpuHistory: [],
+  downHistory: [],
+  upHistory: [],
+  readHistory: [],
+  writeHistory: [],
   error: null,
   processesOpen: false,
   paused: false,
@@ -49,6 +62,11 @@ export const useSystem = create<SystemState>()((set, get) => ({
         error: null,
         cpuHistory: [...state.cpuHistory, sample.cpu].slice(-HISTORY),
         memoryHistory: [...state.memoryHistory, memory].slice(-HISTORY),
+        gpuHistory: sample.gpu ? [...state.gpuHistory, sample.gpu.usage].slice(-HISTORY) : state.gpuHistory,
+        downHistory: sample.network ? [...state.downHistory, sample.network.received].slice(-HISTORY) : state.downHistory,
+        upHistory: sample.network ? [...state.upHistory, sample.network.sent].slice(-HISTORY) : state.upHistory,
+        readHistory: sample.diskIo ? [...state.readHistory, sample.diskIo.read].slice(-HISTORY) : state.readHistory,
+        writeHistory: sample.diskIo ? [...state.writeHistory, sample.diskIo.written].slice(-HISTORY) : state.writeHistory,
       }));
       void loadIcons(sample.processes.map((p) => p.exe).filter((exe): exe is string => Boolean(exe)));
     } catch (reason) {

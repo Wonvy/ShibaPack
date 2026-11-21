@@ -389,6 +389,9 @@ function mockSample(): SystemSample {
     disk: { mount: "/", total: 994 * GB, available: 182 * GB },
     uptime: Math.round(performance.now() / 1000) + 3 * 86400 + 4 * 3600,
     processes: list,
+    gpu: { model: "Apple M3 Max", usage: Math.min(100, wobble(18, 24)), memoryUsed: null, memoryTotal: null },
+    network: { received: Math.round(wobble(1.4 * MB, 2.4 * MB)), sent: Math.round(wobble(90 * 1024, 160 * 1024)) },
+    diskIo: { read: Math.round(Math.random() < 0.3 ? wobble(24 * MB, 40 * MB) : wobble(200 * 1024, 400 * 1024)), written: Math.round(wobble(3 * MB, 6 * MB)) },
   };
 }
 

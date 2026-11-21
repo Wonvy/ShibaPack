@@ -1,4 +1,4 @@
-// 主页：本机的配置、CPU / 内存 / 磁盘、占用最多的进程、软件的数量和最近装的软件。
+// 主页：本机的配置、CPU / 内存 / 显卡 / 网络 / 硬盘读写 / 系统盘、占用最多的进程、软件的数量和最近装的软件。
 // 点“查看全部”换成任务管理器（全部进程，可以搜索、排序、结束进程）。
 //
 // 数据只在这一页开着、窗口在前面时每 2 秒读一次（lib/system.ts），什么都不存。
@@ -34,12 +34,27 @@ function Dashboard() {
   const sample = useSystem((state) => state.sample);
   const cpuHistory = useSystem((state) => state.cpuHistory);
   const memoryHistory = useSystem((state) => state.memoryHistory);
+  const gpuHistory = useSystem((state) => state.gpuHistory);
+  const downHistory = useSystem((state) => state.downHistory);
+  const upHistory = useSystem((state) => state.upHistory);
+  const readHistory = useSystem((state) => state.readHistory);
+  const writeHistory = useSystem((state) => state.writeHistory);
   const error = useSystem((state) => state.error);
   const [details, setDetails] = useState(false);
 
   const memoryPercent = sample && sample.memoryTotal > 0 ? (sample.memoryUsed / sample.memoryTotal) * 100 : 0;
   const disk = sample?.disk ?? null;
   const diskPercent = disk && disk.total > 0 ? ((disk.total - disk.available) / disk.total) * 100 : 0;
+  const gpu = sample?.gpu ?? null;
+  const network = sample?.network ?? null;
+  const diskIo = sample?.diskIo ?? null;
+  const gpuNote = gpu
+    ? gpu.memoryUsed !== null && gpu.memoryTotal
+      ? t("home.gpuMemory", { used: formatSize(gpu.memoryUsed), total: formatSize(gpu.memoryTotal) })
+      : gpu.model
+    : sample && overview
+      ? t(overview.gpus.length > 0 ? "home.gpuUnavailable" : "home.noGpu")
+      : "";
 
   return (
     <div className="@container flex min-h-0 flex-1 flex-col">
@@ -71,7 +86,8 @@ function Dashboard() {
         </Card>
         {details && overview && <HardwareDialog onClose={() => setDetails(false)} />}
 
-        <div className="mb-3 grid grid-cols-1 gap-3 @[560px]:grid-cols-3">
+        {/* 两排三张：CPU、内存、显卡；网络、硬盘读写、系统盘 */}
+        <div className="mb-3 grid grid-cols-1 gap-3 @[400px]:grid-cols-2 @[560px]:grid-cols-3">
           <Meter
             label={t("home.cpu")}
             value={sample ? `${Math.round(sample.cpu)}%` : "—"}
@@ -85,6 +101,30 @@ function Dashboard() {
             note={sample ? t("home.ofTotal", { total: formatSize(sample.memoryTotal), percent: Math.round(memoryPercent) }) : ""}
             history={memoryHistory}
             busy={memoryPercent >= BUSY}
+          />
+          <Meter
+            label={t("home.gpu")}
+            value={gpu ? `${Math.round(gpu.usage)}%` : "—"}
+            note={gpuNote}
+            title={gpu?.model}
+            history={gpuHistory}
+            busy={(gpu?.usage ?? 0) >= BUSY}
+          />
+          <Meter
+            label={t("home.network")}
+            value={network ? <Rate bytes={network.received} unit={t("home.download")} /> : "—"}
+            note={network ? t("home.upload", { rate: rate(network.sent) }) : ""}
+            history={downHistory}
+            secondary={upHistory}
+            scale={RATE_FLOOR}
+          />
+          <Meter
+            label={t("home.diskIo")}
+            value={diskIo ? <Rate bytes={diskIo.read} unit={t("home.read")} /> : "—"}
+            note={diskIo ? t("home.write", { rate: rate(diskIo.written) }) : ""}
+            history={readHistory}
+            secondary={writeHistory}
+            scale={RATE_FLOOR}
           />
           <Card className="relative overflow-hidden">
             {/* 用掉的部分从左往右铺满整张卡片，在文字后面，和 CPU、内存的走势一样 */}
@@ -151,34 +191,90 @@ function CardTitle({ children, action }: { children: ReactNode; action?: ReactNo
   );
 }
 
-/** CPU、内存：大数字、说明和最近一分钟的走势线。 */
-function Meter({ label, value, note, history, busy }: { label: string; value: string; note: string; history: number[]; busy: boolean }) {
+/** 网络、硬盘读写的走势最低按这么多算满格：没什么流量时线贴着底，不会一点点波动就画满整张卡片。 */
+const RATE_FLOOR = 512 * 1024;
+
+/** 每秒多少字节：“1.4 MB/s”。 */
+function rate(bytes: number): string {
+  return `${formatSize(bytes)}/s`;
+}
+
+/** 大数字是速度，后面跟一个小字说是下载还是读取。 */
+function Rate({ bytes, unit }: { bytes: number; unit: string }) {
+  return (
+    <>
+      {rate(bytes)}
+      <span className="ml-1.5 text-[12px] font-normal text-fg-3">{unit}</span>
+    </>
+  );
+}
+
+/**
+ * 一张实时卡片：大数字、说明和最近一分钟的走势线。
+ * 不传 `scale` 时数值是 0–100 的百分比；传了就是速度，按这一分钟里最大的那个（至少 `scale`）算满格。
+ * `secondary` 是第二条线（上传、写入），只画线不填色。
+ */
+function Meter({
+  label,
+  value,
+  note,
+  title,
+  history,
+  secondary,
+  scale,
+  busy = false,
+}: {
+  label: string;
+  value: ReactNode;
+  note: string;
+  title?: string;
+  history: number[];
+  secondary?: number[];
+  scale?: number;
+  busy?: boolean;
+}) {
+  const max = scale === undefined ? 100 : Math.max(scale, ...history, ...(secondary ?? []));
   return (
     <Card className="relative overflow-hidden">
       {/* 走势铺满整张卡片，在文字后面 */}
-      <Sparkline values={history} busy={busy} />
+      <Sparkline values={history} max={max} busy={busy} />
+      {secondary && <Sparkline values={secondary} max={max} busy={busy} line />}
       <div className="relative">
         <div className="text-[12px] text-fg-3">{label}</div>
-        <div className={cx("tabular mt-0.5 text-[20px] leading-7 font-semibold", busy && "text-warning")}>{value}</div>
-        <div className="text-[12px] text-fg-3">{note || "\u00a0"}</div>
+        <div className={cx("tabular mt-0.5 truncate text-[20px] leading-7 font-semibold", busy && "text-warning")}>{value}</div>
+        <div className="truncate text-[12px] text-fg-3" title={title}>
+          {note || "\u00a0"}
+        </div>
         <div className="h-10" />
       </div>
     </Card>
   );
 }
 
-/** 走势：0–100，最新的在右边，铺满整张卡片当背景。刚打开、点还不够一分钟时，前面用第一个值补平，不会只在右边画一小截。 */
-function Sparkline({ values, busy }: { values: number[]; busy: boolean }) {
+/**
+ * 走势：0–max，最新的在右边，铺满整张卡片当背景。刚打开、点还不够一分钟时，前面用第一个值补平，不会只在右边画一小截。
+ * `line` 时只画一条虚线（第二条线），不填色。
+ */
+function Sparkline({ values, max = 100, busy, line = false }: { values: number[]; max?: number; busy: boolean; line?: boolean }) {
   const slots = 30;
-  if (values.length === 0) return null;
+  if (values.length === 0 || max <= 0) return null;
   const padded = [...Array<number>(Math.max(0, slots - values.length)).fill(values[0]!), ...values].slice(-slots);
   // 最高画到卡片的 85%，上面留点空，满载时也不至于整张都是颜色
-  const points = padded.map((v, i) => `${((i / (slots - 1)) * 100).toFixed(2)},${(100 - (Math.min(100, Math.max(0, v)) / 100) * 85).toFixed(2)}`);
+  const points = padded.map((v, i) => `${((i / (slots - 1)) * 100).toFixed(2)},${(100 - (Math.min(max, Math.max(0, v)) / max) * 85).toFixed(2)}`);
   const color = busy ? "var(--warning)" : "var(--accent)";
   return (
     <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden>
-      <polygon points={`0,100 ${points.join(" ")} 100,100`} fill={color} opacity={0.1} />
-      <polyline points={points.join(" ")} fill="none" stroke={color} strokeOpacity={0.55} strokeWidth={1.5} vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+      {!line && <polygon points={`0,100 ${points.join(" ")} 100,100`} fill={color} opacity={0.1} />}
+      <polyline
+        points={points.join(" ")}
+        fill="none"
+        stroke={color}
+        strokeOpacity={line ? 0.45 : 0.55}
+        strokeWidth={1.5}
+        strokeDasharray={line ? "3 3" : undefined}
+        vectorEffect="non-scaling-stroke"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }

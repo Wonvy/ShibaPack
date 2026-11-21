@@ -1,11 +1,13 @@
-//! 本机的配置和实时状态：主页上的系统信息、CPU、内存、磁盘，和任务管理器里的进程。
+//! 本机的配置和实时状态：主页上的系统信息、CPU、内存、显卡、网络、磁盘，和任务管理器里的进程。
 //!
 //! 用 sysinfo（MIT）读，什么都不存：主页开着、窗口在前面时界面每 2 秒要一次，切走就停。
 //! 结束进程只结束当前用户自己的、不是 ShibaPack 自己的；先请它正常退出，强制结束要另外点。
 
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use sysinfo::{CpuRefreshKind, MemoryRefreshKind, Pid, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, Signal, System, UpdateKind};
+use std::time::Instant;
+use sysinfo::{CpuRefreshKind, DiskRefreshKind, Disks, Gpus, Networks, MemoryRefreshKind, Pid, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, Signal, System, UpdateKind};
 
 /// 不会变的：电脑名、型号、系统、处理器、显卡、内存总量、磁盘、开机时间。
 #[derive(Debug, Clone, Serialize)]
@@ -70,6 +72,37 @@ pub struct Sample {
     pub disk: Option<DiskUsage>,
     pub uptime: u64,
     pub processes: Vec<ProcessInfo>,
+    /// 最忙的那块显卡。读不到占用时为空（Windows 第一次总是读不到，要和上一次比）。
+    pub gpu: Option<GpuLoad>,
+    /// 每秒收发的字节数，不含回环和虚拟网卡。
+    pub network: Option<NetworkRate>,
+    /// 每秒读写硬盘的字节数，所有硬盘加起来。
+    pub disk_io: Option<DiskIo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuLoad {
+    pub model: String,
+    /// 0–100。
+    pub usage: f32,
+    /// 独立显存用了多少、一共多少。和内存共用的（Apple 芯片、核显）为空。
+    pub memory_used: Option<u64>,
+    pub memory_total: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkRate {
+    pub received: u64,
+    pub sent: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskIo {
+    pub read: u64,
+    pub written: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -99,6 +132,12 @@ pub struct Monitor {
     own_pid: Pid,
     /// 型号这些要跑 system_profiler，读一次就留着。
     overview: Option<Overview>,
+    /// 网络、硬盘读写、显卡占用也要和上一次比。
+    networks: Option<Networks>,
+    disks: Option<Disks>,
+    gpus: Option<Gpus>,
+    /// 上一次量网络和硬盘读写的时间，算每秒多少用。
+    last_io: Instant,
 }
 
 impl Monitor {
@@ -110,10 +149,14 @@ impl Monitor {
         .map_err(|e| e.to_string())?;
         system.refresh_processes_specifics(ProcessesToUpdate::All, true, process_kind());
         // 第一次的 CPU 占用要隔一会儿再量一次才准
+        let networks = Networks::new_with_refreshed_list().ok();
+        let disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::nothing().with_io_usage()).ok();
+        let gpus = Gpus::new_with_refreshed_list().ok();
+        let last_io = Instant::now();
         std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
         system.refresh_cpu_usage();
         system.refresh_processes_specifics(ProcessesToUpdate::All, true, process_kind());
-        Ok(Monitor { system, own_pid: Pid::from_u32(std::process::id()), overview: None })
+        Ok(Monitor { system, own_pid: Pid::from_u32(std::process::id()), overview: None, networks, disks, gpus, last_io })
     }
 
     pub fn overview(&mut self) -> Overview {
@@ -177,7 +220,11 @@ impl Monitor {
             })
             .collect();
         processes.sort_by(|a, b| b.cpu.total_cmp(&a.cpu).then(b.memory.cmp(&a.memory)));
+        let (network, disk_io) = self.io_rates();
         Sample {
+            gpu: self.gpu_load(),
+            network,
+            disk_io,
             cpu: self.system.global_cpu_usage().clamp(0.0, 100.0),
             memory_used: self.system.used_memory(),
             memory_total: self.system.total_memory(),
@@ -187,6 +234,49 @@ impl Monitor {
             uptime: System::uptime().unwrap_or(0),
             processes,
         }
+    }
+
+    /// 从上一次到现在每秒收发、读写了多少。
+    fn io_rates(&mut self) -> (Option<NetworkRate>, Option<DiskIo>) {
+        let now = Instant::now();
+        let seconds = now.duration_since(self.last_io).as_secs_f64();
+        self.last_io = now;
+        let per_second = |bytes: u64| if seconds > 0.0 { (bytes as f64 / seconds).round() as u64 } else { 0 };
+        let network = self.networks.as_mut().map(|networks| {
+            networks.refresh(true);
+            let (received, sent) = networks
+                .iter()
+                .filter(|(name, _)| !virtual_interface(&name.to_string_lossy()))
+                .fold((0, 0), |(r, s), (_, data)| (r + data.received(), s + data.transmitted()));
+            NetworkRate { received: per_second(received), sent: per_second(sent) }
+        });
+        let disk_io = self.disks.as_mut().map(|disks| {
+            disks.refresh_specifics(true, DiskRefreshKind::nothing().with_io_usage());
+            // macOS 上同一块硬盘的几个卷报的是整块硬盘的数，累计值一样的只算一次
+            let mut seen = HashSet::new();
+            let (read, written) = disks
+                .iter()
+                .map(|disk| disk.usage())
+                .filter(|usage| seen.insert((usage.total_read_bytes, usage.total_written_bytes)))
+                .fold((0, 0), |(r, w), usage| (r + usage.read_bytes, w + usage.written_bytes));
+            DiskIo { read: per_second(read), written: per_second(written) }
+        });
+        (network, disk_io)
+    }
+
+    /// 占用最高的那块显卡。
+    fn gpu_load(&mut self) -> Option<GpuLoad> {
+        let gpus = self.gpus.as_mut()?;
+        gpus.refresh(false);
+        gpus.iter()
+            .filter_map(|gpu| Some((gpu, gpu.usage()?)))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(gpu, usage)| GpuLoad {
+                model: gpu.model().unwrap_or_default().trim().to_string(),
+                usage: usage.clamp(0.0, 100.0),
+                memory_used: gpu.used_memory(),
+                memory_total: gpu.total_memory().filter(|m| *m > 0),
+            })
     }
 
     /// 结束一个进程。`force` 为假时请它正常退出（macOS、Linux 发 SIGTERM，Windows 用 taskkill 不带 /F）；
@@ -209,6 +299,19 @@ impl Monitor {
             None => graceful_windows(pid.as_u32()),
         }
     }
+}
+
+/// 回环和虚拟网卡：VPN、虚拟机、容器的流量也会从真网卡走一遍，算上就重复了。
+fn virtual_interface(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    const PREFIXES: &[&str] = &[
+        "utun", "ipsec", "gif", "stf", "awdl", "llw", "bridge", "anpi", "ap", "vmnet", "vboxnet", "docker", "veth", "br-", "virbr",
+        "tun", "tap", "wg", "zt", "vethernet", "isatap", "teredo",
+    ];
+    // lo、lo0 是回环；“Local Area Connection” 不是
+    let loopback = lower.strip_prefix("lo").is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit()));
+    loopback || PREFIXES.iter().any(|prefix| lower.starts_with(prefix))
+        || ["loopback", "virtual", "vmware", "virtualbox", "hyper-v", "pseudo"].iter().any(|word| lower.contains(word))
 }
 
 fn process_kind() -> ProcessRefreshKind {
@@ -381,6 +484,29 @@ mod tests {
         let intel = serde_json::json!({"SPHardwareDataType": [{"machine_name": "iMac", "number_processors": 8}]});
         let hw = parse_mac_hardware(&intel).unwrap();
         assert_eq!((hw.model.as_str(), hw.core_split), ("iMac", None));
+    }
+
+    #[test]
+    fn skips_loopback_and_virtual_interfaces() {
+        for name in ["lo", "lo0", "utun3", "awdl0", "bridge100", "docker0", "vEthernet (WSL)", "Loopback Pseudo-Interface 1", "VMware Network Adapter VMnet8"] {
+            assert!(virtual_interface(name), "{name}");
+        }
+        for name in ["en0", "eth0", "wlan0", "Wi-Fi", "Ethernet", "Local Area Connection", "WLAN"] {
+            assert!(!virtual_interface(name), "{name}");
+        }
+    }
+
+    /// 在这台电脑上量几次，看看显卡、网络、硬盘读写读不读得到：
+    /// `cargo test -p shibapack-core samples_io_live -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn samples_io_live() {
+        let mut monitor = Monitor::new().unwrap();
+        for _ in 0..3 {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let sample = monitor.sample();
+            eprintln!("gpu {:?} · net {:?} · disk {:?}", sample.gpu, sample.network, sample.disk_io);
+        }
     }
 
     #[test]

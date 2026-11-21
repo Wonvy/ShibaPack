@@ -695,6 +695,12 @@ export interface SystemSample {
   disk: { mount: string; total: number; available: number } | null;
   uptime: number;
   processes: ProcessInfo[];
+  /** 最忙的那块显卡；读不到占用时为 null（Windows 第一次总是读不到）。 */
+  gpu: { model: string; usage: number; memoryUsed: number | null; memoryTotal: number | null } | null;
+  /** 每秒收发的字节数，不含回环和虚拟网卡。 */
+  network: { received: number; sent: number } | null;
+  /** 每秒读写硬盘的字节数，所有硬盘加起来。 */
+  diskIo: { read: number; written: number } | null;
 }
 
 export interface ProcessInfo {

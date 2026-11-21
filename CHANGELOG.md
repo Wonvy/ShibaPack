@@ -8,6 +8,30 @@ One section per version, titled `## <version>`, with a Chinese and an English pa
 `.github/workflows/release.yml` puts that section into the GitHub Release notes and `latest.json`; the update window
 in ShibaPack (opened from the version number in the bottom-right corner) shows the part that matches the interface language.
 
+## 0.15.0
+
+### 中文
+
+- 主页新增三张实时卡片：显卡、网络、硬盘读写，和 CPU、内存、系统盘排成两排。
+  - 显卡显示占用和型号，有独立显存的显示用了多少；有几块显卡时显示最忙的那块。
+  - 网络显示每秒下载、上传多少（下载是实线，上传是虚线），不算 VPN、虚拟机、容器这些虚拟网卡，免得重复计算。
+  - 硬盘读写显示每秒读取、写入多少，所有硬盘加在一起。
+- 卸载前的分析找得更全：
+  - 中文名的软件（比如网易云音乐）也能找到用英文文件夹名存的数据，例如 `AppData\Local\NetEase\CloudMusic`：会按安装路径里的名字去找，没登记安装位置的就看卸载程序在哪。中文发布者名里的“公司”“科技”“有限公司”也不再妨碍匹配。
+  - 新找的：软件登记的链接协议和文件类型（如 `obsidian://`）、Windows 记下的使用记录、放行它的防火墙规则、“启动应用”里的开关、“启动”文件夹和开始菜单发布者文件夹里的快捷方式、`obsidian-updater` 这类自动更新文件夹。
+  - 链接协议、文件类型和防火墙规则跟着软件本身走：只有勾上 App 一起卸载时才能删，只清理数据时不会动，免得还装着的软件出问题。
+
+### English
+
+- Three new live cards on Home: GPU, network and disk activity, in two rows with CPU, memory and the system disk.
+  - GPU shows usage and model, plus dedicated VRAM used when there is any; with several GPUs it shows the busiest one.
+  - Network shows download and upload per second (download as a solid line, upload dashed). VPN, virtual machine and container adapters are left out so traffic isn't counted twice.
+  - Disk activity shows reads and writes per second across all disks.
+- The analysis before uninstalling finds more:
+  - Apps with Chinese names (such as NetEase Cloud Music) now match data stored under English folder names, like `AppData\Local\NetEase\CloudMusic`, using the names in the install path (or the uninstaller's folder when no install location is registered). Company suffixes in Chinese publisher names no longer get in the way.
+  - Newly found: link protocols and file types the app registered (such as `obsidian://`), usage records Windows keeps, firewall rules that allow it, its switch in Startup apps, shortcuts in the Startup folder and in the publisher's Start menu folder, and auto-update folders like `obsidian-updater`.
+  - Link protocols, file types and firewall rules belong to the app itself: they can only be removed when uninstalling the app too, never when only cleaning data, so an app that stays installed keeps working.
+
 ## 0.14.0
 
 ### 中文

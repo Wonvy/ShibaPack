@@ -12,6 +12,7 @@ import {
   ChevronsUpDown,
   CircleCheck,
   CircleDashed,
+  Download,
   FilePlus,
   Folder,
   FolderOpen,
@@ -33,7 +34,7 @@ import {
 } from "lucide-react";
 import { type PointerEvent, type ReactNode, createContext, memo, useContext, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useGridMotion } from "../components/gridMotion";
-import { useSoftwareHover } from "../components/HoverCard";
+import { useHoverSummary, useSoftwareHover } from "../components/HoverCard";
 import { type ColumnDef, type ColumnSamples, type Columns, ColumnsContext, TableHeader, useTableColumns, useWidth } from "../components/columns";
 import { PackageFileIcon, PlatformIcon, PlatformIcons } from "../components/PlatformIcon";
 import { RepositorySoftwareIcon } from "../components/SoftwareIcon";
@@ -78,6 +79,7 @@ import {
   hasUpdate,
   primaryVersion,
   sameVersion,
+  shownSummary,
   softwarePlatforms,
   softwareSize,
   sortedVersions,
@@ -605,6 +607,7 @@ function useItem(software: Software) {
         { label: t("batch.delete", { n: group.length }), icon: Trash2, danger: true, separated: true, onSelect: () => void deleteSoftwareMany(chosen()) },
       ]
     : [
+        { label: t("link.install"), icon: Download, disabled: !installerFor(software), onSelect: () => void installSoftware(software) },
         {
           label: software.starred ? t("star.remove") : t("star.add"),
           icon: Star,
@@ -1005,8 +1008,11 @@ const Row = memo(function Row({ software, selected }: { software: Software; sele
   const language = useLanguage();
   const columns = useContext(ColumnsContext);
   const show = (key: LibraryColumn) => columns.visible.includes(key);
-  const { installedApp, upgrade, menu, handlers, hoverCard } = useItem(software);
+  const { installedApp, upgrade, menu, handlers } = useItem(software);
   const description = useDescription(software);
+  const [hovered, setHovered] = useState(false);
+  const hoverTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(hoverTimer.current), []);
   return (
     <ContextMenu items={menu}>
       <div
@@ -1014,20 +1020,24 @@ const Row = memo(function Row({ software, selected }: { software: Software; sele
         tabIndex={0}
         aria-pressed={selected}
         {...handlers}
+        onMouseOver={() => {
+          if (hoverTimer.current === undefined && !hovered) hoverTimer.current = window.setTimeout(() => { hoverTimer.current = undefined; setHovered(true); }, 450);
+        }}
+        onMouseLeave={() => { window.clearTimeout(hoverTimer.current); hoverTimer.current = undefined; setHovered(false); }}
         style={{ gridTemplateColumns: columns.template }}
         className={cx(
           "group grid min-h-[52px] items-center gap-x-2 rounded-md py-1.5 pr-3 pl-2.5 transition-colors",
           selected ? "bg-active" : "hover:bg-hover",
         )}
       >
-        {hoverCard}
         <div className="flex min-w-0 items-center gap-2.5">
           <RepositorySoftwareIcon software={software} stack={software.versions.length} />
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <span className="truncate text-[13px] font-medium">{software.name}</span>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="min-w-0 shrink truncate text-[13px] font-medium">{software.name}</span>
               <InstalledMark app={installedApp} />
               <StarMark software={software} />
+              {hovered && <InlineSummary software={software} />}
             </div>
             <div className="truncate text-[12px] text-fg-3">{description}</div>
           </div>
@@ -1049,6 +1059,15 @@ const Row = memo(function Row({ software, selected }: { software: Software; sele
     </ContextMenu>
   );
 });
+
+/** 悬停时在标题后面显示简介，AI 有结果时逐字呈现。 */
+function InlineSummary({ software }: { software: Software }) {
+  const summary = useApp((state) => state.library?.summaries[software.name]);
+  const translate = useApp((state) => state.library?.settings.translateSummaries ?? true);
+  const language = useLanguage();
+  const text = useHoverSummary(shownSummary(summary, language, translate)?.text, { kind: "software", name: software.name, publisher: software.publisher });
+  return <span className="min-w-0 flex-1 truncate text-[12px] font-normal text-fg-3" title={text}>{text}</span>;
+}
 
 /**
  * 网格视图里的一个软件：居中的大图标，下面是名字和版本，别的都收起来。

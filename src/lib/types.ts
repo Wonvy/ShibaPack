@@ -425,6 +425,7 @@ export interface ImportHint {
   /** 放进哪个分类：新建的软件放进去，已有的软件还没分类时也放进去。 */
   categoryId?: string;
   autoClassify?: boolean;
+  categoryPreviews?: Record<string, ImportCategoryPreview>;
   /** 整个当作一个安装包导入的文件夹（绿色版软件等）。其余文件夹展开成里面的安装包。 */
   packages?: string[];
   entries?: Record<string, ImportEntryEdit>;

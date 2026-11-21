@@ -248,9 +248,10 @@ export const api = {
    * 让 AI 解释一批启动项是做什么的、能不能停用：没解释过的凑成一批问，不是一项一项问。解释记在仓库的缓存里：
    * `cached` 只看缓存、不问 AI；`auto` 有就用、没有才问；`refresh` 全部重新问。进度见 `onAiProgress`。
    */
-  aiExplainStartup: (ids: string[], mode: "cached" | "auto" | "refresh") => call<Explanations>("ai_explain_startup_many", { ids, mode }),
+  aiExplainStartup: (ids: string[], mode: "cached" | "auto" | "refresh" | "hover") => call<Explanations>("ai_explain_startup_many", { ids, mode }),
   /** 让 AI 一批写简介（每次请求放 15 个），写好的一次存进索引。进度见 `onAiProgress`。 */
   aiDescribeMany: (items: { name: string; publisher?: string }[]) => call<DescribeResult>("ai_describe_many", { items }),
+  aiHoverSummary: (name: string, publisher: string) => call<{ text: string; cached: boolean }>("ai_hover_summary", { name, publisher }),
   fillIcons: () => call<FillResult>("fill_icons"),
   fillFileInfo: () => call<FillResult>("fill_file_info"),
   inspectDrop: (paths: string[], includeChildren = false) => call<DropEntry[]>("inspect_drop", { paths, includeChildren }),

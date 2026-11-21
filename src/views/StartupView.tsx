@@ -498,6 +498,7 @@ function StartupRow({
       publisher={item.publisher}
       text={item.description && item.description !== item.name ? item.description : explanation}
       paths={paths.length ? paths : [{ values: [] }]}
+      ai={{ kind: "startup", id: item.id }}
     />,
   );
   return (

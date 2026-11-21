@@ -36,6 +36,8 @@ pub struct ImportHint {
     /// 放进哪个分类：新建的软件放进去，已有的软件还没分类的也放进去，已经分好类的不动。
     pub category_id: Option<String>,
     pub auto_classify: Option<bool>,
+    /// 导入前已确认的分类预览，按原始路径记录。
+    pub category_previews: Option<HashMap<String, crate::classify::ImportCategoryPreview>>,
     /// 当作一个安装包整个导入的文件夹（绿色版软件、带着一堆文件的安装程序）。其余文件夹照旧展开成里面的安装包。
     pub packages: Vec<String>,
     /// 在导入窗口确认的名称和版本，按原始路径记录。

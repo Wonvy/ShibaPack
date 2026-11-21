@@ -339,7 +339,8 @@ function useSubtitle(app: InstalledApp): { text: string; described: boolean } {
 }
 
 function useInstalledHover(app: InstalledApp, text?: string) {
-  return useHoverCard(<SummaryCard name={app.name} publisher={app.publisher} text={text} paths={[{ values: app.location ? [app.location] : [] }]} />);
+  const key = useSummaryKey(app);
+  return useHoverCard(<SummaryCard name={app.name} publisher={app.publisher} text={text} paths={[{ values: app.location ? [app.location] : [] }]} ai={{ kind: "software", name: key, publisher: app.publisher }} />);
 }
 
 /** 列表视图的一行。 */

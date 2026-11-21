@@ -8,6 +8,22 @@ One section per version, titled `## <version>`, with a Chinese and an English pa
 `.github/workflows/release.yml` puts that section into the GitHub Release notes and `latest.json`; the update window
 in ShibaPack (opened from the version number in the bottom-right corner) shows the part that matches the interface language.
 
+## 0.16.0
+
+### 中文
+
+- 拖入的文件夹整体作为一个软件导入，使用文件夹内的内容识别软件信息。
+- 选择智能分类后，在导入前等待并显示分类结果；已配置 AI 时，内置规则无法判断的项目也会在预览中交给 AI。
+- 软件右键菜单新增“安装”。
+- 启用 AI 后，软件和启动项的悬停提示会自动获取并缓存 AI 简介；软件列表将简介显示在标题旁，新生成的简介带打字效果。
+
+### English
+
+- A dropped folder is imported as one app, using its contents to identify the software.
+- Smart categorization is completed and shown before import. When AI is configured, it also previews categories for items unmatched by the built-in rules.
+- Added Install to the app context menu.
+- When AI is enabled, app and startup-item hover descriptions are generated and cached automatically. The app list shows descriptions beside names, with a typing effect for newly generated text.
+
 ## 0.15.1
 
 ### 中文

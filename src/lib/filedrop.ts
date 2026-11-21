@@ -11,7 +11,7 @@ export function fileDropTargetAt(point: DropPoint): string | null {
 
 /**
  * 拖到侧栏的某个分类上（`null` 是“未分类”）：只有文件和 .app 时直接导入进这个分类；
- * 带着普通文件夹时打开导入窗口，分类已经选好，让用户决定文件夹是整个导入还是导入里面的安装包。
+ * 带着普通文件夹时打开导入窗口，分类已经选好，文件夹整体作为一个软件导入。
  */
 export async function dropOnCategory(paths: string[], categoryId: string | null) {
   const app = useApp.getState();

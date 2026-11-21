@@ -472,7 +472,17 @@ async fn import_paths(app: AppHandle, paths: Vec<String>, mode: Storage, move_fi
         .map_err(|e| e.to_string())?;
         if auto_classify && report.imported > 0 && !state.import_cancel.load(Ordering::SeqCst) {
             progress("classify", 0, 0, String::new());
-            if let Err(error) = classify_import(&state, &root, &library, &mut report) {
+            let classification = if let Some(previews) = &hint.category_previews {
+                let assignments = report.items.iter().filter(|item| item.status == "imported").filter_map(|item| {
+                    let preview = previews.get(&item.path)?;
+                    Some(Suggestion { software_id: item.software_id.clone()?, category_id: preview.category_id.clone(), new_category: preview.new_category.clone(), unchanged: false, known: false, evidence: Vec::new(), reason: String::new() })
+                }).collect();
+                with_repo_quick(&state, Some(&root), |repo| repo.transact(|repo| repo.apply_import_classification(assignments)))
+                    .map(|count| report.classified = count).map_err(|e| e.to_string())
+            } else {
+                classify_import(&state, &root, &library, &mut report)
+            };
+            if let Err(error) = classification {
                 if !state.import_cancel.load(Ordering::SeqCst) {
                     report.classification_error = Some(error);
                 }
@@ -552,7 +562,34 @@ async fn preview_import_categories(
     app: AppHandle,
     targets: Vec<shibapack_core::classify::ImportCategoryTarget>,
 ) -> CmdResult<Vec<shibapack_core::classify::ImportCategoryPreview>> {
-    blocking(app, move |_app, state| with_repo(&state, |repo| Ok(repo.preview_import_categories(&targets)))).await
+    blocking(app, move |_app, state| {
+        let (mut previews, mut library) = with_repo(&state, |repo| Ok((repo.preview_import_categories(&targets), repo.lib.clone())))?;
+        let Ok(service) = ai_service(&library.settings.ai, None) else { return Ok(previews) };
+        let mut ids = Vec::new();
+        let mut indices = HashMap::new();
+        for (index, (target, preview)) in targets.iter().zip(&previews).enumerate() {
+            if preview.category_id.is_some() || preview.new_category.is_some() { continue; }
+            let id = format!("import-preview-{index}");
+            indices.insert(id.clone(), index);
+            ids.push(id.clone());
+            library.software.push(shibapack_core::Software {
+                id, name: target.name.clone(), publisher: target.publisher.clone(), homepage: String::new(), note: String::new(),
+                category_id: None, starred: false, icon: None, icon_data: None, default_version_id: None,
+                added_at: String::new(), versions: Vec::new(), subscription: None,
+            });
+        }
+        if !ids.is_empty() {
+            let cancel = AtomicBool::new(false);
+            let suggestions = ai::suggest_categories(&service, &library, &ids, &cancel, &mut |_, _| {}).map_err(|e| e.code())?;
+            for suggestion in suggestions {
+                if let Some(&index) = indices.get(&suggestion.software_id) {
+                    previews[index].category_id = suggestion.category_id;
+                    previews[index].new_category = suggestion.new_category;
+                }
+            }
+        }
+        Ok(previews)
+    }).await
 }
 
 /// 在两个文件之间停下正在进行的导入。已经导入的保留。
@@ -2318,14 +2355,16 @@ async fn ai_explain_startup_many(app: AppHandle, ids: Vec<String>, mode: String)
         }
 
         let cancel = Arc::new(AtomicBool::new(false));
-        if let Ok(mut current) = state.ai_cancel.lock() {
-            current.store(true, Ordering::SeqCst);
-            *current = cancel.clone();
+        if mode != "hover" {
+            if let Ok(mut current) = state.ai_cancel.lock() {
+                current.store(true, Ordering::SeqCst);
+                *current = cancel.clone();
+            }
         }
         let (service, library) = repo_ai(&state)?;
         let questions: Vec<(String, String)> = todo.iter().map(|item| (item.id.clone(), startup::facts(item))).collect();
         let answers = ai::explain_startup_many(&service, &library.settings.language, &questions, &cancel, &mut |done, total| {
-            let _ = app.emit("ai://progress", AiProgress { done, total });
+            if mode != "hover" { let _ = app.emit("ai://progress", AiProgress { done, total }); }
         })
         .map_err(|e| e.code())?;
 
@@ -2866,6 +2905,37 @@ async fn ai_describe(app: AppHandle, name: String, publisher: Option<String>) ->
     .await
 }
 
+/// 悬停时使用独立缓存，不能覆盖用户保存的简介。
+#[derive(Serialize)]
+struct HoverSummary { text: String, cached: bool }
+
+#[tauri::command]
+async fn ai_hover_summary(app: AppHandle, name: String, publisher: String) -> CmdResult<HoverSummary> {
+    blocking(app, move |_app, state| {
+        let name = name.trim().to_string();
+        if name.is_empty() { return Err("not_found".into()); }
+        let (service, library) = repo_ai(&state)?;
+        let software = library.software.iter().find(|s| s.name == name);
+        let facts = software.map(|s| (&s.publisher, &s.homepage, s.versions.iter().flat_map(|v| v.files.iter().map(|f| &f.name)).collect::<Vec<_>>()));
+        let existing = library.summaries.get(&name).filter(|s| !s.source.starts_with("AI")).map(|s| &s.text);
+        let key = serde_json::to_string(&(
+            &name, &publisher, &library.settings.language, &library.settings.ai.base_url,
+            service.model(), facts, existing,
+        )).map_err(|e| e.to_string())?;
+        let dir = cache_dir(&state)?;
+        {
+            let _turn = state.ai_cache_turn.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(hit) = AiCache::load(&dir).hover.get(&key) { return Ok(HoverSummary { text: hit.text.clone(), cached: true }); }
+        }
+        let summary = ai::describe(&service, &library, &name, &publisher).map_err(|e| e.code())?;
+        let _turn = state.ai_cache_turn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = AiCache::load(&dir);
+        cache.hover.insert(key, CachedText { text: summary.text.clone(), model: service.model().to_string(), at: shibapack_core::now() });
+        let _ = cache.save(&dir);
+        Ok(HoverSummary { text: summary.text, cached: false })
+    }).await
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DescribeTarget {
@@ -3198,6 +3268,7 @@ pub fn run() {
             ai_models,
             ai_test,
             ai_describe,
+            ai_hover_summary,
             ai_describe_many,
             set_summary,
             ai_suggest_categories,

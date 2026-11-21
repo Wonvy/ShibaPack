@@ -3,11 +3,11 @@
 // 直接拖到侧栏分类的导入失败时，也用这个窗口显示结果。
 
 import { AlertCircle, AppWindow, CheckCircle2, Copy, FileBox, Folder, Link2, LoaderCircle, TriangleAlert } from "lucide-react";
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { errorText, importFailureText } from "../lib/i18n";
 import { categoryPath, flattenTree, formatSize } from "../lib/library";
-import { useAiReady, useApp, useLanguage, useT } from "../lib/store";
+import { useApp, useLanguage, useT } from "../lib/store";
 import type { ImportDialogState } from "../lib/store";
 import type { DropEntry, ImportCategoryPreview, ImportEntryEdit, ImportItem, ImportReport, Software, Storage } from "../lib/types";
 import { SoftwareIcon } from "./SoftwareIcon";
@@ -27,7 +27,6 @@ function Dialog({ state }: { state: ImportDialogState }) {
   const t = useT();
   const language = useLanguage();
   const library = useApp((s) => s.library);
-  const aiReady = useAiReady();
   const scope = useApp((s) => s.scope);
   const route = useApp((s) => s.route);
   const patch = useApp((s) => s.patch);
@@ -41,7 +40,7 @@ function Dialog({ state }: { state: ImportDialogState }) {
   const preset = state.categoryId && categories.some((c) => c.id === state.categoryId) ? state.categoryId : null;
 
   const [entries, setEntries] = useState<DropEntry[] | null>(
-    state.entries?.some((entry) => entry.installers > entry.children.length) ? null : state.entries ?? null,
+    state.entries ?? null,
   );
   const [inspectError, setInspectError] = useState<string | null>(null);
   /** 整个当作一个软件导入的文件夹。 */
@@ -59,11 +58,13 @@ function Dialog({ state }: { state: ImportDialogState }) {
   const [stopping, setStopping] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, Partial<ImportEntryEdit>>>({});
   const [previews, setPreviews] = useState(new Map<string, { name: string; category: ImportCategoryPreview | null }>());
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewAttempt, setPreviewAttempt] = useState(0);
 
   useEffect(() => {
     if (entries !== null || state.report) return;
     let alive = true;
-    api.inspectDrop(state.paths, true).then(
+    api.inspectDrop(state.paths).then(
       (found) => {
         if (!alive) return;
         setEntries(found);
@@ -93,10 +94,7 @@ function Dialog({ state }: { state: ImportDialogState }) {
   }, [drafts, existingSoftware, state.softwareName]);
   const updateDraft = (path: string, edit: Partial<ImportEntryEdit>) =>
     setDrafts((current) => ({ ...current, [path]: { ...current[path], ...edit } }));
-  const activeEntries = useMemo(
-    () => (entries ?? []).flatMap((entry) => entry.isDir && !packages.has(entry.path) ? entry.children : [entry]),
-    [entries, packages],
-  );
+  const activeEntries = useMemo(() => entries ?? [], [entries]);
   const smart = category === "smart";
   const categoryTargets = useMemo(
     () => activeEntries.map((entry) => ({ path: entry.path, name: editOf(entry).name.trim(), publisher: entry.publisher })),
@@ -105,18 +103,28 @@ function Dialog({ state }: { state: ImportDialogState }) {
   useEffect(() => {
     if (!smart || phase !== "confirm" || categoryTargets.length === 0) return;
     let alive = true;
+    setPreviews(new Map());
+    setPreviewError(null);
     const update = (suggestions: ImportCategoryPreview[]) => {
       if (!alive) return;
       setPreviews(new Map(categoryTargets.map(({ path, name }, index) => [path, { name, category: suggestions[index] ?? null }])));
     };
     const timer = setTimeout(() => {
-      void api.previewImportCategories(categoryTargets).then(update, () => update([]));
+      void api.previewImportCategories(categoryTargets).then(update, (error) => {
+        if (alive) setPreviewError(errorText(language, error));
+        update([]);
+      });
     }, 150);
     return () => {
       alive = false;
       clearTimeout(timer);
     };
-  }, [categoryTargets, phase, smart, library?.categories]);
+  }, [categoryTargets, phase, smart, library?.categories, language, previewAttempt]);
+
+  const previewsReady = categoryTargets.every(({ path, name }) => {
+    const preview = previews.get(path);
+    return preview?.name === name && preview.category !== null;
+  });
 
   const categoryOf = (entry: DropEntry, name: string): string | undefined => {
     if (!smart) return undefined;
@@ -126,7 +134,7 @@ function Dialog({ state }: { state: ImportDialogState }) {
     if (!value.category) return t("importDialog.categoryUnavailable");
     const { categoryId, newCategory } = value.category;
     if (categoryId) return categoryPath(categories, categoryId);
-    return newCategory?.name ?? (aiReady ? t("importDialog.categoryPendingAi") : t("nav.uncategorized"));
+    return newCategory?.name ?? t("nav.uncategorized");
   };
   const chosenCategory = category === "current" ? current : category.startsWith("category:") ? category.slice("category:".length) : null;
   const storageLabel = { copy: t("importDialog.copy"), move: t("importDialog.move"), index: t("importDialog.index") };
@@ -146,6 +154,7 @@ function Dialog({ state }: { state: ImportDialogState }) {
         {
           categoryId: chosenCategory ?? undefined,
           autoClassify: smart,
+          categoryPreviews: smart ? Object.fromEntries(activeEntries.map((entry) => [entry.path, previews.get(entry.path)!.category!])) : undefined,
           packages: [...packages],
           entries: Object.fromEntries(activeEntries.map((entry) => [entry.path, editOf(entry)])),
         },
@@ -189,7 +198,7 @@ function Dialog({ state }: { state: ImportDialogState }) {
         <Button variant="ghost" onClick={close}>
           {t("common.cancel")}
         </Button>
-        <Button variant="primary" disabled={!library || activeEntries.length === 0 || activeEntries.some((entry) => !editOf(entry).name.trim())} onClick={() => void start()}>
+        <Button variant="primary" disabled={!library || activeEntries.length === 0 || activeEntries.some((entry) => !editOf(entry).name.trim()) || (smart && !previewsReady)} onClick={() => void start()}>
           {t("importDialog.start")}
         </Button>
       </>
@@ -222,20 +231,17 @@ function Dialog({ state }: { state: ImportDialogState }) {
           <EntryList
             entries={entries}
             error={inspectError}
-            packages={packages}
             editOf={editOf}
             existingSoftware={existingSoftware}
             smart={smart}
             categoryOf={categoryOf}
             fixedName={Boolean(state.softwareName)}
             onEdit={updateDraft}
-            onPackage={(path, whole) => {
-              const next = new Set(packages);
-              if (whole) next.add(path);
-              else next.delete(path);
-              setPackages(next);
-            }}
           />
+          {smart && previewError && <p className="m-0 text-[12px] text-warning">
+            {t("importDialog.categoryUnavailable")}: {previewError}{" "}
+            <button type="button" className="text-accent underline" onClick={() => setPreviewAttempt((n) => n + 1)}>{t("setup.retry")}</button>
+          </p>}
           <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
             <label className="flex min-w-0 flex-col gap-1 text-[12px] text-fg-2">
               {t("importDialog.category")}
@@ -272,33 +278,29 @@ function Dialog({ state }: { state: ImportDialogState }) {
   );
 }
 
-/** 文件夹默认怎么导：像一个软件（绿色版、.app）或者里面没有安装包时整个导入，否则导入里面的安装包。 */
+/** 每个拖入的文件夹都作为一个软件导入。 */
 function defaultPackages(entries: DropEntry[]): Set<string> {
-  return new Set(entries.filter((e) => e.isDir && (e.package || e.installers === 0)).map((e) => e.path));
+  return new Set(entries.filter((e) => e.isDir).map((e) => e.path));
 }
 
 function EntryList({
   entries,
   error,
-  packages,
   editOf,
   existingSoftware,
   smart,
   categoryOf,
   fixedName,
   onEdit,
-  onPackage,
 }: {
   entries: DropEntry[] | null;
   error: string | null;
-  packages: Set<string>;
   editOf: (entry: DropEntry) => ImportEntryEdit;
   existingSoftware: Map<string, Software>;
   smart: boolean;
   categoryOf: (entry: DropEntry, name: string) => string | undefined;
   fixedName: boolean;
   onEdit: (path: string, edit: Partial<ImportEntryEdit>) => void;
-  onPackage: (path: string, whole: boolean) => void;
 }) {
   const t = useT();
   if (error) return <p className="m-0 text-[13px] text-danger">{error}</p>;
@@ -350,32 +352,7 @@ function EntryList({
           </tr>
         </thead>
         <tbody className="[&>tr:not(:last-child)>td]:border-b [&>tr>td]:border-line">
-          {entries.map((entry) => {
-            if (!entry.isDir || entry.installers === 0 || entry.name.toLowerCase().endsWith(".app")) return row(entry);
-            const whole = packages.has(entry.path);
-            return (
-              <Fragment key={entry.path}>
-                <tr className="bg-hover">
-                  <td colSpan={smart ? 6 : 5} className="px-2 py-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <ImportFile entry={entry} />
-                      <Select
-                        compact
-                        value={whole ? "whole" : "inside"}
-                        onChange={(event) => onPackage(entry.path, event.target.value === "whole")}
-                        aria-label={entry.name}
-                        title={whole ? t("importDialog.wholeHint") : t("importDialog.insideHint", { n: entry.installers })}
-                      >
-                        <option value="whole">{t("importDialog.asPackage")}</option>
-                        <option value="inside">{t("importDialog.inside", { n: entry.installers })}</option>
-                      </Select>
-                    </div>
-                  </td>
-                </tr>
-                {whole ? row(entry, true) : entry.children.map((child) => row(child, true))}
-              </Fragment>
-            );
-          })}
+          {entries.map((entry) => row(entry))}
         </tbody>
       </table>
     </div>

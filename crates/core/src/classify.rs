@@ -341,7 +341,7 @@ pub struct ImportCategoryTarget {
     pub publisher: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportCategoryPreview {
     pub category_id: Option<String>,

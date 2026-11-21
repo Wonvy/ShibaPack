@@ -1,8 +1,10 @@
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { api } from "../lib/api";
 import { fullPath, primaryVersion, shownSummary, sortedVersions } from "../lib/library";
-import { useApp, useLanguage, useT } from "../lib/store";
+import { useAiReady, useApp, useLanguage, useT } from "../lib/store";
 import type { PackageFile, Software } from "../lib/types";
+import { useTypewriter } from "../lib/typewriter";
 
 const OPEN_DELAY = 450;
 const CLOSE_DELAY = 150;
@@ -130,20 +132,52 @@ function Card({ id, anchor, panel, compact, onEnter, onLeave, children }: {
 }
 
 type Paths = { label?: string; values: readonly string[] };
+type AiHover = { kind: "software"; name: string; publisher: string } | { kind: "startup"; id: string };
+const hoverRequests = new Map<string, Promise<{ text?: string; cached: boolean }>>();
 
-export function SummaryCard({ name, publisher, text, paths, meta }: {
+export function useHoverSummary(text?: string, ai?: AiHover) {
+  const t = useT();
+  const ready = useAiReady();
+  const context = useApp((state) => JSON.stringify([state.status?.repoRoot, state.library?.settings.language, state.library?.settings.ai]));
+  const kind = ai?.kind;
+  const subject = ai?.kind === "software" ? ai.name : ai?.id;
+  const aiPublisher = ai?.kind === "software" ? ai.publisher : "";
+  const [result, setResult] = useState<{ key: string; text?: string; cached: boolean } | null>(null);
+  const key = JSON.stringify([context, kind, subject, aiPublisher]);
+  useEffect(() => {
+    if (!ready || !kind || !subject) return;
+    let alive = true;
+    let request = hoverRequests.get(key);
+    if (!request) {
+      request = kind === "software"
+        ? api.aiHoverSummary(subject, aiPublisher)
+        : api.aiExplainStartup([subject], "hover").then((result) => ({ text: result.explanations[subject]?.text, cached: result.explanations[subject]?.cached ?? false }));
+      hoverRequests.set(key, request);
+      void request.finally(() => hoverRequests.delete(key)).catch(() => {});
+    }
+    void request.then((value) => { if (alive) setResult({ key, ...value }); }, () => { if (alive) setResult({ key, cached: true }); });
+    return () => { alive = false; };
+  }, [ready, kind, subject, aiPublisher, key]);
+  const shown = ready && kind && subject ? (result?.key === key ? result.text || text : t("ai.writing")) : text;
+  const animated = useTypewriter(shown ?? "", Boolean(ready && result?.key === key && result.text && !result.cached));
+  return animated;
+}
+
+export function SummaryCard({ name, publisher, text, paths, meta, ai }: {
   name: string;
   publisher?: string;
   text?: string;
   paths: readonly Paths[];
   meta?: string;
+  ai?: AiHover;
 }) {
   const t = useT();
+  const shown = useHoverSummary(text, ai);
   return (
     <>
       <div className="text-[13px] font-semibold text-fg [overflow-wrap:anywhere]">{name}</div>
       {publisher && <div className="text-[12px] text-fg-3 [overflow-wrap:anywhere]">{publisher}</div>}
-      <p className="m-0 mt-1.5 text-[12px] leading-relaxed whitespace-pre-line text-fg-2 [overflow-wrap:anywhere]">{text || t("summary.notYet")}</p>
+      <p className="m-0 mt-1.5 text-[12px] leading-relaxed whitespace-pre-line text-fg-2 [overflow-wrap:anywhere]">{shown || t("summary.notYet")}</p>
       {meta && <div className="mt-1.5 text-[12px] text-fg-3">{meta}</div>}
       {paths.map(({ label, values }) => (
         <section key={label ?? "files"} className="mt-2 border-t border-line pt-2">
@@ -176,5 +210,5 @@ function SoftwareSummaryCard({ software, files, name, meta }: { software: Softwa
     ...sortedVersions(software).filter((version) => version !== main).flatMap((version) => version.files),
   ];
   const values = [...new Set(packages.map((file) => fullPath(file, root)).filter(Boolean))];
-  return <SummaryCard name={name ?? software.name} publisher={software.publisher} text={shownSummary(summary, language, translate)?.text} meta={meta} paths={[{ values }]} />;
+  return <SummaryCard name={name ?? software.name} publisher={software.publisher} text={shownSummary(summary, language, translate)?.text} meta={meta} paths={[{ values }]} ai={{ kind: "software", name: software.name, publisher: software.publisher }} />;
 }

@@ -2,7 +2,7 @@
 //!
 //! 存在仓库的 `.shibapack/cache/ai.json`，和 Homebrew 目录的缓存放在一起，可以随时删掉（删了只是下次要重新问 AI）。
 //! 同样的问题再问时直接用记下的答案，不再调用 AI；只有用户点了“重新分析”“重新解释”才重新问。
-//! AI 写的软件简介不在这里：它们本来就存在索引的 `summaries` 里。
+//! 手动请求 AI 写的软件简介存在索引的 `summaries` 里；悬停简介单独缓存，不覆盖用户保存的简介。
 
 use crate::{classify::Suggestion, model::*};
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,9 @@ pub struct AiCache {
     /// 启动项的解释：`系统|类型|内部名称|界面语言` → 解释。
     #[serde(default)]
     pub explain: BTreeMap<String, CachedText>,
+    /// 软件悬停简介，独立于用户编辑的简介。
+    #[serde(default)]
+    pub hover: BTreeMap<String, CachedText>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +55,7 @@ impl AiCache {
     pub fn save(&mut self, dir: &Path) -> std::io::Result<()> {
         trim(&mut self.classify, |entry| entry.at.clone());
         trim(&mut self.explain, |entry| entry.at.clone());
+        trim(&mut self.hover, |entry| entry.at.clone());
         std::fs::create_dir_all(dir)?;
         let tmp = dir.join(format!("{FILE}.tmp"));
         std::fs::write(&tmp, serde_json::to_vec(self)?)?;
@@ -141,6 +145,15 @@ mod tests {
         cache.save(dir.path()).unwrap();
         assert!(dir.path().join("ai-folders.json").is_file() && !dir.path().join("ai.json").exists());
         assert_eq!(FolderCache::load(dir.path()).folders[&key].text, "缓存");
+    }
+
+    #[test]
+    fn hover_cache_survives_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cache = AiCache::default();
+        cache.hover.insert("app".into(), CachedText { text: "说明".into(), model: "model".into(), at: "2026-11-22".into() });
+        cache.save(dir.path()).unwrap();
+        assert_eq!(AiCache::load(dir.path()).hover["app"].text, "说明");
     }
 
     fn library() -> Library {

@@ -1,11 +1,12 @@
 // 详情栏里的软件简介：软件库的软件和只装在本机的软件共用。
 
 import { LoaderCircle, Pencil, RefreshCw, WandSparkles } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { editSummary } from "../lib/actions";
 import { shownSummary } from "../lib/library";
 import { useAiReady, useApp, useLanguage, useT } from "../lib/store";
 import type { Summary } from "../lib/types";
+import { useTypewriter } from "../lib/typewriter";
 
 /** 简介按什么名字存，和发布者（只装在本机的软件用）。给了才出现“AI 写简介”。 */
 export interface AiTarget {
@@ -44,6 +45,16 @@ export function SummaryText({
   const describeWithAi = useApp((state) => state.describeWithAi);
   const [original, setOriginal] = useState(false);
   const shown = shownSummary(summary, language, translate && !original);
+  const wasWriting = useRef(false);
+  const animatedText = useRef<string | null>(null);
+  if (writing) {
+    wasWriting.current = true;
+    animatedText.current = null;
+  } else if (wasWriting.current) {
+    wasWriting.current = false;
+    animatedText.current = summary?.source.startsWith("AI") ? shown?.text ?? null : null;
+  }
+  const displayText = useTypewriter(shown?.text ?? "", animatedText.current !== null && animatedText.current === shown?.text);
   const canWrite = Boolean(ai && aiReady);
   const write = () => ai && void describeWithAi([ai]);
 
@@ -100,7 +111,7 @@ export function SummaryText({
         className="selectable m-0 line-clamp-4 text-[13px] leading-relaxed text-fg-2"
         title={`${shown.text}\n\n${t("summary.source", { source: manual ? t("summary.manual") : summary.source })}`}
       >
-        {shown.text}
+        {displayText}
       </p>
       {(hasTranslation || byAi || manual || canWrite || name) && (
         <div className="mt-1 flex items-center gap-2 text-[12px] text-fg-3">

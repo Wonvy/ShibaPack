@@ -670,7 +670,10 @@ async function importPaths(paths: string[], mode: Storage, hint?: ImportHint) {
   let classified = 0;
   if (!hint?.categoryId && (hint?.autoClassify ?? lib.settings.autoClassifyOnImport)) {
     const ids = [...new Set(items.flatMap((item) => item.status === "imported" && item.softwareId ? [item.softwareId] : []))];
-    const assignments = ids.filter((id) => !find(id).categoryId).map(suggest).filter((s) => s.categoryId || s.newCategory);
+    const assignments = hint?.categoryPreviews
+      ? items.flatMap((item) => item.status === "imported" && item.softwareId && !find(item.softwareId).categoryId && hint.categoryPreviews?.[item.path]
+        ? [{ softwareId: item.softwareId, ...hint.categoryPreviews[item.path] }] : []).filter((s) => s.categoryId || s.newCategory)
+      : ids.filter((id) => !find(id).categoryId).map(suggest).filter((s) => s.categoryId || s.newCategory);
     if (assignments.length) {
       emit({ phase: "classify", current: 0, total: 0, file: "" });
       await mockCall("apply_classification", { assignments });
@@ -1103,6 +1106,8 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       }
       return { library: snapshot(), written: items.length, unknown: 0 };
     }
+    case "ai_hover_summary":
+      return { text: tr(`${String(args.name)} 是一款常用的桌面软件。（预览里的 AI 提示）`, `${String(args.name)} is a desktop app. (AI hover preview)`), cached: false };
     case "set_summary": {
       const name = args.name as string;
       const text = String(args.text).trim();

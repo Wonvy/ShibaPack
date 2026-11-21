@@ -8,7 +8,7 @@ One section per version, titled `## <version>`, with a Chinese and an English pa
 `.github/workflows/release.yml` puts that section into the GitHub Release notes and `latest.json`; the update window
 in ShibaPack (opened from the version number in the bottom-right corner) shows the part that matches the interface language.
 
-## 0.15.0
+## 0.15.1
 
 ### 中文
 

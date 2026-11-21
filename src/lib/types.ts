@@ -289,7 +289,7 @@ export interface Leftover {
   /** 注册表值的名字。 */
   value?: string;
   confidence: "high" | "medium" | "low";
-  /** installDir、bundleId、publisherName、name、nameContains、shortcut、uninstallKey、appPath、startup */
+  /** installDir、bundleId、publisherName、name、nameContains、shortcut、uninstallKey、appPath、startup、appClass、usage、firewall */
   reason: string;
   size: number | null;
 }

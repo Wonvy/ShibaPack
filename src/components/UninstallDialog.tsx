@@ -41,6 +41,9 @@ interface Card {
 }
 
 const keyOf = (item: Leftover) => `${item.path}\u0000${item.value ?? ""}`;
+
+/** 跟着软件本身走的项（链接协议、文件类型、防火墙规则）：只在连 App 一起卸载时才能勾，只清数据时删了会让还装着的软件出问题。 */
+const appBound = (item: Leftover) => item.reason === "appClass" || item.reason === "firewall" || item.reason === "appPath";
 const EMPTY_REPORT: RemoveReport = { removed: 0, failed: [], needsAdmin: false, backup: null };
 
 export function UninstallDialog() {
@@ -96,7 +99,9 @@ function Dialog({ apps, analyze }: { apps: InstalledApp[]; analyze: boolean }) {
             phase: "ready",
             items: scan.items,
             appPath: scan.appPath ?? app.location,
-            checked: new Set(scan.items.filter((item) => item.confidence !== "low").map(keyOf)),
+            checked: new Set(
+              scan.items.filter((item) => item.confidence !== "low" && (!appBound(item) || (!analyze && app.uninstallable))).map(keyOf),
+            ),
           }),
         )
         .catch((reason) => update(app.id, { phase: "failed", error: errorText(language, reason) }));
@@ -318,8 +323,22 @@ function AppCard({
     onChange({ checked: next });
   };
   const setAll = (on: boolean) =>
-    onChange({ appChecked: on && app.uninstallable, checked: new Set(on ? card.items.map(keyOf) : []) });
-  const unsureAll = unsure.length > 0 && unsure.every(({ item }) => card.checked.has(keyOf(item)));
+    onChange({
+      appChecked: on && app.uninstallable,
+      checked: new Set(on ? card.items.filter((item) => app.uninstallable || !appBound(item)).map(keyOf) : []),
+    });
+  /** 勾上 App 时把跟着它的项一起勾上；取消 App 时这些项也取消。 */
+  const toggleApp = (on: boolean) => {
+    const next = new Set(card.checked);
+    for (const item of card.items.filter(appBound)) {
+      if (on && item.confidence !== "low") next.add(keyOf(item));
+      else if (!on) next.delete(keyOf(item));
+    }
+    onChange({ appChecked: on, checked: next });
+  };
+  const locks = (item: Leftover) => appBound(item) && !card.appChecked;
+  const unsureOpen = unsure.filter(({ item }) => !locks(item));
+  const unsureAll = unsureOpen.length > 0 && unsureOpen.every(({ item }) => card.checked.has(keyOf(item)));
 
   const removed = card.removedIndices.filter((i) => !card.report?.failed.some((f) => keyOf(f.item) === keyOf(card.items[i]!)));
   const freed = removed.reduce((sum, i) => sum + (card.items[i]?.size ?? 0), 0) + (card.uninstalled ? appSize : 0);
@@ -395,17 +414,17 @@ function AppCard({
                   kind={t("uninstall.kind.app")}
                   path={card.appPath}
                   size={appSize}
-                  onToggle={(on) => onChange({ appChecked: on })}
+                  onToggle={toggleApp}
                 />
               )}
               {sure.map(({ item, index }) => (
                 <Row
                   key={keyOf(item)}
                   checked={card.checked.has(keyOf(item))}
-                  disabled={!editable}
+                  disabled={!editable || locks(item)}
                   kind={t(kindKey(item))}
                   path={label(item)}
-                  why={t(`leftover.reason.${item.reason}` as Key)}
+                  why={locks(item) ? `${t(`leftover.reason.${item.reason}` as Key)}\n${t("uninstall.appBoundHint")}` : t(`leftover.reason.${item.reason}` as Key)}
                   size={item.size}
                   onToggle={(on) => toggle(item, on)}
                   onReveal={revealable(item) ? () => void api.revealLeftover(app.id, index) : undefined}
@@ -422,7 +441,7 @@ function AppCard({
                           className="text-[12px] font-normal text-accent hover:underline"
                           onClick={() => {
                             const next = new Set(card.checked);
-                            for (const { item } of unsure) {
+                            for (const { item } of unsureOpen) {
                               if (unsureAll) next.delete(keyOf(item));
                               else next.add(keyOf(item));
                             }
@@ -440,10 +459,10 @@ function AppCard({
                     <Row
                       key={keyOf(item)}
                       checked={card.checked.has(keyOf(item))}
-                      disabled={!editable}
+                      disabled={!editable || locks(item)}
                       kind={t(kindKey(item))}
                       path={label(item)}
-                      why={t(`leftover.reason.${item.reason}` as Key)}
+                      why={locks(item) ? `${t(`leftover.reason.${item.reason}` as Key)}\n${t("uninstall.appBoundHint")}` : t(`leftover.reason.${item.reason}` as Key)}
                       size={item.size}
                       onToggle={(on) => toggle(item, on)}
                       onReveal={revealable(item) ? () => void api.revealLeftover(app.id, index) : undefined}
@@ -613,6 +632,8 @@ function kindKey(item: Leftover): Key {
   if (item.reason === "installDir") return "uninstall.kind.installDir";
   if (item.reason === "uninstallKey") return "uninstall.kind.uninstallKey";
   if (item.reason === "shortcut") return "uninstall.kind.shortcut";
+  if (item.reason === "usage") return "uninstall.kind.usage";
+  if (item.reason === "firewall") return "uninstall.kind.firewall";
   if (item.kind === "registryValue" || /[\\/]LaunchAgents[\\/]/.test(item.path)) return "uninstall.kind.startup";
   if (item.kind === "registryKey") return "uninstall.kind.registry";
   if (/[\\/]Preferences[\\/]/.test(item.path)) return "uninstall.kind.prefs";

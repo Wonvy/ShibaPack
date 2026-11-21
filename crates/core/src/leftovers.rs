@@ -46,7 +46,8 @@ pub struct Leftover {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
     pub confidence: Confidence,
-    /// 为什么认为是残留：installDir、bundleId、publisherName、name、nameContains、shortcut、uninstallKey、appPath、startup。
+    /// 为什么认为是残留：installDir、bundleId、publisherName、name、nameContains、shortcut、uninstallKey、appPath、startup、
+    /// appClass（链接协议、文件类型）、usage（MuiCache、兼容性助手里的使用记录）、firewall（防火墙规则）。
     pub reason: String,
     /// 文件和文件夹占用的空间。
     #[serde(default)]
@@ -63,6 +64,10 @@ pub struct Target {
     pub bundle_id: Option<String>,
     /// Windows 上卸载信息所在的注册表键，如 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Foo`。
     pub registry_key: Option<String>,
+    /// 软件装在哪个文件夹：登记了安装位置就用它，没登记就看卸载程序在哪。只拿来取名字（中文名的软件，
+    /// 数据文件夹常用安装路径里的英文名，如 `Netease\CloudMusic`），不当成残留去删。
+    #[serde(default)]
+    pub app_dir: Option<PathBuf>,
 }
 
 impl Target {
@@ -73,8 +78,28 @@ impl Target {
             install_dir: app.install_dir.clone(),
             bundle_id: app.bundle_id.clone(),
             registry_key: (app.source == "registry").then(|| app.id.clone()),
+            app_dir: app.install_dir.clone().or_else(|| app.uninstall_command.as_deref().and_then(uninstaller_dir)),
         }
     }
+}
+
+/// 卸载命令里的程序所在的文件夹：`"D:\Apps\Foo\UnInstall.exe" /S` → `D:\Apps\Foo`。
+/// msiexec、rundll32 这类系统程序、带环境变量的不算。
+fn uninstaller_dir(command: &str) -> Option<PathBuf> {
+    let command = command.trim();
+    let exe = match command.strip_prefix('"') {
+        Some(rest) => rest.split('"').next()?,
+        None => &command[..command.to_ascii_lowercase().find(".exe")? + 4],
+    };
+    if exe.contains('%') {
+        return None;
+    }
+    let file = exe.rsplit(['\\', '/']).next()?.to_ascii_lowercase();
+    if matches!(file.as_str(), "msiexec.exe" | "rundll32.exe" | "cmd.exe" | "powershell.exe") {
+        return None;
+    }
+    let dir = Path::new(exe).parent()?;
+    dir.is_dir().then(|| dir.to_path_buf())
 }
 
 /// 清理的结果。
@@ -107,6 +132,7 @@ const GENERIC: &[&str] = &[
     "updater", "updates", "installer", "installers", "install", "setup", "uninstall", "uninstaller", "app", "apps", "application",
     "applications", "software", "plugins", "plugin", "logs", "log", "config", "settings", "documents", "desktop", "downloads",
     "library", "preferences", "support", "containers", "service", "services", "helper", "launcher", "client", "runtime",
+    "programfilesx86", "uninst", "bin", "binary", "main", "current",
 ];
 
 /// 发布者名字里不算数的后缀。
@@ -143,9 +169,58 @@ fn publisher_key(publisher: &str) -> Option<String> {
         .split(|c: char| c.is_whitespace() || c == ',' || c == '.')
         .map(norm)
         .filter(|w| !w.is_empty() && !COMPANY_WORDS.contains(&w.as_str()))
+        .map(strip_company_suffix)
         .collect();
     let key = words.concat();
-    (key.chars().count() >= 3).then_some(key)
+    let long_enough = if key.is_ascii() { key.len() >= 3 } else { key.chars().count() >= 2 };
+    long_enough.then_some(key)
+}
+
+/// 中文发布者名不用空格分词，后缀连在名字后面：“网易公司” → “网易”，“腾讯科技” → “腾讯”。
+fn strip_company_suffix(mut word: String) -> String {
+    const SUFFIXES: &[&str] = &["股份有限公司", "有限责任公司", "有限公司", "公司", "集团", "网络", "信息技术", "技术", "科技"];
+    while let Some(rest) = SUFFIXES.iter().find_map(|s| word.strip_suffix(s).filter(|rest| rest.chars().count() >= 2)) {
+        word = rest.to_string();
+    }
+    word
+}
+
+/// 拿来找残留的名字：软件名的几种写法，和可能装着它的发布者文件夹名。
+pub(crate) struct Names {
+    pub variants: Vec<String>,
+    pub publishers: Vec<String>,
+}
+
+impl Names {
+    pub(crate) fn of(target: &Target) -> Names {
+        let mut variants = name_variants(&target.name, &target.publisher);
+        let mut publishers: Vec<String> = publisher_key(&target.publisher).into_iter().collect();
+        // 安装路径里的名字：`...\Netease\CloudMusic` → 软件名 cloudmusic、发布者 netease
+        let dir = target.app_dir.as_deref().filter(|dir| dir.extension().is_none_or(|ext| ext != "app"));
+        if let Some(own) = dir.and_then(folder_key) {
+            if !variants.contains(&own) {
+                variants.push(own);
+            }
+            if let Some(vendor) = dir.and_then(Path::parent).and_then(folder_key) {
+                if !publishers.contains(&vendor) {
+                    publishers.push(vendor);
+                }
+            }
+        }
+        Names { variants, publishers }
+    }
+
+    fn is_publisher(&self, folder: &str) -> bool {
+        self.publishers.contains(&norm(folder))
+    }
+}
+
+/// 安装路径里一级文件夹的名字能不能拿来匹配：去掉版本号，不是泛泛的词，不是 GUID。
+fn folder_key(dir: &Path) -> Option<String> {
+    let name = dir.file_name()?.to_string_lossy().to_string();
+    let key = norm(&noise().replace_all(&name, " "));
+    let guid = key.len() == 32 && key.chars().all(|c| c.is_ascii_hexdigit());
+    (usable(&key) && !guid && !key.starts_with("programfiles")).then_some(key)
 }
 
 /// 软件名拿来匹配的几种写法：完整的；去掉版本号、位数和括号的；再去掉开头发布者名字的（“Microsoft Edge” → “edge”）。
@@ -169,6 +244,10 @@ fn matches(entry: &str, variants: &[String]) -> Option<(String, bool)> {
         return None;
     }
     if let Some(v) = variants.iter().find(|v| **v == entry) {
+        return Some((v.clone(), true));
+    }
+    // Electron 这类软件的自动更新文件夹：`obsidian-updater`、`FooUpdate`
+    if let Some(v) = variants.iter().find(|v| ["updater", "update"].iter().any(|suffix| entry.strip_suffix(suffix) == Some(v.as_str()))) {
         return Some((v.clone(), true));
     }
     variants
@@ -216,6 +295,9 @@ impl Roots {
                 roots.desktop.push(profile.join("Desktop"));
             }
             roots.data.extend(var("ProgramData"));
+            if let Some(temp) = var("TEMP").filter(|temp| !roots.data.contains(temp)) {
+                roots.data.push(temp);
+            }
             let start = |base: PathBuf| base.join("Microsoft").join("Windows").join("Start Menu").join("Programs");
             roots.start_menu.extend(var("APPDATA").map(start));
             roots.start_menu.extend(var("ProgramData").map(start));
@@ -304,8 +386,8 @@ impl Neighbours {
 }
 
 pub(crate) fn scan_files(target: &Target, others: &[InstalledApp], roots: &Roots, protected: &Protected, fold_case: bool) -> Vec<Leftover> {
-    let variants = name_variants(&target.name, &target.publisher);
-    let publisher = publisher_key(&target.publisher);
+    let names = Names::of(target);
+    let variants = &names.variants;
     let neighbours = Neighbours::of(target, others, fold_case);
     let mut found: Vec<Leftover> = Vec::new();
     let add = |path: &Path, kind: LeftoverKind, confidence: Confidence, reason: &str, found: &mut Vec<Leftover>| {
@@ -316,7 +398,7 @@ pub(crate) fn scan_files(target: &Target, others: &[InstalledApp], roots: &Roots
         found.push(Leftover { kind, path: path.to_string_lossy().to_string(), value: None, confidence, reason: reason.into(), size: None });
     };
     // 名字对得上、又不是别的软件的名字
-    let pick = |name: &str| matches(name, &variants).filter(|(variant, _)| !neighbours.names.contains(variant) && !neighbours.names.contains(&norm(name)));
+    let pick = |name: &str| matches(name, variants).filter(|(variant, _)| !neighbours.names.contains(variant) && !neighbours.names.contains(&norm(name)));
 
     // 1. 卸载程序没删掉的安装文件夹
     if let Some(dir) = target.install_dir.as_deref().filter(|dir| dir.is_dir() && dir.extension().is_none_or(|ext| ext != "app")) {
@@ -331,7 +413,7 @@ pub(crate) fn scan_files(target: &Target, others: &[InstalledApp], roots: &Roots
                 match pick(&name) {
                     Some((_, true)) => add(&entry, LeftoverKind::Folder, exact, "name", &mut found),
                     Some((_, false)) => add(&entry, LeftoverKind::Folder, Confidence::Low, "nameContains", &mut found),
-                    None if publisher.as_deref() == Some(norm(&name).as_str()) => {
+                    None if names.is_publisher(&name) => {
                         for inner in subdirs(&entry) {
                             match pick(&file_name(&inner)) {
                                 Some((_, true)) => add(&inner, LeftoverKind::Folder, Confidence::High, "publisherName", &mut found),
@@ -346,9 +428,11 @@ pub(crate) fn scan_files(target: &Target, others: &[InstalledApp], roots: &Roots
         }
     }
 
-    // 3. 开始菜单里同名的文件夹和快捷方式；桌面上同名的快捷方式
+    // 3. 开始菜单里同名的文件夹和快捷方式（也看“启动”文件夹和发布者文件夹里的）；桌面上同名的快捷方式
     for root in &roots.start_menu {
-        for entry in read(root) {
+        let mut entries = read(root);
+        entries.extend(read(&root.join("Startup")).into_iter().filter(|e| is_shortcut(e)));
+        for entry in entries {
             let is_shortcut = is_shortcut(&entry);
             if !(entry.is_dir() || is_shortcut) {
                 continue;
@@ -357,6 +441,14 @@ pub(crate) fn scan_files(target: &Target, others: &[InstalledApp], roots: &Roots
             if let Some((_, true)) = pick(&stem) {
                 let kind = if is_shortcut { LeftoverKind::File } else { LeftoverKind::Folder };
                 add(&entry, kind, Confidence::Medium, "shortcut", &mut found);
+            } else if entry.is_dir() && names.is_publisher(&stem) {
+                for inner in read(&entry).into_iter().filter(|e| self::is_shortcut(e) || e.is_dir()) {
+                    let inner_name = if self::is_shortcut(&inner) { self::stem(&inner) } else { file_name(&inner) };
+                    if let Some((_, true)) = pick(&inner_name) {
+                        let kind = if inner.is_dir() { LeftoverKind::Folder } else { LeftoverKind::File };
+                        add(&inner, kind, Confidence::Medium, "shortcut", &mut found);
+                    }
+                }
             }
         }
     }
@@ -370,7 +462,7 @@ pub(crate) fn scan_files(target: &Target, others: &[InstalledApp], roots: &Roots
 
     // 4. macOS：~/Library 下按 bundle id 和名字找
     if let Some(library) = &roots.library {
-        scan_library(library, target, &variants, publisher.as_deref(), &pick, &mut |path, kind, confidence, reason| {
+        scan_library(library, target, &names, &pick, &mut |path, kind, confidence, reason| {
             add(path, kind, confidence, reason, &mut found)
         });
     }
@@ -383,8 +475,7 @@ pub(crate) fn scan_files(target: &Target, others: &[InstalledApp], roots: &Roots
 fn scan_library(
     library: &Path,
     target: &Target,
-    variants: &[String],
-    publisher: Option<&str>,
+    names: &Names,
     pick: &dyn Fn(&str) -> Option<(String, bool)>,
     add: &mut dyn FnMut(&Path, LeftoverKind, Confidence, &str),
 ) {
@@ -426,13 +517,13 @@ fn scan_library(
             }
         }
     }
-    if !variants.is_empty() {
+    if !names.variants.is_empty() {
         for folder in ["Application Support", "Caches", "Logs"] {
             for entry in subdirs(&library.join(folder)) {
                 let name = file_name(&entry);
                 if let Some((_, true)) = pick(&name) {
                     add(&entry, LeftoverKind::Folder, Confidence::Medium, "name");
-                } else if publisher == Some(norm(&name).as_str()) {
+                } else if names.is_publisher(&name) {
                     for inner in subdirs(&entry) {
                         match pick(&file_name(&inner)) {
                             Some((_, true)) => add(&inner, LeftoverKind::Folder, Confidence::High, "publisherName"),
@@ -512,7 +603,7 @@ pub fn allowed(item: &Leftover) -> bool {
             depth >= 3 && !Protected::from_env().covers(&key) && !library_root(&key, fold_case) && Path::new(&item.path).exists()
         }
         LeftoverKind::RegistryKey => registry::key_allowed(&item.path),
-        LeftoverKind::RegistryValue => item.value.as_deref().is_some_and(|v| !v.is_empty()) && registry::run_key(&item.path),
+        LeftoverKind::RegistryValue => item.value.as_deref().is_some_and(|v| !v.is_empty()) && registry::value_key_allowed(&item.path),
     }
 }
 
@@ -689,6 +780,13 @@ mod registry {
         if rest.len() == 5 && rest[..4] == ["microsoft", "windows", "currentversion", "app paths"] {
             return true;
         }
+        // 某一个链接协议或文件类型（ProgID）、Applications 下的某一个程序
+        match rest.as_slice() {
+            ["classes", "applications", exe] => return exe.ends_with(".exe"),
+            ["classes", name] => return class_allowed(name),
+            ["classes", ..] => return false,
+            _ => {}
+        }
         match rest.as_slice() {
             [app] => !BLOCKED_TOP.contains(app) && !GENERIC.contains(&norm(app).as_str()),
             [publisher, app] => {
@@ -699,11 +797,35 @@ mod registry {
         }
     }
 
-    /// 开机启动的 Run 键（只允许删这里面的值）。
-    pub(super) fn run_key(path: &str) -> bool {
+    /// `Software\Classes` 下面不能删的：扩展名、系统和大家共用的类型、常见的协议。
+    const BLOCKED_CLASSES: &[&str] = &[
+        "*", "clsid", "interface", "typelib", "appid", "applications", "directory", "folder", "drive", "allfilesystemobjects",
+        "local settings", "mime", "protocols", "systemfileassociations", "unknown", "http", "https", "ftp", "mailto", "file",
+        "exefile", "lnkfile", "batfile", "cmdfile", "comfile", "txtfile", "inifile", "regfile", "htmlfile", "urlfile", "shell",
+        "wow6432node", "installer", "msi.package", "network", "printers", "kindmap", "perceivedtype",
+    ];
+
+    pub(super) fn class_allowed(name: &str) -> bool {
+        !name.is_empty() && !name.starts_with('.') && !name.starts_with("ms-") && !name.starts_with("windows.")
+            && !name.starts_with("microsoft.") && !BLOCKED_CLASSES.contains(&name)
+    }
+
+    /// 只允许删里面某一个值的键：开机启动（Run 和它在“启动应用”里的开关）、使用记录（MuiCache、兼容性助手）、防火墙规则。
+    const VALUE_KEYS: &[&str] = &[
+        r"software\microsoft\windows\currentversion\run",
+        r"software\wow6432node\microsoft\windows\currentversion\run",
+        r"software\microsoft\windows\currentversion\explorer\startupapproved\run",
+        r"software\microsoft\windows\currentversion\explorer\startupapproved\run32",
+        r"software\classes\local settings\software\microsoft\windows\shell\muicache",
+        r"software\microsoft\windows nt\currentversion\appcompatflags\compatibility assistant\store",
+        r"software\microsoft\windows nt\currentversion\appcompatflags\layers",
+        r"system\currentcontrolset\services\sharedaccess\parameters\firewallpolicy\firewallrules",
+    ];
+
+    pub(super) fn value_key_allowed(path: &str) -> bool {
         let Some(parts) = parts(path) else { return false };
         let lower = parts[1..].iter().map(|p| p.to_lowercase()).collect::<Vec<_>>().join("\\");
-        lower == r"software\microsoft\windows\currentversion\run" || lower == r"software\wow6432node\microsoft\windows\currentversion\run"
+        VALUE_KEYS.contains(&lower.as_str())
     }
 
     #[cfg(not(windows))]
@@ -738,8 +860,8 @@ mod registry {
 
     #[cfg(windows)]
     pub(super) fn scan(target: &Target, others: &[InstalledApp]) -> Vec<Leftover> {
-        let variants = name_variants(&target.name, &target.publisher);
-        let publisher = publisher_key(&target.publisher);
+        let names = Names::of(target);
+        let variants = &names.variants;
         let neighbours = Neighbours::of(target, others, true);
         let taken = |name: &str, variant: &str| neighbours.names.contains(variant) || neighbours.names.contains(&norm(name));
         let mut found = Vec::new();
@@ -766,17 +888,17 @@ mod registry {
                 if BLOCKED_TOP.contains(&name.to_lowercase().as_str()) {
                     continue;
                 }
-                if let Some((variant, true)) = matches(&name, &variants) {
+                if let Some((variant, true)) = matches(&name, variants) {
                     if !taken(&name, &variant) {
                         let path = format!(r"{hive}\{base}\{name}");
                         if key_allowed(&path) {
                             push(LeftoverKind::RegistryKey, path, None, Confidence::Medium, "name");
                         }
                     }
-                } else if publisher.as_deref() == Some(norm(&name).as_str()) {
+                } else if names.is_publisher(&name) {
                     let Ok(vendor) = base_key.open_subkey(&name) else { continue };
                     for inner in vendor.enum_keys().flatten() {
-                        if let Some((variant, true)) = matches(&inner, &variants) {
+                        if let Some((variant, true)) = matches(&inner, variants) {
                             if !taken(&inner, &variant) {
                                 let path = format!(r"{hive}\{base}\{name}\{inner}");
                                 if key_allowed(&path) {
@@ -789,21 +911,24 @@ mod registry {
             }
         }
 
-        // 3. 指向原来安装文件夹的 App Paths 项和开机启动项
+        // 3. 指向安装文件夹的：App Paths、开机启动、链接协议和文件类型、使用记录、防火墙规则
         let protected = Protected::from_env();
         let dir = target
-            .install_dir
+            .app_dir
             .as_deref()
+            .or(target.install_dir.as_deref())
             .map(|dir| path_key(dir, true))
             .filter(|key| !protected.covers(key) && !neighbours.uses(key));
-        if let Some(dir) = dir {
-            let points_into = |text: &str| {
-                let text = text.trim().trim_start_matches('"').replace('\\', "/").to_lowercase();
-                text.starts_with(&format!("{dir}/")) || text.contains(&format!("\"{dir}/"))
-            };
+        let points_into = |text: &str| {
+            let Some(dir) = &dir else { return false };
+            let text = text.trim().trim_start_matches('"').replace('\\', "/").to_lowercase();
+            text.starts_with(&format!("{dir}/")) || text.contains(&format!("\"{dir}/"))
+        };
+        let read_key = |path: &str| open(path).and_then(|(root, sub)| root.open_subkey(sub).ok());
+
+        if dir.is_some() {
             for (hive, base) in [("HKCU", r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"), ("HKLM", r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths")] {
-                let Some((root, sub)) = open(&format!(r"{hive}\{base}")) else { continue };
-                let Ok(paths) = root.open_subkey(&sub) else { continue };
+                let Some(paths) = read_key(&format!(r"{hive}\{base}")) else { continue };
                 for name in paths.enum_keys().flatten() {
                     let Ok(key) = paths.open_subkey(&name) else { continue };
                     let default: String = key.get_value("").unwrap_or_default();
@@ -812,18 +937,91 @@ mod registry {
                     }
                 }
             }
+            // 开机启动，连同“设置 → 启动应用”里同名的开关
+            let mut startup_names = Vec::new();
             for (hive, base) in [
                 ("HKCU", r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"),
                 ("HKLM", r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"),
                 ("HKLM", r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"),
             ] {
-                let Some((root, sub)) = open(&format!(r"{hive}\{base}")) else { continue };
-                let Ok(run) = root.open_subkey(&sub) else { continue };
+                let Some(run) = read_key(&format!(r"{hive}\{base}")) else { continue };
                 for (name, _) in run.enum_values().flatten() {
                     let command: String = run.get_value(&name).unwrap_or_default();
                     if !name.is_empty() && points_into(&command) {
-                        push(LeftoverKind::RegistryValue, format!(r"{hive}\{base}"), Some(name), Confidence::High, "startup");
+                        push(LeftoverKind::RegistryValue, format!(r"{hive}\{base}"), Some(name.clone()), Confidence::High, "startup");
+                        startup_names.push((hive, name));
                     }
+                }
+            }
+            for (hive, name) in startup_names {
+                for base in [r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run", r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run32"] {
+                    let path = format!(r"{hive}\{base}");
+                    if read_key(&path).is_some_and(|key| key.get_raw_value(&name).is_ok()) {
+                        push(LeftoverKind::RegistryValue, path, Some(name.clone()), Confidence::High, "startup");
+                    }
+                }
+            }
+            // Windows 记下的使用记录：值的名字就是程序的完整路径
+            for path in [
+                r"HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache",
+                r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Compatibility Assistant\Store",
+                r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers",
+                r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers",
+            ] {
+                let Some(key) = read_key(path) else { continue };
+                for (name, _) in key.enum_values().flatten() {
+                    if points_into(&name) {
+                        push(LeftoverKind::RegistryValue, path.to_string(), Some(name), Confidence::High, "usage");
+                    }
+                }
+            }
+            // 防火墙规则：`v2.30|Action=Allow|...|App=C:\...\foo.exe|...`
+            let rules = r"HKLM\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules";
+            if let Some(key) = read_key(rules) {
+                for (name, _) in key.enum_values().flatten() {
+                    let rule: String = key.get_value(&name).unwrap_or_default();
+                    let app = rule.split('|').find_map(|part| part.strip_prefix("App=").or_else(|| part.strip_prefix("app=")));
+                    if app.is_some_and(|app| points_into(app)) {
+                        push(LeftoverKind::RegistryValue, rules.to_string(), Some(name), Confidence::High, "firewall");
+                    }
+                }
+            }
+        }
+
+        // 4. 链接协议（obsidian://）和文件类型（ProgID）：打开命令指向安装文件夹的；
+        //    或者名字就是软件名、又登记成了链接协议的（安装文件夹不知道时也找得到）
+        for (hive, base) in [("HKCU", r"Software\Classes"), ("HKLM", r"SOFTWARE\Classes")] {
+            let Some(classes) = read_key(&format!(r"{hive}\{base}")) else { continue };
+            for name in classes.enum_keys().flatten() {
+                let lower = name.to_lowercase();
+                if !class_allowed(&lower) {
+                    continue;
+                }
+                let Ok(class) = classes.open_subkey(&name) else { continue };
+                let command: String = class.open_subkey(r"shell\open\command").and_then(|c| c.get_value("")).unwrap_or_default();
+                let icon: String = class.open_subkey("DefaultIcon").and_then(|c| c.get_value("")).unwrap_or_default();
+                let path = format!(r"{hive}\{base}\{name}");
+                if points_into(&command) || (command.is_empty() && points_into(&icon)) {
+                    push(LeftoverKind::RegistryKey, path, None, Confidence::High, "appClass");
+                } else if class.get_raw_value("URL Protocol").is_ok() {
+                    // 打开命令指向别处（知道安装文件夹却不在里面）的，可能是别的软件接管了，不算
+                    let elsewhere = dir.is_some() && !command.trim().is_empty();
+                    if let Some((variant, true)) = matches(&name, variants).filter(|_| !elsewhere) {
+                        if !taken(&name, &variant) {
+                            push(LeftoverKind::RegistryKey, path, None, Confidence::Medium, "appClass");
+                        }
+                    }
+                }
+            }
+            if dir.is_none() {
+                continue;
+            }
+            let Some(apps) = read_key(&format!(r"{hive}\{base}\Applications")) else { continue };
+            for name in apps.enum_keys().flatten() {
+                let Ok(app) = apps.open_subkey(&name) else { continue };
+                let command: String = app.open_subkey(r"shell\open\command").and_then(|c| c.get_value("")).unwrap_or_default();
+                if points_into(&command) {
+                    push(LeftoverKind::RegistryKey, format!(r"{hive}\{base}\Applications\{name}"), None, Confidence::High, "appClass");
                 }
             }
         }
@@ -944,6 +1142,53 @@ mod tests {
         assert!(name_variants("Update", "").is_empty(), "太泛的名字不拿来匹配");
         assert!(name_variants("Foo", "").is_empty(), "太短");
         assert_eq!(publisher_key("Tencent Technology(Shenzhen) Company Limited").as_deref(), Some("tencent"));
+        assert_eq!(publisher_key("网易公司").as_deref(), Some("网易"));
+        assert_eq!(publisher_key("腾讯科技(深圳)有限公司").as_deref(), Some("腾讯"));
+    }
+
+    /// 中文名的软件，数据文件夹用的是安装路径里的英文名：网易云音乐装在 `...\Netease\CloudMusic`，
+    /// 数据在 `%LOCALAPPDATA%\NetEase\CloudMusic`。没登记安装位置时从卸载程序的位置推。
+    #[test]
+    fn finds_data_named_after_the_install_folder() {
+        let base = tempfile::tempdir().unwrap();
+        let b = base.path();
+        dirs(b, &["pfx86/Netease/CloudMusic", "local/NetEase/CloudMusic/Cache", "local/NetEase/Mail", "roaming/CloudMusic", "local/Programs"]);
+        std::fs::write(b.join("pfx86/Netease/CloudMusic/UnInstall.exe"), b"").unwrap();
+        let roots = Roots { program: vec![b.join("pfx86")], data: vec![b.join("roaming"), b.join("local")], ..Roots::default() };
+        let mut app = installed("cm", "网易云音乐", "网易公司", None);
+        app.uninstall_command = Some(format!("\"{}\"", b.join("pfx86/Netease/CloudMusic/UnInstall.exe").display()));
+        let target = Target::of(&app);
+        assert_eq!(target.app_dir.as_deref(), Some(b.join("pfx86/Netease/CloudMusic").as_path()));
+        assert_eq!(target.install_dir, None, "推出来的文件夹不当成安装文件夹去删");
+
+        let found = scan_files(&target, &[], &roots, &no_protection(), false);
+        let at = |rel: &str| found.iter().find(|f| f.path == b.join(rel).to_string_lossy());
+        assert_eq!(at("local/NetEase/CloudMusic").unwrap().reason, "publisherName");
+        assert!(at("roaming/CloudMusic").is_some());
+        assert!(at("local/NetEase").is_none(), "发布者文件夹本身不删");
+        assert!(at("local/NetEase/Mail").is_none(), "同一个发布者的别的软件");
+        assert!(at("local/NetEase/CloudMusic/Cache").is_none(), "外层已经列了");
+
+        // Electron 的自动更新文件夹、“启动”文件夹和发布者文件夹里的快捷方式
+        dirs(b, &["local/obsidian-updater", "local/obsidian-backup", "start/Startup", "start/Netease"]);
+        std::fs::write(b.join("start/Startup/CloudMusic.lnk"), b"").unwrap();
+        std::fs::write(b.join("start/Netease/网易云音乐.lnk"), b"").unwrap();
+        std::fs::write(b.join("start/Netease/网易邮箱.lnk"), b"").unwrap();
+        let roots = Roots { start_menu: vec![b.join("start")], ..roots };
+        let found = scan_files(&target, &[], &roots, &no_protection(), false);
+        let at = |rel: &str| found.iter().find(|f| f.path == b.join(rel).to_string_lossy());
+        assert_eq!(at("start/Startup/CloudMusic.lnk").unwrap().reason, "shortcut");
+        assert!(at("start/Netease/网易云音乐.lnk").is_some());
+        assert!(at("start/Netease/网易邮箱.lnk").is_none());
+        let obsidian = Target { name: "Obsidian".into(), publisher: "Obsidian".into(), ..Target::default() };
+        let found = scan_files(&obsidian, &[], &roots, &no_protection(), false);
+        let at = |rel: &str| found.iter().find(|f| f.path == b.join(rel).to_string_lossy());
+        assert_eq!(at("local/obsidian-updater").unwrap().confidence, Confidence::Medium);
+        assert_eq!(at("local/obsidian-backup").unwrap().confidence, Confidence::Low);
+
+        // 安装路径里泛泛的名字不拿来匹配
+        let generic = Target { name: "网易云音乐".into(), app_dir: Some(b.join("pfx86/Netease/CloudMusic/bin")), ..Target::default() };
+        assert_eq!(Names::of(&generic).variants, ["网易云音乐"]);
     }
 
     #[test]
@@ -1089,11 +1334,22 @@ mod tests {
         assert!(registry::key_allowed(r"HKCU\Software\Microsoft\Edge"));
         assert!(registry::key_allowed(r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Foo"));
         assert!(registry::key_allowed(r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\foo.exe"));
+        // 链接协议、ProgID、Applications 下的程序
+        assert!(registry::key_allowed(r"HKCU\Software\Classes\obsidian"));
+        assert!(registry::key_allowed(r"HKLM\SOFTWARE\Classes\Obsidian.md"));
+        assert!(registry::key_allowed(r"HKCU\Software\Classes\Applications\Obsidian.exe"));
         for blocked in [
             r"HKCU\Software",
             r"HKCU\Software\Microsoft",
             r"HKCU\Software\Classes",
-            r"HKCU\Software\Classes\foo",
+            r"HKCU\Software\Classes\.md",
+            r"HKCU\Software\Classes\*",
+            r"HKCU\Software\Classes\CLSID",
+            r"HKCU\Software\Classes\https",
+            r"HKCU\Software\Classes\ms-settings",
+            r"HKCU\Software\Classes\Applications",
+            r"HKCU\Software\Classes\obsidian\shell",
+            r"HKCU\Software\Classes\Local Settings",
             r"HKLM\SOFTWARE\Microsoft\Windows",
             r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
             r"HKCU\Software\Acme\Widget\Deep",
@@ -1102,8 +1358,17 @@ mod tests {
         ] {
             assert!(!registry::key_allowed(blocked), "{blocked}");
         }
-        assert!(registry::run_key(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"));
-        assert!(!registry::run_key(r"HKCU\Software\Microsoft\Windows\CurrentVersion"));
+        for key in [
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run",
+            r"HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache",
+            r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Compatibility Assistant\Store",
+            r"HKLM\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules",
+        ] {
+            assert!(registry::value_key_allowed(key), "{key}");
+        }
+        assert!(!registry::value_key_allowed(r"HKCU\Software\Microsoft\Windows\CurrentVersion"));
+        assert!(!registry::value_key_allowed(r"HKLM\SYSTEM\CurrentControlSet\Services\SharedAccess"));
         let value = |path: &str, value: Option<&str>| Leftover {
             kind: LeftoverKind::RegistryValue,
             path: path.into(),

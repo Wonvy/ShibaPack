@@ -39,6 +39,9 @@ jobs:
 
       - name: 编译桌面程序（release）
         shell: bash
+        # 不带颜色控制字符，annotations 里读起来才干净
+        env:
+          CARGO_TERM_COLOR: never
         run: |
           set -o pipefail
           if cargo build --release -p shibapack --features tauri/custom-protocol 2>&1 | tee build.log; then

@@ -1,0 +1,51 @@
+# 推到 main 时在 Linux 和 Windows 上按发布时的方式（release）编译一遍桌面程序，不打包、不发布。
+#
+# 编译失败时把错误原文写进 annotations：不登录 GitHub 也能看到（Actions 日志要登录才能看），
+# 用 https://api.github.com/repos/Wonvy/ShibaPack/check-runs/<任务 id>/annotations 读。
+# macOS 在本机就能编译检查，这里不跑。
+name: build-check
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Linux 上 Tauri 需要的系统库
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - run: npm ci
+      # 桌面程序编译时要用到前端打包好的 dist
+      - run: npm run build
+
+      - name: 编译桌面程序（release）
+        shell: bash
+        run: |
+          set -o pipefail
+          if cargo build --release -p shibapack --features tauri/custom-protocol 2>&1 | tee build.log; then
+            exit 0
+          fi
+          # 每个 error 连同后面几行写成一条 annotation（换行要写成 %0A）
+          awk '/^error/ {n = 14} n > 0 {print; n--; if (n == 0) print "@@END@@"}' build.log | head -c 60000 > errors.log
+          if [ ! -s errors.log ]; then tail -n 40 build.log > errors.log; fi
+          awk 'BEGIN {RS = "@@END@@\n"} NF {gsub(/%/, "%25"); gsub(/\r/, ""); gsub(/\n/, "%0A"); print "::error title=编译失败::" $0}' errors.log | head -n 10
+          exit 1

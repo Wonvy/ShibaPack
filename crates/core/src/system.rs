@@ -126,6 +126,20 @@ pub struct ProcessInfo {
     pub protected: bool,
 }
 
+/// sysinfo 的 `Gpus` 在 Windows 上带着 PDH 查询句柄、在 Linux 上带着 NVML 库的句柄，都是裸指针，所以不是 `Send`。
+/// 这两种句柄都不限定只能在创建它的线程上用；Monitor 在主程序里放在 Mutex 里，同一时间只有一个线程碰它。
+struct SendGpus(Gpus);
+
+// SAFETY: 见上面。只通过 `&mut Monitor` 访问，从不同时在两个线程上用。
+unsafe impl Send for SendGpus {}
+
+// 主程序把 Monitor 放在跨线程共享的状态里（Tauri 要求 Send）。在这里就检查，哪个系统上不满足都编译不过，
+// 不用等到打包时才发现（Windows 上 sysinfo 的 Gpus 就不是 Send）。
+const _: fn() = || {
+    fn send<T: Send>() {}
+    send::<Monitor>();
+};
+
 /// 留着一个 `System`：CPU 占用要和上一次比才算得出来。
 pub struct Monitor {
     system: System,
@@ -135,7 +149,7 @@ pub struct Monitor {
     /// 网络、硬盘读写、显卡占用也要和上一次比。
     networks: Option<Networks>,
     disks: Option<Disks>,
-    gpus: Option<Gpus>,
+    gpus: Option<SendGpus>,
     /// 上一次量网络和硬盘读写的时间，算每秒多少用。
     last_io: Instant,
 }
@@ -151,7 +165,7 @@ impl Monitor {
         // 第一次的 CPU 占用要隔一会儿再量一次才准
         let networks = Networks::new_with_refreshed_list().ok();
         let disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::nothing().with_io_usage()).ok();
-        let gpus = Gpus::new_with_refreshed_list().ok();
+        let gpus = Gpus::new_with_refreshed_list().ok().map(SendGpus);
         let last_io = Instant::now();
         std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
         system.refresh_cpu_usage();
@@ -266,7 +280,7 @@ impl Monitor {
 
     /// 占用最高的那块显卡。
     fn gpu_load(&mut self) -> Option<GpuLoad> {
-        let gpus = self.gpus.as_mut()?;
+        let gpus = &mut self.gpus.as_mut()?.0;
         gpus.refresh(false);
         gpus.iter()
             .filter_map(|gpu| Some((gpu, gpu.usage()?)))

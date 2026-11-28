@@ -14,7 +14,7 @@ import { api } from "../lib/api";
 import { type Key, errorText } from "../lib/i18n";
 import { formatDate, formatSize } from "../lib/library";
 import { useApp, useLanguage, useT } from "../lib/store";
-import type { InstalledApp, Leftover, RemoveReport } from "../lib/types";
+import type { InstalledApp, Leftover, LeftoverScan, RemoveReport } from "../lib/types";
 import { SoftwareIcon } from "./SoftwareIcon";
 import { Button, IconButton, Modal, Tick, cx } from "./ui";
 
@@ -26,6 +26,7 @@ interface Card {
   /** 当前这份清单：卸载前是分析的结果，Windows 卸载程序跑完后换成重新查到的。序号和后端的对得上。 */
   items: Leftover[];
   appPath: string;
+  installFolder?: LeftoverScan["installFolder"];
   /** 勾选的项，按 `keyOf`：卸载程序跑完重新查一遍以后序号会变，按路径对。 */
   checked: Set<string>;
   appChecked: boolean;
@@ -57,7 +58,6 @@ function Dialog({ apps, analyze }: { apps: InstalledApp[]; analyze: boolean }) {
   const language = useLanguage();
   const patch = useApp((state) => state.patch);
   const notify = useApp((state) => state.notify);
-  const loadInstalled = useApp((state) => state.loadInstalled);
   const sizes = useApp((state) => state.sizes);
   const appSize = (app: InstalledApp) => sizes[app.id] ?? app.size ?? 0;
 
@@ -89,32 +89,43 @@ function Dialog({ apps, analyze }: { apps: InstalledApp[]; analyze: boolean }) {
   const update = (id: string, change: Partial<Card> | ((card: Card) => Partial<Card>)) =>
     setCards((list) => list.map((card) => (card.app.id === id ? { ...card, ...(typeof change === "function" ? change(card) : change) } : card)));
 
-  // 打开就分析，几个软件一起
+  // 限制并行分析数量，勾选很多软件时也不会同时扫描整台电脑几十次。
   useEffect(() => {
-    for (const app of apps) {
-      api
-        .analyzeUninstall(app.id)
-        .then((scan) =>
+    let active = true;
+    let next = 0;
+    const analyzeNext = async () => {
+      while (active && next < apps.length) {
+        const app = apps[next++];
+        try {
+          const scan = await api.analyzeUninstall(app.id);
+          if (!active) return;
           update(app.id, {
             phase: "ready",
             items: scan.items,
             appPath: scan.appPath ?? app.location,
+            installFolder: scan.installFolder,
             checked: new Set(
               scan.items.filter((item) => item.confidence !== "low" && (!appBound(item) || (!analyze && app.uninstallable))).map(keyOf),
             ),
-          }),
-        )
-        .catch((reason) => update(app.id, { phase: "failed", error: errorText(language, reason) }));
-    }
+          });
+        } catch (reason) {
+          if (active) update(app.id, { phase: "failed", error: errorText(language, reason), open: true });
+        }
+      }
+    };
+    void analyzeNext();
+    void analyzeNext();
     const pending = waiters.current;
-    return () => pending.forEach((finish) => finish("skip"));
+    return () => {
+      active = false;
+      pending.forEach((finish) => finish("skip"));
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const close = () => {
     if (stage === "running") return;
     patch({ uninstallTarget: null });
-    if (cards.some((card) => card.uninstalled)) void loadInstalled();
   };
 
   /** 等 Windows 的卸载程序跑完：卸载信息从注册表里没了就算完；也可以点“已经卸载完了”或“不清理了”。 */
@@ -130,7 +141,7 @@ function Dialog({ apps, analyze }: { apps: InstalledApp[]; analyze: boolean }) {
       };
       waiters.current.set(id, finish);
       const timer = setInterval(() => {
-        void api.uninstallStatus(id).then((running) => !running && finish("done"));
+        void api.uninstallStatus(id).then((running) => !running && finish("done"), () => {});
       }, 1500);
     });
 
@@ -140,19 +151,28 @@ function Dialog({ apps, analyze }: { apps: InstalledApp[]; analyze: boolean }) {
     let chosen = items.flatMap((item, i) => (card.checked.has(keyOf(item)) ? [i] : []));
     let byUninstaller = 0;
     if (card.appChecked) {
+      let skipCleanup = false;
       try {
         await api.uninstallInstalled(id);
+        if (card.app.source === "registry") {
+          update(id, { phase: "waiting", open: true });
+          skipCleanup = (await waitUninstaller(id)) === "skip";
+          if (await api.uninstallStatus(id)) {
+            update(id, { phase: "cancelled", open: true });
+            return;
+          }
+        }
       } catch (reason) {
         update(id, { phase: "failed", error: errorText(language, reason), open: true });
         return;
       }
+      useApp.getState().removeInstalled(id);
       update(id, { uninstalled: true });
+      if (skipCleanup) {
+        update(id, { phase: "done", report: null });
+        return;
+      }
       if (card.app.source === "registry") {
-        update(id, { phase: "waiting", open: true });
-        if ((await waitUninstaller(id)) === "skip") {
-          update(id, { phase: "done", report: null });
-          return;
-        }
         update(id, { phase: "rescanning" });
         let scan;
         try {
@@ -181,7 +201,8 @@ function Dialog({ apps, analyze }: { apps: InstalledApp[]; analyze: boolean }) {
       try {
         report = await api.removeLeftovers(id, chosen);
       } catch (reason) {
-        notify(errorText(language, reason), "error");
+        update(id, { phase: "failed", error: errorText(language, reason), open: true });
+        return;
       }
     }
     update(id, { phase: "done", report, removedIndices: chosen, open: report.failed.length > 0 || apps.length === 1 });
@@ -190,11 +211,13 @@ function Dialog({ apps, analyze }: { apps: InstalledApp[]; analyze: boolean }) {
   const run = async () => {
     setRunLabel(actionLabel);
     setStage("running");
-    for (const card of latest.current) {
+    const pending = latest.current;
+    for (const card of pending) {
       if (card.phase === "ready" && included(card)) await runOne(card);
       else if (card.phase === "ready") update(card.app.id, { phase: "skipped" });
     }
     setStage("finished");
+    if (pending.some((card) => card.phase === "ready" && card.appChecked)) void useApp.getState().loadInstalled();
   };
 
   const retryAdmin = async (card: Card) => {
@@ -269,7 +292,10 @@ function Dialog({ apps, analyze }: { apps: InstalledApp[]; analyze: boolean }) {
         ))}
       </div>
       {stage === "choose" && (
-        <p className="m-0 mt-3 text-[12px] leading-relaxed text-fg-3">{t(windows ? "uninstall.note.windows" : "uninstall.note.mac")}</p>
+        <div className="mt-3 space-y-1 text-[12px] leading-relaxed text-fg-3">
+          <p className="m-0">{t(windows ? "uninstall.note.windows" : "uninstall.note.mac")}</p>
+          <p className="m-0">{t("uninstall.previewScope")}</p>
+        </div>
       )}
     </Modal>
   );
@@ -406,12 +432,21 @@ function AppCard({
         <div className="border-t border-line px-1.5 pt-1 pb-2">
           {card.phase === "ready" && (
             <>
+              {card.installFolder && card.installFolder.path !== card.appPath && (
+                <div className="flex items-start gap-3 px-2 pt-2 text-[12px] text-fg-3">
+                  <span className="shrink-0">{t(card.installFolder.inferred ? "uninstall.installFolderInferred" : "uninstall.installFolder")}</span>
+                  <span className="selectable min-w-0 break-all font-mono text-fg-2" title={card.installFolder.path}>
+                    {shortPath(card.installFolder.path)}
+                  </span>
+                </div>
+              )}
+              {app.source === "registry" && !card.installFolder && <Empty>{t("uninstall.installFolderUnknown")}</Empty>}
               <Heading>{t("uninstall.toRemove")}</Heading>
               {app.uninstallable && (
                 <Row
                   checked={card.appChecked}
                   disabled={!editable}
-                  kind={t("uninstall.kind.app")}
+                  kind={t(app.source === "registry" ? "uninstall.kind.command" : "uninstall.kind.app")}
                   path={card.appPath}
                   size={appSize}
                   onToggle={toggleApp}
@@ -495,7 +530,12 @@ function AppCard({
           )}
 
           {card.phase === "cancelled" && <Empty tone="warning">{t("uninstall.cancelled", { name: app.name })}</Empty>}
-          {card.phase === "failed" && <Empty tone="danger">{card.error}</Empty>}
+          {card.phase === "failed" && (
+            <>
+              {card.uninstalled && <Empty>{t("uninstall.resultUninstalled", { name: app.name })}</Empty>}
+              <Empty tone="danger">{card.error}</Empty>
+            </>
+          )}
           {card.phase === "skipped" && <Empty>{t("uninstall.skippedHint")}</Empty>}
 
           {card.phase === "done" && (

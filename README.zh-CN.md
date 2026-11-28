@@ -139,7 +139,9 @@ npm run typecheck
 cargo test -p shibapack-core -- --ignored
 ```
 
-### 自检
+### 流程测试和桌面自检
+
+先运行 `npx playwright install chromium`，再用 `npm run test:e2e` 检查取消并重新导入、删除索引记录后恢复、清理和卸载。浏览器测试使用模拟数据，不会实际清理文件或卸载软件。
 
 单元测试和浏览器预览都够不着“真实窗口里前后端是否连通、图标能否显示”这一层。带着下面三个环境变量启动桌面应用，它会用一个临时仓库把这些链路走一遍，结果打印在终端，然后自己退出：
 
@@ -152,6 +154,8 @@ SHIBAPACK_CONFIG=/tmp/shibapack-selftest/config.json SHIBAPACK_CACHE=/tmp/shibap
 ```
 
 需要先有 `npm run dev` 在运行，并且已经 `cargo build -p shibapack`（用发布构建出来的程序则不需要 `npm run dev`）。`SHIBAPACK_SELFTEST` 指向一个安装包（要测图标就用 exe 或 msi，dmg 取不到图标）；它旁边如果有一个 `lang.json`，会顺带测语言包导入。清理只读地扫一遍、不选任何项清理一次，不删这台电脑上的任何东西。自检里的在线源几项需要联网。这两个目录变量也可以单独用来让应用使用另一份引导文件和缓存，不碰正式数据。
+
+把 `SHIBAPACK_SELFTEST` 指向命名为 `workflow-selftest-1.0.exe` 的大测试文件（例如 512 MiB），并使用空白的临时仓库，可以只在真实桌面窗口里检查大文件取消、重新导入以及索引备份恢复。
 
 ### 打包
 

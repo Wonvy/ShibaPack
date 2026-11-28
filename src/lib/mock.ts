@@ -569,6 +569,8 @@ export function mockPickFiles(): string[] {
 }
 
 const snapshot = () => structuredClone(lib);
+const backupData = new Map(backups.map((backup) => [backup.name, snapshot()]));
+let importCancelled = false;
 const find = (id: unknown) => {
   const found = lib.software.find((s) => s.id === id);
   if (!found) throw "not_found";
@@ -619,6 +621,7 @@ function inspectEntry(path: string, includeChildren: boolean): DropEntry {
 }
 
 async function importPaths(paths: string[], mode: Storage, hint?: ImportHint) {
+  importCancelled = false;
   const emit = (progress: Progress) => listeners.forEach((handler) => handler(progress));
   // 选的是文件夹时，假装在里面找到了几个安装包；标成“整个导入”的文件夹和 .app 当作一个安装包
   const packages = new Set(hint?.packages ?? []);
@@ -631,9 +634,11 @@ async function importPaths(paths: string[], mode: Storage, hint?: ImportHint) {
   await sleep(350);
   const items: ImportItem[] = [];
   for (const [i, path] of files.entries()) {
+    if (importCancelled) break;
     const base = path.split(/[\\/]/).pop()!;
     emit({ phase: "import", current: i + 1, total: files.length, file: base });
     await sleep(450);
+    if (importCancelled) break;
     // 预览里演示失败：名字带 broken 的没有权限，带 locked 的被占用
     if (/broken/i.test(base)) {
       items.push({ path, status: "failed", softwareId: null, message: "Permission denied (os error 13)", step: "copy", reason: "permission_denied" });
@@ -668,7 +673,7 @@ async function importPaths(paths: string[], mode: Storage, hint?: ImportHint) {
     items.push({ path, status: "imported" as const, softwareId: target.id, message: null });
   }
   let classified = 0;
-  if (!hint?.categoryId && (hint?.autoClassify ?? lib.settings.autoClassifyOnImport)) {
+  if (!importCancelled && !hint?.categoryId && (hint?.autoClassify ?? lib.settings.autoClassifyOnImport)) {
     const ids = [...new Set(items.flatMap((item) => item.status === "imported" && item.softwareId ? [item.softwareId] : []))];
     const assignments = hint?.categoryPreviews
       ? items.flatMap((item) => item.status === "imported" && item.softwareId && !find(item.softwareId).categoryId && hint.categoryPreviews?.[item.path]
@@ -680,10 +685,10 @@ async function importPaths(paths: string[], mode: Storage, hint?: ImportHint) {
       classified = assignments.length;
     }
   }
-  emit({ phase: "done", current: files.length, total: files.length, file: "" });
+  emit({ phase: "done", current: items.length, total: files.length, file: "" });
   const count = (status: string) => items.filter((item) => item.status === status).length;
   return {
-    report: { imported: count("imported"), duplicates: count("duplicate"), failed: count("failed"), items, classified },
+    report: { imported: count("imported"), duplicates: count("duplicate"), failed: count("failed"), items, classified, cancelled: importCancelled },
     library: snapshot(),
   };
 }
@@ -728,6 +733,9 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       return snapshot();
     case "import_paths":
       return importPaths(args.paths as string[], args.mode as Storage, (args.hint as ImportHint | null) ?? undefined);
+    case "cancel_import":
+      importCancelled = true;
+      return null;
     case "update_software": {
       const edit = args.edit as SoftwareEdit;
       if (!edit.name.trim()) throw "invalid_name";
@@ -809,10 +817,19 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       return command === "empty_trash" ? { ...stats(), trashSize: 0 } : stats();
     case "list_backups":
       return backups;
-    case "create_backup":
-      backups = [{ name: `software-${Date.now()}.json`, createdAt: new Date().toISOString(), size: 18400 }, ...backups].slice(0, 8);
+    case "create_backup": {
+      const backup = { name: `software-${Date.now()}.json`, createdAt: new Date().toISOString(), size: 18400 };
+      backupData.set(backup.name, snapshot());
+      backups = [backup, ...backups].slice(0, 8);
+      for (const name of backupData.keys()) if (!backups.some((entry) => entry.name === name)) backupData.delete(name);
       return backups;
-    case "restore_backup":
+    }
+    case "restore_backup": {
+      const saved = backupData.get(args.name as string);
+      if (!saved) throw "invalid_backup";
+      Object.assign(lib, structuredClone(saved));
+      return snapshot();
+    }
     case "import_backup":
       return snapshot();
     case "verify_data": {
@@ -955,7 +972,7 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
       const found = mockAnalysis(target.name, windows);
       uninstalling.set(target.id, { windows, name: target.name, startedAt: 0, found });
       const appPath = windows ? `"C:\\Program Files\\${target.name}\\Uninstall ${target.name}.exe" /currentuser` : target.location;
-      return { items: found, stillInstalled: false, appPath };
+      return { items: found, stillInstalled: false, appPath, installFolder: { path: target.location, inferred: false } };
     }
     case "uninstall_installed": {
       const target = installedApps.find((candidate) => candidate.id === args.id);
@@ -966,13 +983,16 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
         startedAt: Date.now(),
         found: session?.found ?? [],
       });
-      installedApps = installedApps.filter((candidate) => candidate.id !== args.id);
+      if (target?.source !== "registry") installedApps = installedApps.filter((candidate) => candidate.id !== args.id);
       return null;
     }
     case "uninstall_status": {
       // Windows 那种要等卸载程序跑完，预览里等 3 秒
       const session = uninstalling.get(args.id as string);
-      return Boolean(session?.windows && Date.now() - session.startedAt < 3000);
+      if (!session || !session.startedAt) throw "not_found";
+      const stillInstalled = session.windows && Date.now() - session.startedAt < 3000;
+      if (!stillInstalled) installedApps = installedApps.filter((candidate) => candidate.id !== args.id);
+      return stillInstalled;
     }
     case "scan_leftovers": {
       await sleep(800);

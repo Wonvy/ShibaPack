@@ -205,16 +205,14 @@ pub fn folder_size(path: &Path) -> Option<u64> {
 /// 运行系统登记的卸载程序。只有 Windows 有这个概念；别的系统返回 `Ok(false)`，由调用方另行处理。
 #[cfg(windows)]
 pub fn run_uninstaller(app: &InstalledApp) -> std::io::Result<bool> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let Some(command) = app.uninstall_command.as_deref() else { return Ok(false) };
-    // 卸载命令本身带引号和参数。用 /S /C 加一层外引号原样交给 cmd，不让标准库再转义一遍
-    std::process::Command::new("cmd")
-        .args(["/S", "/C"])
-        .raw_arg(format!("\"{command}\""))
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()?;
+    platform::open_uninstaller(command, app.install_dir.as_deref())?;
     Ok(true)
+}
+
+#[cfg(windows)]
+pub(crate) fn registered_uninstaller_path(command: &str) -> Option<PathBuf> {
+    platform::exe_in_command(command)
 }
 
 #[cfg(not(windows))]
@@ -375,12 +373,25 @@ mod platform {
 #[cfg(windows)]
 mod platform {
     use super::*;
-    use std::os::windows::ffi::OsStringExt;
+    use std::{
+        ffi::{OsStr, OsString},
+        io,
+        os::windows::ffi::{OsStrExt, OsStringExt},
+        ptr::null,
+    };
     use windows_sys::{
         core::PCWSTR,
-        Win32::System::{
-            ApplicationInstallationAndServicing::{MsiGetProductInfoW, INSTALLPROPERTY_LOCALPACKAGE, INSTALLPROPERTY_PRODUCTICON},
-            Environment::ExpandEnvironmentStringsW,
+        Win32::{
+            Foundation::RPC_E_CHANGED_MODE,
+            System::{
+                ApplicationInstallationAndServicing::{MsiGetProductInfoW, INSTALLPROPERTY_LOCALPACKAGE, INSTALLPROPERTY_PRODUCTICON},
+                Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE},
+                Environment::ExpandEnvironmentStringsW,
+            },
+            UI::{
+                Shell::{ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW},
+                WindowsAndMessaging::SW_SHOWNORMAL,
+            },
         },
     };
     use winreg::{enums::*, RegKey};
@@ -496,10 +507,14 @@ mod platform {
     }
 
     fn expand_path(path: &str) -> Option<PathBuf> {
-        if !path.contains('%') {
-            return Some(PathBuf::from(path));
+        expand_environment(path).map(PathBuf::from)
+    }
+
+    fn expand_environment(text: &str) -> Option<OsString> {
+        if !text.contains('%') {
+            return Some(OsString::from(text));
         }
-        let input: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+        let input: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
         // input 以 NUL 结尾。先查询所需长度，再写入足够长的缓冲区。
         let size = unsafe { ExpandEnvironmentStringsW(input.as_ptr(), std::ptr::null_mut(), 0) };
         if size == 0 {
@@ -507,7 +522,7 @@ mod platform {
         }
         let mut expanded = vec![0; size as usize];
         let used = unsafe { ExpandEnvironmentStringsW(input.as_ptr(), expanded.as_mut_ptr(), size) };
-        (used > 0 && used <= size).then(|| std::ffi::OsString::from_wide(&expanded[..used as usize - 1]).into())
+        (used > 0 && used <= size).then(|| OsString::from_wide(&expanded[..used as usize - 1]))
     }
 
     fn msi_product_path(product: &[u16], property: PCWSTR) -> Option<PathBuf> {
@@ -548,16 +563,110 @@ mod platform {
         exes.into_iter().map(|(_, _, path)| path).collect()
     }
 
-    /// 卸载命令里的程序路径：`"C:\App\unins000.exe" /SILENT` → `C:\App\unins000.exe`。
-    fn exe_in_command(command: &str) -> Option<PathBuf> {
+    /// 路径里的空格可能没加引号（如 LibreCAD 和 Everything 的登记项）。参数保留自己的引号。
+    fn split_uninstall_command(command: &str) -> Option<(&str, &str)> {
         let command = command.trim();
-        let path = match command.strip_prefix('"') {
-            Some(rest) => rest.split('"').next()?,
-            None => {
-                let end = command.to_ascii_lowercase().find(".exe")? + 4;
-                &command[..end]
-            }
+        if command.is_empty() || command.contains('\0') {
+            return None;
+        }
+        if let Some(quoted) = command.strip_prefix('"') {
+            let (file, args) = quoted.split_once('"')?;
+            return (!file.is_empty()).then(|| (file, args.trim_start()));
+        }
+
+        let boundaries = command.match_indices(char::is_whitespace).map(|(i, _)| i).chain(Some(command.len()));
+        let first = command.split_whitespace().next()?;
+        let has_executable_extension = |file: &str| {
+            Path::new(file).extension().is_some_and(|ext| {
+                ["exe", "com", "bat", "cmd"].iter().any(|suffix| ext.eq_ignore_ascii_case(suffix))
+            })
         };
+        let end = if first.contains(['\\', '/', '%']) && !has_executable_extension(first) {
+            boundaries
+                .take_while(|&i| !command[..i].contains('"'))
+                .find(|&i| has_executable_extension(&command[..i]))
+                .unwrap_or(first.len())
+        } else {
+            first.len()
+        };
+        Some((&command[..end], command[end..].trim_start()))
+    }
+
+    fn msi_window_args(args: &str) -> String {
+        // 保留路径、属性和原来的引号。只去掉控制界面级别的独立参数。
+        let mut tokens = Vec::new();
+        let (mut start, mut in_quotes, mut backslashes) = (0, false, 0);
+        for (index, ch) in args.char_indices() {
+            if ch.is_whitespace() && !in_quotes {
+                if start < index {
+                    tokens.push(&args[start..index]);
+                }
+                start = index + ch.len_utf8();
+            }
+            if ch == '"' && backslashes % 2 == 0 {
+                in_quotes = !in_quotes;
+            }
+            backslashes = if ch == '\\' { backslashes + 1 } else { 0 };
+        }
+        if start < args.len() {
+            tokens.push(&args[start..]);
+        }
+        tokens.retain(|token| {
+            let option = token.trim_matches('"').to_ascii_lowercase();
+            let Some(option) = option.strip_prefix(['/', '-']) else { return true };
+            if matches!(option, "quiet" | "passive" | "q") {
+                return false;
+            }
+            !["qn", "qb", "qr", "qf"].iter().any(|mode| {
+                option.strip_prefix(mode).is_some_and(|rest| rest.chars().all(|ch| matches!(ch, '+' | '-' | '!')))
+            })
+        });
+        tokens.push("/qf");
+        tokens.join(" ")
+    }
+
+    pub(super) fn open_uninstaller(command: &str, install_dir: Option<&Path>) -> io::Result<()> {
+        let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "Invalid registered uninstall command");
+        let (file, args) = split_uninstall_command(command).ok_or_else(invalid)?;
+        let file = expand_path(file).ok_or_else(invalid)?;
+        let is_msi = file.file_name().is_some_and(|name| {
+            name.eq_ignore_ascii_case("msiexec.exe") || name.eq_ignore_ascii_case("msiexec")
+        });
+        let interactive_args = is_msi.then(|| msi_window_args(args));
+        let args = expand_environment(interactive_args.as_deref().unwrap_or(args)).ok_or_else(invalid)?;
+        let directory = file.parent().filter(|dir| dir.is_absolute()).or(install_dir);
+
+        let wide = |text: &OsStr| text.encode_wide().chain(Some(0)).collect::<Vec<_>>();
+        let file = wide(file.as_os_str());
+        let args = (!args.is_empty()).then(|| wide(&args));
+        let directory = directory.map(|dir| wide(dir.as_os_str()));
+        let mut launch = SHELLEXECUTEINFOW {
+            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
+            lpVerb: windows_sys::w!("open"),
+            lpFile: file.as_ptr(),
+            lpParameters: args.as_ref().map_or(null(), |s| s.as_ptr()),
+            lpDirectory: directory.as_ref().map_or(null(), |s| s.as_ptr()),
+            nShow: SW_SHOWNORMAL,
+            ..Default::default()
+        };
+        // 让 Windows 直接打开卸载器并按其清单处理 UAC；启动失败由 ShibaPack 显示。
+        // 传给 Shell 的 UTF-16 字符串在调用结束前保持有效。
+        unsafe {
+            let status = CoInitializeEx(null(), (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32);
+            if status < 0 && status != RPC_E_CHANGED_MODE {
+                return Err(io::Error::other(format!("COM HRESULT 0x{:08X}", status as u32)));
+            }
+            let result = if ShellExecuteExW(&mut launch) != 0 { Ok(()) } else { Err(io::Error::last_os_error()) };
+            if status >= 0 {
+                CoUninitialize();
+            }
+            result
+        }
+    }
+
+    pub(super) fn exe_in_command(command: &str) -> Option<PathBuf> {
+        let (path, _) = split_uninstall_command(command)?;
         expand_path(path)
     }
 
@@ -567,6 +676,39 @@ mod platform {
         assert_eq!(display_icon_path(r#""C:\Apps\name, tool.dll", -123"#), Some((PathBuf::from(r"C:\Apps\name, tool.dll"), -123)));
         assert_eq!(display_icon_path(r#""C:\Apps\tool.exe,2""#), Some((PathBuf::from(r"C:\Apps\tool.exe"), 2)));
         assert_eq!(display_icon_path(r"@%SystemRoot%\explorer.exe,0"), Some((PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("explorer.exe"), 0)));
+    }
+
+    #[test]
+    fn splits_unquoted_uninstaller_paths_from_registry() {
+        for (command, file, args) in [
+            (r"C:\Program Files (x86)\LibreCAD\Uninstall.exe", r"C:\Program Files (x86)\LibreCAD\Uninstall.exe", ""),
+            (r"C:\Program Files\Everything\Everything.exe -unsetup", r"C:\Program Files\Everything\Everything.exe", "-unsetup"),
+            (r"C:\Program Files\Everything 1.5a\Everything64.exe -unsetup", r"C:\Program Files\Everything 1.5a\Everything64.exe", "-unsetup"),
+            (r#""%ProgramFiles%\测试工具\uninstall.exe" --data="C:\Some Folder""#, r"%ProgramFiles%\测试工具\uninstall.exe", r#"--data="C:\Some Folder""#),
+            (r"msiexec /x C:\path\file.msi", "msiexec", r"/x C:\path\file.msi"),
+            (r#"cmd.exe /c "C:\Program Files\Tool\remove.bat""#, "cmd.exe", r#"/c "C:\Program Files\Tool\remove.bat""#),
+        ] {
+            assert_eq!(split_uninstall_command(command), Some((file, args)));
+        }
+        assert!(split_uninstall_command(r#""C:\Unclosed\uninstall.exe"#).is_none());
+    }
+
+    #[test]
+    fn msi_requests_a_full_window_without_changing_quoted_properties() {
+        assert_eq!(
+            msi_window_args(r#"/X "{PRODUCT}" /QUIET /passive /qb!+ /norestart NOTE="keep /qn" /l*v "C:\logs\uninstall log.txt""#),
+            r#"/X "{PRODUCT}" /norestart NOTE="keep /qn" /l*v "C:\logs\uninstall log.txt" /qf"#,
+        );
+        assert_eq!(msi_window_args("/I{PRODUCT} /qf"), "/I{PRODUCT} /qf");
+    }
+
+    #[test]
+    fn missing_uninstaller_is_reported_as_a_launch_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing uninstaller.exe");
+        let command = format!("{} -unsetup", missing.display());
+        let error = open_uninstaller(&command, None).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 }
 

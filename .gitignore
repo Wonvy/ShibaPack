@@ -4,4 +4,6 @@ target
 src-tauri/gen
 .DS_Store
 *.log
+playwright-report/
+test-results/
 .claude

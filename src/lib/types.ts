@@ -300,6 +300,8 @@ export interface LeftoverScan {
   stillInstalled: boolean;
   /** 卸载前的分析里“App”那一行显示的：Windows 是卸载命令，macOS 是 .app 的位置。 */
   appPath?: string;
+  /** 单独显示安装目录，避免把卸载命令当作安装位置。 */
+  installFolder?: { path: string; inferred: boolean };
 }
 
 export interface RemoveReport {

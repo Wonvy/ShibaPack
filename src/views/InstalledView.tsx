@@ -37,7 +37,7 @@ import type { InstalledApp, Software } from "../lib/types";
 type Column = "name" | "version" | "date" | "size";
 // 列表的列：名称、版本、仓库里有没有、安装日期、大小。宽度可以拖，右键表头勾选显示哪几列；
 // 栏窄时安装日期、大小、仓库从右往左暂时收起（见 components/columns）。
-// 卸载只在右键菜单和详情栏里，列表里不放（鼠标停上去冒出来的按钮容易误点）
+// 列表工具栏也提供批量卸载入口。
 type InstalledColumn = "version" | "repo" | "date" | "size";
 const INSTALLED_COLUMNS: ColumnDef<InstalledColumn>[] = [
   { key: "version", initial: 110, min: 28, max: 260 },
@@ -66,6 +66,7 @@ export function InstalledView({ detailToggle }: { detailToggle: ReactNode }) {
   const software = useApp((state) => state.library?.software);
   const reveal = useApp((state) => state.reveal);
   const [repoFilter, setRepoFilter] = useState<RepoFilter>("all");
+  const [multiSelect, setMultiSelect] = useState(false);
   const view = usePrefs((state) => state.installedView);
   const setPrefs = usePrefs((state) => state.set);
   const [frame, frameWidth] = useWidth<HTMLDivElement>();
@@ -124,10 +125,11 @@ export function InstalledView({ detailToggle }: { detailToggle: ReactNode }) {
 
   // 选中的：多选时是 selectedIds，单选时就是 selectedId 那一个
   const chosen = selectedIds.length > 0 ? selectedIds : selectedId ? [selectedId] : [];
+  const removable = (installed ?? []).filter((app) => chosen.includes(app.id) && app.uninstallable);
 
   /** 点一行：⌘ / Ctrl 加选或取消，Shift 从上次点的那一行连选到这一行，否则单选。 */
   const clickRow = (id: string, event: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) => {
-    if (event.metaKey || event.ctrlKey) {
+    if (event.metaKey || event.ctrlKey || (multiSelect && !event.shiftKey)) {
       const next = chosen.includes(id) ? chosen.filter((x) => x !== id) : [...chosen, id];
       setInstalledSelection(next, next.includes(id) ? id : (next[0] ?? null));
     } else if (event.shiftKey && selectedId && list.some((app) => app.id === selectedId)) {
@@ -175,9 +177,19 @@ export function InstalledView({ detailToggle }: { detailToggle: ReactNode }) {
 
   return (
     <div ref={frame} className="@container flex min-h-0 flex-1 flex-col">
-      {/* 三段：左边空着（不要标题和个数，侧栏里已经写了），正中间的筛选，右边的按钮 */}
+      {/* 左边是多选操作，中间是筛选，右边是视图和刷新。 */}
       <div className="grid h-11 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-2 border-b border-line pr-2 pl-4">
-        <div />
+        <div className="flex min-w-0 items-center gap-1">
+          <IconButton label={t("installed.multiSelect")} aria-pressed={multiSelect} onClick={() => setMultiSelect(!multiSelect)}>
+            <CheckSquare size={15} strokeWidth={1.75} className={multiSelect ? "text-accent" : ""} />
+          </IconButton>
+          {chosen.length > 1 && removable.length > 0 && (
+            <Button variant="caution" size="sm" className="min-w-0" onClick={() => void uninstallApp(removable)}>
+              <Trash2 size={14} strokeWidth={1.75} aria-hidden className="shrink-0" />
+              <span className="truncate">{t("installed.uninstallMany", { n: removable.length })}</span>
+            </Button>
+          )}
+        </div>
         <FilterMenu<RepoFilter>
           label={t("installed.repoFilter")}
           value={repoFilter}
@@ -497,13 +509,14 @@ export function InstalledDetail() {
   return many ? <InstalledBatch /> : <InstalledSingle />;
 }
 
-/** 多选时的详情栏：一起取简介、让 AI 写简介。 */
+/** 多选时的详情栏：一起取简介或卸载。 */
 function InstalledBatch() {
   const t = useT();
   const ids = useApp((state) => state.selectedInstalledIds);
   const index = useApp((state) => state.installedIndex);
   // 不能在选择器里拼新数组：每次都是新的，界面会一直重画
   const apps = useMemo(() => ids.map((id) => index[id]).filter(Boolean), [ids, index]);
+  const removable = apps.filter((app) => app.uninstallable);
   const requestSummary = useApp((state) => state.requestSummary);
   const describeWithAi = useApp((state) => state.describeWithAi);
   const selectInstalled = useApp((state) => state.selectInstalled);
@@ -540,6 +553,12 @@ function InstalledBatch() {
         </div>
       </div>
       <div className="shrink-0 border-t border-line p-3">
+        {removable.length > 0 && (
+          <Button variant="caution" className="mb-2 w-full" onClick={() => void uninstallApp(removable)}>
+            <Trash2 size={14} strokeWidth={1.75} aria-hidden />
+            {t("installed.uninstallMany", { n: removable.length })}
+          </Button>
+        )}
         <Button variant="ghost" className="w-full" onClick={() => selectInstalled(null)}>
           {t("batch.clear")}
         </Button>

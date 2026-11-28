@@ -46,6 +46,12 @@ export async function runSelftest() {
       await api.selftestReport(failures === 0 ? "全部通过" : `${failures} 项失败`, true);
       return;
     }
+    if (status.selftest && status.selftest.split(/[\\/]/).pop()?.includes("workflow-selftest")) {
+      const { runRepositoryWorkflows } = await import("./selftestRepository");
+      await runRepositoryWorkflows(status.selftest, check);
+      await api.selftestReport(failures === 0 ? "全部通过" : `${failures} 项失败`, true);
+      return;
+    }
 
     // 打开时默认是主页，下面的检查从软件库开始
     useApp.getState().setRoute("library");

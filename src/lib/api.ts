@@ -94,7 +94,7 @@ export const api = {
   /** `moveFiles` 只对托管模式有效：导入后不留原文件。 */
   importPaths: (paths: string[], mode: Storage, hint?: ImportHint, moveFiles = false) =>
     call<ImportResult>("import_paths", { paths, mode, moveFiles, hint: hint ?? null }),
-  /** 在两个文件之间停下正在进行的导入。 */
+  /** 停下正在进行的导入，保留已完成的文件。 */
   cancelImport: () => call<void>("cancel_import"),
   updateSoftware: (id: string, edit: SoftwareEdit) => call<Library>("update_software", { id, edit }),
   updateVersion: (softwareId: string, versionId: string, edit: VersionEdit) =>

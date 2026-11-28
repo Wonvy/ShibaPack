@@ -8,6 +8,24 @@ One section per version, titled `## <version>`, with a Chinese and an English pa
 `.github/workflows/release.yml` puts that section into the GitHub Release notes and `latest.json`; the update window
 in ShibaPack (opened from the version number in the bottom-right corner) shows the part that matches the interface language.
 
+## 0.17.0
+
+### 中文
+
+- 大文件和文件夹可以在扫描、计算哈希、复制或跨盘校验期间取消。取消会保留源文件和已完成的项目，并清理未完成的临时副本。
+- 多台设备共用 NAS 仓库时，写入互斥，其他设备仍可浏览。保存前也会检查索引是否被外部改动。
+- 修复 Windows 上带空格且未加引号的卸载器路径无法正确启动的问题。MSI 卸载会请求显示完整界面，启动失败会显示原因。
+- 卸载预览分别显示安装目录与卸载命令，也会列出常用数据目录中可能相关的独立配置文件和数据库。系统确认卸载后，软件会立即从已安装列表移除。
+- 「已安装软件」工具栏新增多选和批量卸载入口，一次确认后逐个运行卸载器。
+
+### English
+
+- Cancel large-file and folder imports during scanning, hashing, copying, or cross-drive verification. Cancellation keeps the source and completed items and removes unfinished temporary copies.
+- Devices sharing a library on a NAS can browse while another device writes. ShibaPack also checks for external changes to the index before saving.
+- Fixed Windows uninstaller launches when the registered path contains unquoted spaces. MSI uninstall requests a full interface, and launch failures display the reason.
+- The uninstall preview shows the installation folder separately from the uninstall command and lists potentially related standalone configuration and database files. Apps disappear from the installed list as soon as uninstall is confirmed.
+- Added a multi-select mode and a batch uninstall action to the Installed Apps toolbar. Confirm once to run the uninstallers in sequence.
+
 ## 0.16.0
 
 ### 中文

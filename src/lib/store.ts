@@ -5,24 +5,21 @@ import { create } from "zustand";
 import { aiUsable } from "./ai";
 import { api, onCheckProgress, onDownloadProgress, onImportProgress, pickFolder } from "./api";
 import { type Key, type Translate, type Vars, errorText, setLangPacks, translate } from "./i18n";
-import { filterSoftware, hasUpdate, needsTranslation } from "./library";
+import { filterSoftware, needsTranslation } from "./library";
 import { applyTheme } from "./theme";
+import { createImportSlice, type ImportSlice } from "./store/imports";
+import { createInstalledSlice, type InstalledSlice } from "./store/installed";
+import { createSourceSlice, type SourceSlice } from "./store/sources";
+
+export type { ImportDialogState, ImportOptions } from "./store/imports";
+export type { DownloadState } from "./store/sources";
 import type {
-  Asset,
-  CheckProgress,
-  DropEntry,
-  ImportHint,
-  ImportReport,
-  InstalledApp,
   LangPack,
   Language,
   Library,
   Platform,
-  Progress,
   Settings,
-  SourceKind,
   Status,
-  Storage,
 } from "./types";
 
 export type Route = "home" | "library" | "installed" | "startup" | "cleanup" | "disk" | "paths";
@@ -57,41 +54,13 @@ export interface AppUpdate {
 
 export const NO_UPDATE: AppUpdate = { phase: "idle", version: "", progress: null, error: "", dismissed: false, notes: "", blocked: false };
 
-/** 一个正在下载或排队的文件。 */
-export interface DownloadState {
-  softwareId: string;
-  name: string;
-  received: number;
-  total: number | null;
-}
-
-/** 导入窗口：拖进中间栏后先在这里选分类、存储方式，确认后导入并显示进度和结果。 */
-export interface ImportDialogState {
-  paths: string[];
-  /** 已经看过的拖入项（从侧栏拖进来时先看过了）。 */
-  entries?: DropEntry[];
-  /** 预先选好的分类（拖到侧栏的某个分类上；`null` 是拖到了“未分类”上）。 */
-  categoryId?: string | null;
-  storage?: Storage;
-  softwareName?: string;
-  /** 不是从这个窗口开始的导入有失败：直接显示结果和失败原因。 */
-  report?: ImportReport;
-}
-
-export interface ImportOptions {
-  /** 移动进仓库（不留原文件）。不给时按设置来。 */
-  move?: boolean;
-  /** 不弹提示、不跳到导入的软件、失败时也不开结果窗口（导入窗口自己显示结果）。 */
-  quiet?: boolean;
-}
-
 export interface Toast {
   id: number;
   text: string;
   kind: "info" | "error";
 }
 
-interface AppState {
+export interface AppState extends ImportSlice, InstalledSlice, SourceSlice {
   status: Status | null;
   library: Library | null;
   route: Route;
@@ -103,53 +72,13 @@ interface AppState {
   selectedId: string | null;
   /** 多选时所有选中的软件；单选时只有 selectedId 一个。 */
   selectedIds: string[];
-  progress: Progress | null;
-  /** 导入进行中时又拖进来、选进来的文件，排着队等前一批导完。 */
-  importQueue: { paths: string[]; mode?: Storage; hint?: ImportHint; options?: ImportOptions; done: (report: ImportReport | null) => void }[];
-  dropping: boolean;
-  /** 从系统拖文件进来时，指针下面可以落下的地方（侧栏的分类：`category:<id>`、`uncategorized`）。 */
-  fileDropTarget: string | null;
-  /** 打开着的导入窗口。 */
-  importDialog: ImportDialogState | null;
   /** 屏幕下方的提示，最新的在最后，最多同时 3 条。新提示不会把还没看完的出错提示挤掉。 */
   toasts: Toast[];
   dismissToast: (id: number) => void;
   settingsOpen: boolean;
 
-  /** 这台电脑上已安装的软件。还没列出来时是 null。 */
-  installed: InstalledApp[] | null;
-  /** 已安装软件按 id 查：列表里每一行都要查“它装着没有”，不能每次都从头找一遍。 */
-  installedIndex: Record<string, InstalledApp>;
-  installedLoading: boolean;
-  /** 上次列完已安装软件的时间（毫秒），用来决定窗口回到前台时要不要重新扫描。 */
-  installedScannedAt: number;
-  /** 已安装软件占用的空间，统计完才有。 */
-  sizes: Record<string, number>;
-  /** 正在统计已安装软件占用的空间。统计失败也会停下，界面不会一直显示“统计中”。 */
-  measuring: boolean;
-  /** 仓库里的软件 id → 对应的已安装软件 id。 */
-  links: Record<string, string>;
-  selectedInstalledId: string | null;
-  /** 已安装软件里多选的；单选时只有 selectedInstalledId 一个。 */
-  selectedInstalledIds: string[];
-  /** 单选一个已安装软件（null 为不选）。 */
-  selectInstalled: (id: string | null) => void;
-  /** 多选已安装软件：`primary` 是 Shift 连选的起点。 */
-  setInstalledSelection: (ids: string[], primary: string | null) => void;
-
-  /** 正在下载或排队的文件，按下载地址。 */
-  downloads: Record<string, DownloadState>;
-  /** 正在检查更新时的进度。 */
-  checking: CheckProgress | null;
   /** 打开着的智能分类预览：要分类的软件。 */
   classifyIds: string[] | null;
-  /** 打开着的卸载窗口：要卸载（或只是分析）的软件，可以好几个。`analyze` 时默认不勾软件本身，只看占用。 */
-  uninstallTarget: { apps: InstalledApp[]; analyze: boolean } | null;
-  /**
-   * 打开着的“关联在线源”对话框：给哪个软件关联；null 表示从在线源新添一个软件。
-   * 从顶栏搜索的在线结果打开时，带着源、标识和名字，对话框直接查出最新版本等用户确认。
-   */
-  sourceDialog: { softwareId: string | null; kind?: SourceKind; reference?: string; name?: string } | null;
   /** 语言包变了就加一，让界面重新取文字。 */
   langRevision: number;
   /** ShibaPack 自己的更新进行到哪一步了。 */
@@ -213,20 +142,7 @@ interface AppState {
   describeWithAi: (items: { name: string; publisher?: string }[]) => Promise<void>;
   /** 自己写的描述（按名字存）。空字符串表示删掉。 */
   writeSummary: (name: string, text: string) => Promise<boolean>;
-  /** `hint.name` 给了时，所有文件都归到这个软件下（在详情栏里给某个软件选文件添加版本）。从系统拖进来的文件不带它，一律按文件名认。 */
-  importPaths: (paths: string[], mode?: Storage, hint?: ImportHint, options?: ImportOptions) => Promise<ImportReport | null>;
-  /** 停下正在进行的导入（在两个文件之间停），排着队的也不导了。 */
-  cancelImport: () => void;
-  importCancelled: boolean;
   saveSettings: (patch: Partial<Settings>) => Promise<void>;
-  /** 重新列出已安装的软件，并更新和仓库的对应关系。 */
-  loadInstalled: () => Promise<void>;
-  /** 检查所有关联了在线源的软件有没有新版本。 */
-  checkUpdates: () => Promise<void>;
-  /** 下载在线源上的一个安装包并收进仓库。 */
-  downloadAsset: (softwareId: string, asset: Asset) => Promise<void>;
-  /** 把仓库根目录里散落的安装包归位。 */
-  tidyRoot: () => Promise<void>;
   /** 读入或更新语言包。 */
   useLangPacks: (packs: LangPack[]) => void;
 }
@@ -266,7 +182,6 @@ let iconFailures = 0;
 const ICON_WORKERS = 3;
 const askedSummaries = new Set<string>();
 /** 正在导入一批文件。 */
-let importing = false;
 const summaryQueue: { name: string; refresh: boolean }[] = [];
 let summaryWorkers = 0;
 let summariesOffline = false;
@@ -278,7 +193,8 @@ export const useApp = create<AppState>()((set, get) => {
   const refreshLinks = async () => {
     if (get().installed === null || get().library === null) return;
     try {
-      set({ links: await api.matchInstalled() });
+      const links = await api.matchInstalled();
+      set({ links: Object.fromEntries(Object.entries(links).filter(([, id]) => id in get().installedIndex)) });
     } catch {
       // 对应关系只是锦上添花，取不到就保持原样
     }
@@ -465,33 +381,15 @@ export const useApp = create<AppState>()((set, get) => {
     installFilter: "all",
     selectedId: null,
     selectedIds: [],
-    progress: null,
-    importQueue: [],
-    importCancelled: false,
+    ...createImportSlice(set, get, adopt, language),
     summaryBusy: {},
     aiKeySaved: false,
     aiBusy: {},
-    dropping: false,
-    fileDropTarget: null,
-    importDialog: null,
     toasts: [],
     settingsOpen: false,
-    installed: null,
-    installedIndex: {},
-    installedLoading: false,
-    installedScannedAt: 0,
-    sizes: {},
-    measuring: false,
-    links: {},
-    selectedInstalledId: null,
-    selectedInstalledIds: [],
-    selectInstalled: (id) => set({ selectedInstalledId: id, selectedInstalledIds: id ? [id] : [] }),
-    setInstalledSelection: (ids, primary) => set({ selectedInstalledIds: ids, selectedInstalledId: primary ?? ids[0] ?? null }),
-    downloads: {},
-    checking: null,
+    ...createInstalledSlice(set, get, refreshLinks, fillIcons, language),
+    ...createSourceSlice(set, get, adopt, language),
     classifyIds: null,
-    uninstallTarget: null,
-    sourceDialog: null,
     langRevision: 0,
     appUpdate: NO_UPDATE,
     updateDialog: false,
@@ -684,67 +582,6 @@ export const useApp = create<AppState>()((set, get) => {
       }
     },
 
-    importPaths: async (paths, mode, hint, options = {}) => {
-      const library = get().library;
-      if (!library || paths.length === 0) return null;
-      // 正在导入：排队，等前一批导完再导，不能悄悄丢掉
-      if (importing) {
-        if (!options.quiet) get().notify(translate(language(), "import.queued"));
-        return new Promise((done) => set({ importQueue: [...get().importQueue, { paths, mode, hint, options, done }] }));
-      }
-      importing = true;
-      set({ progress: { phase: "collect", current: 0, total: 0, file: "" } });
-      let report: ImportReport | null = null;
-      try {
-        // 没指定存储模式时按设置来；“移动进仓库”也只在按设置导入时生效（扫描建索引明确要求只记位置）
-        const { defaultStorage, moveOnImport } = library.settings;
-        const move = options.move ?? (!mode && defaultStorage === "managed" && moveOnImport);
-        const result = await api.importPaths(paths, mode ?? defaultStorage, hint, move);
-        adopt(result.library);
-        report = result.report;
-        const { imported, duplicates, failed, items, cancelled } = report;
-        if (options.quiet) {
-          // 导入窗口自己显示结果
-        } else if (failed > 0) {
-          // 有失败的：打开结果窗口，一个个说清楚哪个文件、在哪一步、为什么
-          set({ importDialog: { paths, report } });
-        } else if (cancelled) {
-          get().notify(translate(language(), "import.cancelled", { imported, duplicates, failed }));
-        } else if (items.length === 0) {
-          get().notify(translate(language(), "import.none"));
-        } else {
-          get().notify(translate(language(), "import.done", { imported, duplicates, failed }));
-          // 只导入了一个软件时直接选中它
-          const ids = new Set(items.filter((i) => i.status === "imported").map((i) => i.softwareId));
-          if (ids.size === 1) {
-            get().setRoute("library");
-            get().select([...ids][0]);
-          }
-        }
-      } catch (error) {
-        if (!options.quiet) get().notify(errorText(language(), error), "error");
-        else throw error;
-      } finally {
-        importing = false;
-        set({ progress: null });
-        // 取消时排着的也不导了
-        const [next, ...rest] = get().importQueue;
-        if (next && !get().importCancelled) {
-          set({ importQueue: rest });
-          void get().importPaths(next.paths, next.mode, next.hint, next.options).then(next.done, () => next.done(null));
-        } else {
-          for (const waiting of get().importQueue) waiting.done(null);
-          set({ importQueue: [], importCancelled: false });
-        }
-      }
-      return report;
-    },
-
-    cancelImport: () => {
-      set({ importCancelled: true });
-      void api.cancelImport();
-    },
-
     saveSettings: async (patch) => {
       const library = get().library;
       if (!library) return;
@@ -766,90 +603,6 @@ export const useApp = create<AppState>()((set, get) => {
       if (current) {
         applyTheme(before.theme, before.accent);
         set({ library: { ...current, settings: before } });
-      }
-    },
-
-    loadInstalled: async () => {
-      if (get().installedLoading) return;
-      set({ installedLoading: true });
-      try {
-        const root = get().status?.repoRoot;
-        const { apps: installed, cachedIcons } = await api.listInstalled();
-        const library = get().library;
-        const selectedInstalledId = installed.some((app) => app.id === get().selectedInstalledId)
-          ? get().selectedInstalledId
-          : null;
-        const stillThere = new Set(installed.map((app) => app.id));
-        set({
-          installed,
-          installedIndex: Object.fromEntries(installed.map((app) => [app.id, app])),
-          selectedInstalledId,
-          selectedInstalledIds: get().selectedInstalledIds.filter((id) => stillThere.has(id)),
-          installedScannedAt: Date.now(),
-          ...(cachedIcons && library && get().status?.repoRoot === root ? { library: { ...library, installedIcons: cachedIcons } } : {}),
-        });
-        void refreshLinks();
-        void fillIcons();
-        // 占用空间统计得慢，列表先出来，大小随后补上
-        set({ measuring: true });
-        void api.measureInstalled().then(
-          (sizes) => set({ sizes, measuring: false }),
-          () => set({ measuring: false }),
-        );
-      } catch (error) {
-        get().notify(errorText(language(), error), "error");
-        if (get().installed === null) set({ installed: [] });
-      } finally {
-        set({ installedLoading: false });
-      }
-    },
-
-    checkUpdates: async () => {
-      const library = get().library;
-      if (!library || get().checking) return;
-      if (!library.software.some((s) => s.subscription)) {
-        get().notify(translate(language(), "updates.none"));
-        return;
-      }
-      set({ checking: { current: 0, total: 1, name: "" } });
-      try {
-        const result = await api.checkUpdates();
-        adopt(result.library);
-        const updates = result.library.software.filter(hasUpdate).length;
-        const key: Key = result.rateLimited ? "updates.rateLimited" : result.failed > 0 ? "updates.failed" : "updates.done";
-        get().notify(translate(language(), key, { checked: result.checked, updates, failed: result.failed }), result.rateLimited ? "error" : "info");
-      } catch (error) {
-        get().notify(errorText(language(), error), "error");
-      } finally {
-        set({ checking: null });
-      }
-    },
-
-    downloadAsset: async (softwareId, asset) => {
-      if (asset.url in get().downloads) return;
-      // 先占个位：前面有别的文件在下的话，它会排队
-      set({ downloads: { ...get().downloads, [asset.url]: { softwareId, name: asset.name, received: 0, total: asset.size } } });
-      try {
-        adopt(await api.downloadAsset(softwareId, asset.url));
-        get().notify(translate(language(), "download.done", { name: asset.name }));
-      } catch (error) {
-        // 自己点的取消不用再提示
-        if (!String(error).startsWith("cancelled")) get().notify(errorText(language(), error), "error");
-      } finally {
-        const downloads = { ...get().downloads };
-        delete downloads[asset.url];
-        set({ downloads });
-      }
-    },
-
-    tidyRoot: async () => {
-      try {
-        const result = await api.tidyRoot();
-        adopt(result.library);
-        const { imported, duplicates, items } = result.report;
-        get().notify(translate(language(), items.length === 0 && duplicates === 0 ? "tidy.none" : "tidy.done", { imported, duplicates }));
-      } catch (error) {
-        get().notify(errorText(language(), error), "error");
       }
     },
 

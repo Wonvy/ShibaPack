@@ -5,17 +5,14 @@
 use serde::{Deserialize, Serialize};
 use shibapack_core::{
     ai, aicache::{self, AiCache, CachedSuggestion, CachedText}, cleanup, download, faillog,
-    leftovers::{self, Leftover, RemoveReport, Target},
-    import::{self, BatchSaver, Outcome, Plan},
-    identify::same_software,
-    installed, AtStep,
+    import, leftovers,
     sources::{self, Candidate, SourceError},
     startup::{self, Listing, StartupItem},
-    summary, trace, AiSettings, Assignment, BackupInfo, Category, ImportHint, ImportReport, InstalledApp, Library, Progress, Release, Repo, Settings,
-    SoftwareEdit, SourceKind, Stats, Storage, Subscription, Suggestion, VerifyReport, VersionEdit, VersionRef, webicon,
+    summary, trace, AiSettings, Assignment, BackupInfo, Category, ImportReport, InstalledApp, Library, Release, Repo, Settings,
+    SoftwareEdit, SourceKind, Stats, Subscription, Suggestion, VerifyReport, VersionEdit, VersionRef, webicon,
 };
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -26,6 +23,12 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, Window};
 use tauri_plugin_opener::OpenerExt;
+
+mod cleanup_commands;
+mod import_commands;
+mod installed_commands;
+
+use installed_commands::UninstallSession;
 
 struct AppState {
     repo: Mutex<Option<Repo>>,
@@ -94,23 +97,6 @@ struct AppState {
 /// 记一条失败日志。
 fn log_failure_to(state: &State<AppState>, area: &str, message: &str, detail: &str) {
     faillog::append(&state.log_dir, area, message, detail);
-}
-
-/// 一个软件的卸载过程：卸载前记下的样子和最近一次找到的项。可以同时卸载好几个，按已安装软件的 id 分开。
-struct UninstallSession {
-    target: Target,
-    found: Vec<Leftover>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LeftoverScan {
-    items: Vec<Leftover>,
-    /// 软件看起来还在（卸载程序可能被取消了）：找到的都没有默认勾选。卸载前的分析里总是假。
-    still_installed: bool,
-    /// 卸载前的分析里“App”那一行显示的：Windows 是登记的卸载命令，macOS 是 .app 的位置。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    app_path: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -239,6 +225,10 @@ fn with_repo_quick<T>(
     run(repo)
 }
 
+fn read_repo<T>(state: &State<AppState>, run: impl FnOnce(&Repo) -> shibapack_core::Result<T>) -> CmdResult<T> {
+    with_repo_quick(state, None, |repo| run(repo)).map_err(|e| e.to_string())
+}
+
 /// 离开作用域时把开关放下，中途出错返回也一样。
 struct ClearOnDrop<'a>(&'a AtomicBool);
 
@@ -281,11 +271,6 @@ fn status_of(state: &State<AppState>) -> Status {
 /// 打开一个仓库后，允许界面读取它的图标文件夹。
 fn allow_repo_icons(app: &AppHandle, repo: &Repo) {
     let _ = app.asset_protocol_scope().allow_directory(repo.icons_dir(), true);
-}
-
-fn find_installed(state: &State<AppState>, id: &str) -> CmdResult<InstalledApp> {
-    let list = state.installed.lock().map_err(|_| "internal".to_string())?;
-    list.iter().find(|app| app.id == id).cloned().ok_or_else(|| "not_found".to_string())
 }
 
 /// 仓库之外的文件送进系统回收站。删不掉就留着，不算错误：记录已经移除，文件没有丢。
@@ -382,7 +367,14 @@ fn resize_detail(
 #[tauri::command]
 async fn set_repo_root(app: AppHandle, path: String) -> CmdResult<Status> {
     blocking(app, move |app, state| {
+        if state.importing.load(Ordering::SeqCst) {
+            return Err("busy".into());
+        }
         let repo = Repo::open(Path::new(&path)).map_err(|e| e.to_string())?;
+        let mut guard = state.repo.lock().map_err(|_| "internal".to_string())?;
+        if state.importing.load(Ordering::SeqCst) {
+            return Err("busy".into());
+        }
         allow_repo_icons(app, &repo);
         let bootstrap = Bootstrap { repo_root: Some(repo.root().to_string_lossy().to_string()) };
         if let Some(dir) = state.config_file.parent() {
@@ -390,7 +382,8 @@ async fn set_repo_root(app: AppHandle, path: String) -> CmdResult<Status> {
         }
         let json = serde_json::to_vec_pretty(&bootstrap).map_err(|e| e.to_string())?;
         fs::write(&state.config_file, json).map_err(|e| e.to_string())?;
-        *state.repo.lock().map_err(|_| "internal".to_string())? = Some(repo);
+        *guard = Some(repo);
+        drop(guard);
         if let Ok(mut failure) = state.open_failure.lock() {
             *failure = None;
         }
@@ -405,7 +398,7 @@ async fn set_repo_root(app: AppHandle, path: String) -> CmdResult<Status> {
 #[tauri::command]
 async fn get_library(app: AppHandle) -> CmdResult<Library> {
     blocking(app, move |_app, state| {
-        with_repo(&state, |repo| Ok(repo.lib.clone()))
+        read_repo(&state, |repo| Ok(repo.lib.clone()))
     })
     .await
 }
@@ -420,182 +413,6 @@ async fn refresh_library(app: AppHandle) -> CmdResult<Option<Library>> {
         Ok(changed.then(|| repo.lib.clone()))
     })
     .await
-}
-
-/// 导入文件或文件夹。`move_files` 为真时（只对托管模式有效）导入后不留原文件。
-/// 进度通过 `import://progress` 事件发给前端，`cancel_import` 可以在两个文件之间停下。
-///
-/// 算哈希、复制文件都不占着仓库，只在查重和登记时短暂地占一下：导入几个 G 的文件时，
-/// 界面上的其他操作照常进行。同时只跑一批导入，第二批会得到 `busy`。
-#[tauri::command]
-async fn import_paths(app: AppHandle, paths: Vec<String>, mode: Storage, move_files: Option<bool>, hint: Option<ImportHint>) -> CmdResult<ImportResult> {
-    blocking(app, move |app, state| {
-        if state.importing.swap(true, Ordering::SeqCst) {
-            return Err("busy".into());
-        }
-        let _importing = ClearOnDrop(&state.importing);
-        state.import_cancel.store(false, Ordering::SeqCst);
-        let progress = |phase: &str, current: usize, total: usize, file: String| {
-            let _ = app.emit("import://progress", &Progress { phase: phase.into(), current, total, file });
-        };
-        progress("collect", 0, 0, String::new());
-
-        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-        let (hint, move_files) = (hint.unwrap_or_default(), move_files.unwrap_or(false));
-        let (root, data_dir, mut known, auto_classify) = with_repo_quick(&state, None, |repo| {
-            Ok((repo.root().to_path_buf(), repo.data_dir(), repo.known_paths(), hint.uses_auto_classification(&repo.lib.settings)))
-        })
-            .map_err(|e| e.to_string())?;
-        // 展开文件夹也不占着仓库：NAS 上的大文件夹要走一会儿
-        let files = import::collect_files(&paths, &data_dir, &hint.package_set());
-        let total = files.len();
-        let mut report = ImportReport::default();
-        let mut saver = BatchSaver::new();
-        for (i, file) in files.iter().enumerate() {
-            if state.import_cancel.load(Ordering::SeqCst) {
-                report.cancelled = true;
-                break;
-            }
-            progress("import", i + 1, total, file.file_name().unwrap_or_default().to_string_lossy().to_string());
-            let outcome = import_one(&state, &root, file, mode, move_files, &hint, &mut known);
-            if let Err(err) = &outcome {
-                let message = format!("{} · {} · {err}", err.step().unwrap_or("import"), err.reason());
-                log_failure_to(&state, "import", &message, &file.to_string_lossy());
-            }
-            report.add(file, outcome);
-            with_repo_quick(&state, Some(&root), |repo| saver.maybe_save(repo, report.imported)).map_err(|e| e.to_string())?;
-        }
-        let mut library = with_repo_quick(&state, Some(&root), |repo| {
-            saver.finish(repo, report.imported)?;
-            Ok(repo.lib.clone())
-        })
-        .map_err(|e| e.to_string())?;
-        if auto_classify && report.imported > 0 && !state.import_cancel.load(Ordering::SeqCst) {
-            progress("classify", 0, 0, String::new());
-            let classification = if let Some(previews) = &hint.category_previews {
-                let assignments = report.items.iter().filter(|item| item.status == "imported").filter_map(|item| {
-                    let preview = previews.get(&item.path)?;
-                    Some(Suggestion { software_id: item.software_id.clone()?, category_id: preview.category_id.clone(), new_category: preview.new_category.clone(), unchanged: false, known: false, evidence: Vec::new(), reason: String::new() })
-                }).collect();
-                with_repo_quick(&state, Some(&root), |repo| repo.transact(|repo| repo.apply_import_classification(assignments)))
-                    .map(|count| report.classified = count).map_err(|e| e.to_string())
-            } else {
-                classify_import(&state, &root, &library, &mut report)
-            };
-            if let Err(error) = classification {
-                if !state.import_cancel.load(Ordering::SeqCst) {
-                    report.classification_error = Some(error);
-                }
-            }
-            library = with_repo_quick(&state, Some(&root), |repo| Ok(repo.lib.clone())).map_err(|e| e.to_string())?;
-        }
-        progress("done", total, total, String::new());
-        Ok(ImportResult { report, library })
-    })
-    .await
-}
-
-fn classify_import(state: &State<AppState>, root: &Path, library: &Library, report: &mut ImportReport) -> CmdResult<()> {
-    let imported: HashSet<&str> = report.items.iter().filter(|item| item.status == "imported").filter_map(|item| item.software_id.as_deref()).collect();
-    let ids: Vec<String> = library.software.iter().filter(|s| s.category_id.is_none() && imported.contains(s.id.as_str())).map(|s| s.id.clone()).collect();
-    if ids.is_empty() {
-        return Ok(());
-    }
-    let (classified, library, remaining) = with_repo_quick(state, Some(root), |repo| repo.transact(|repo| {
-        let classified = repo.apply_import_classification(repo.suggest_categories(&ids))?;
-        let remaining: Vec<String> = ids.into_iter().filter(|id| repo.lib.software.iter().any(|s| s.id == *id && s.category_id.is_none())).collect();
-        Ok((classified, repo.lib.clone(), remaining))
-    })).map_err(|e| e.to_string())?;
-    report.classified = classified;
-    if remaining.is_empty() || state.import_cancel.load(Ordering::SeqCst) {
-        return Ok(());
-    }
-    // 没有配置可用的 AI 时，内置规则的结果已经保存。
-    let Ok(service) = ai_service(&library.settings.ai, None) else { return Ok(()) };
-    let suggestions = ai::suggest_categories(&service, &library, &remaining, &state.import_cancel, &mut |_, _| {})
-        .map_err(|e| e.code())?;
-    if !state.import_cancel.load(Ordering::SeqCst) {
-        report.classified += with_repo_quick(state, Some(root), |repo| repo.transact(|repo| repo.apply_import_classification(suggestions)))
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-/// 导入一个文件。最慢的两步（算哈希、复制或移动）不占着仓库。
-fn import_one(
-    state: &State<AppState>,
-    root: &Path,
-    file: &Path,
-    mode: Storage,
-    move_files: bool,
-    hint: &ImportHint,
-    known: &mut HashSet<PathBuf>,
-) -> shibapack_core::Result<Outcome> {
-    if let Some(owner) = with_repo_quick(state, Some(root), |repo| Ok(repo.already_known(file, known)))? {
-        return Ok(Outcome::Duplicate(owner));
-    }
-    let hashed = import::hash_source(file).at("read")?;
-    let placement = match with_repo_quick(state, Some(root), |repo| Ok(repo.plan_import(&hashed, mode, hint)))? {
-        Plan::Duplicate(owner) => return Ok(Outcome::Duplicate(owner)),
-        Plan::Add(placement) => placement,
-    };
-    let placed = import::place_file(root, &hashed, &placement, move_files).at("copy")?;
-    with_repo_quick(state, Some(root), |repo| repo.register(&hashed, placement, placed, known)).at("save")
-}
-
-/// 导入前看一看拖进来的东西（给确认窗口用）：文件夹像不像一个软件、里面有几个安装包、会被认成什么。
-#[tauri::command]
-async fn inspect_drop(app: AppHandle, paths: Vec<String>, include_children: Option<bool>) -> CmdResult<Vec<import::DropEntry>> {
-    blocking(app, move |_app, state| {
-        let (data_dir, software_names) = with_repo(&state, |repo| {
-            let names: Vec<_> = repo.lib.software.iter().map(|s| (s.id.clone(), s.name.clone())).collect();
-            Ok((repo.data_dir(), names))
-        })?;
-        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-        Ok(import::inspect(&paths, &data_dir, &software_names, include_children.unwrap_or(false)))
-    })
-    .await
-}
-
-#[tauri::command]
-async fn preview_import_categories(
-    app: AppHandle,
-    targets: Vec<shibapack_core::classify::ImportCategoryTarget>,
-) -> CmdResult<Vec<shibapack_core::classify::ImportCategoryPreview>> {
-    blocking(app, move |_app, state| {
-        let (mut previews, mut library) = with_repo(&state, |repo| Ok((repo.preview_import_categories(&targets), repo.lib.clone())))?;
-        let Ok(service) = ai_service(&library.settings.ai, None) else { return Ok(previews) };
-        let mut ids = Vec::new();
-        let mut indices = HashMap::new();
-        for (index, (target, preview)) in targets.iter().zip(&previews).enumerate() {
-            if preview.category_id.is_some() || preview.new_category.is_some() { continue; }
-            let id = format!("import-preview-{index}");
-            indices.insert(id.clone(), index);
-            ids.push(id.clone());
-            library.software.push(shibapack_core::Software {
-                id, name: target.name.clone(), publisher: target.publisher.clone(), homepage: String::new(), note: String::new(),
-                category_id: None, starred: false, icon: None, icon_data: None, default_version_id: None,
-                added_at: String::new(), versions: Vec::new(), subscription: None,
-            });
-        }
-        if !ids.is_empty() {
-            let cancel = AtomicBool::new(false);
-            let suggestions = ai::suggest_categories(&service, &library, &ids, &cancel, &mut |_, _| {}).map_err(|e| e.code())?;
-            for suggestion in suggestions {
-                if let Some(&index) = indices.get(&suggestion.software_id) {
-                    previews[index].category_id = suggestion.category_id;
-                    previews[index].new_category = suggestion.new_category;
-                }
-            }
-        }
-        Ok(previews)
-    }).await
-}
-
-/// 在两个文件之间停下正在进行的导入。已经导入的保留。
-#[tauri::command]
-fn cancel_import(state: State<AppState>) {
-    state.import_cancel.store(true, Ordering::SeqCst);
 }
 
 #[tauri::command]
@@ -662,7 +479,7 @@ async fn delete_file(app: AppHandle, software_id: String, version_id: String, fi
 #[tauri::command]
 async fn run_file(app: AppHandle, software_id: String, version_id: String, file_id: String) -> CmdResult<()> {
     blocking(app, move |app, state| {
-        let path = with_repo(&state, |repo| repo.file_path(&software_id, &version_id, &file_id))?;
+        let path = read_repo(&state, |repo| repo.file_path(&software_id, &version_id, &file_id))?;
         if !path.exists() {
             return Err("file_missing".into());
         }
@@ -677,7 +494,7 @@ async fn run_file(app: AppHandle, software_id: String, version_id: String, file_
 #[tauri::command]
 async fn reveal_file(app: AppHandle, software_id: String, version_id: String, file_id: String) -> CmdResult<()> {
     blocking(app, move |app, state| {
-        let path = with_repo(&state, |repo| repo.file_path(&software_id, &version_id, &file_id))?;
+        let path = read_repo(&state, |repo| repo.file_path(&software_id, &version_id, &file_id))?;
         if !path.exists() {
             return Err("file_missing".into());
         }
@@ -689,7 +506,7 @@ async fn reveal_file(app: AppHandle, software_id: String, version_id: String, fi
 #[tauri::command]
 async fn open_repo_folder(app: AppHandle) -> CmdResult<()> {
     blocking(app, move |app, state| {
-        let root = with_repo(&state, |repo| Ok(repo.root().to_path_buf()))?;
+        let root = read_repo(&state, |repo| Ok(repo.root().to_path_buf()))?;
         app.opener().open_path(root.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
     })
     .await
@@ -727,7 +544,7 @@ async fn move_software(app: AppHandle, ids: Vec<String>, category_id: Option<Str
 #[tauri::command]
 async fn suggest_categories(app: AppHandle, software_ids: Vec<String>) -> CmdResult<Vec<Suggestion>> {
     blocking(app, move |_app, state| {
-        with_repo(&state, |repo| Ok(repo.suggest_categories(&software_ids)))
+        read_repo(&state, |repo| Ok(repo.suggest_categories(&software_ids)))
     })
     .await
 }
@@ -752,7 +569,7 @@ async fn set_settings(app: AppHandle, settings: Settings) -> CmdResult<Library> 
 #[tauri::command]
 async fn get_stats(app: AppHandle) -> CmdResult<Stats> {
     blocking(app, move |_app, state| {
-        with_repo(&state, |repo| Ok(repo.stats()))
+        read_repo(&state, |repo| Ok(repo.stats()))
     })
     .await
 }
@@ -760,7 +577,7 @@ async fn get_stats(app: AppHandle) -> CmdResult<Stats> {
 #[tauri::command]
 async fn list_backups(app: AppHandle) -> CmdResult<Vec<BackupInfo>> {
     blocking(app, move |_app, state| {
-        with_repo(&state, |repo| Ok(repo.backups()))
+        read_repo(&state, |repo| Ok(repo.backups()))
     })
     .await
 }
@@ -787,7 +604,7 @@ async fn restore_backup(app: AppHandle, name: String) -> CmdResult<Library> {
 #[tauri::command]
 async fn verify_data(app: AppHandle) -> CmdResult<VerifyReport> {
     blocking(app, move |_app, state| {
-        with_repo(&state, |repo| Ok(repo.verify()))
+        read_repo(&state, |repo| Ok(repo.verify()))
     })
     .await
 }
@@ -815,257 +632,6 @@ async fn empty_trash(app: AppHandle) -> CmdResult<Stats> {
             repo.empty_trash()?;
             Ok(repo.stats())
         })
-    })
-    .await
-}
-
-// ── 已安装软件 ───────────────────────────────────────────────
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct InstalledListing {
-    apps: Vec<InstalledApp>,
-    cached_icons: Option<BTreeMap<String, Arc<str>>>,
-}
-
-/// 列出这台电脑上已安装的软件（会重新扫描）。
-#[tauri::command]
-async fn list_installed(app: AppHandle) -> InstalledListing {
-    blocking(app, move |_app, state| {
-        let apps = installed::list_installed(&state.icon_cache);
-        let changed = if let Ok(mut cached) = state.installed.lock() {
-            let changed = !cached.iter().map(|app| (&app.id, &app.icon)).eq(apps.iter().map(|app| (&app.id, &app.icon)));
-            *cached = apps.clone();
-            changed
-        } else {
-            false
-        };
-        if changed {
-            if let Ok(mut tried) = state.icon_tried.lock() {
-                tried.clear();
-            }
-        }
-        let cached_icons = with_repo(&state, |repo| {
-            repo.cache_installed_icons(&apps)?;
-            Ok(repo.lib.installed_icons.clone())
-        }).ok();
-        InstalledListing { apps, cached_icons }
-    })
-    .await
-}
-
-/// 统计过的大小记多久。软件升级（版本号变了）会马上重新统计。
-const MEASURE_TTL: Duration = Duration::from_secs(30 * 60);
-/// 同时走几个文件夹。
-const MEASURE_WORKERS: usize = 4;
-
-/// 统计各软件实际占用的空间：有自己文件夹的（macOS 的 .app、Windows 登记的安装文件夹）走一遍加起来，
-/// 其余用安装程序登记的大小（见 `installed::size_sources`）。要走很多文件，比较慢，所以和列表分开。
-#[tauri::command]
-async fn measure_installed(app: AppHandle) -> HashMap<String, u64> {
-    blocking(app, move |_app, state| {
-        let _turn = state.measure_turn.lock();
-        let apps = state.installed.lock().map(|list| list.clone()).unwrap_or_default();
-        let by_id: HashMap<&str, &InstalledApp> = apps.iter().map(|app| (app.id.as_str(), app)).collect();
-        let mut sizes = HashMap::new();
-        // 要走一遍的：（软件 id，记录用的键，文件夹，走不了时用的登记大小）
-        let mut todo: Vec<(String, String, PathBuf, Option<u64>)> = Vec::new();
-        {
-            let cache = state.measured.lock().unwrap_or_else(|e| e.into_inner());
-            for (id, source) in installed::size_sources(&apps) {
-                match source {
-                    installed::SizeSource::Registered(size) => {
-                        sizes.insert(id, size);
-                    }
-                    installed::SizeSource::Unknown => {}
-                    installed::SizeSource::Scan(dir) => {
-                        let app = by_id[id.as_str()];
-                        let key = format!("{}|{}", dir.display(), app.version);
-                        match cache.get(&key).filter(|(at, _)| at.elapsed() < MEASURE_TTL) {
-                            Some((_, size)) => {
-                                sizes.insert(id, *size);
-                            }
-                            None => todo.push((id, key, dir, app.size)),
-                        }
-                    }
-                }
-            }
-        }
-
-        let next = std::sync::atomic::AtomicUsize::new(0);
-        let found: Mutex<Vec<(usize, Option<u64>)>> = Mutex::new(Vec::new());
-        std::thread::scope(|scope| {
-            for _ in 0..MEASURE_WORKERS.min(todo.len()) {
-                scope.spawn(|| loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some((_, _, dir, _)) = todo.get(i) else { break };
-                    let size = installed::folder_size(dir);
-                    if let Ok(mut found) = found.lock() {
-                        found.push((i, size));
-                    }
-                });
-            }
-        });
-
-        let mut cache = state.measured.lock().unwrap_or_else(|e| e.into_inner());
-        for (i, size) in found.into_inner().unwrap_or_else(|e| e.into_inner()) {
-            let (id, key, _, registered) = &todo[i];
-            match size {
-                Some(size) => {
-                    cache.insert(key.clone(), (Instant::now(), size));
-                    sizes.insert(id.clone(), size);
-                }
-                // 走不了（文件太多、打不开）：用登记的大小
-                None => {
-                    if let Some(size) = registered {
-                        sizes.insert(id.clone(), *size);
-                    }
-                }
-            }
-        }
-        sizes
-    })
-    .await
-}
-
-/// 仓库里的软件和已安装软件的对应关系：软件 id → 已安装软件 id。
-#[tauri::command]
-async fn match_installed(app: AppHandle) -> CmdResult<HashMap<String, String>> {
-    blocking(app, move |_app, state| {
-        let apps = state.installed.lock().map(|list| list.clone()).unwrap_or_default();
-        with_repo(&state, |repo| {
-            let links = repo.lib.software.iter().filter_map(|software| {
-                let app = apps.iter().find(|app| same_software(&app.name, &software.name))?;
-                Some((software.id.clone(), app.id.clone()))
-            });
-            Ok(links.collect())
-        })
-    })
-    .await
-}
-
-/// 卸载前先分析：这个软件的数据、快捷方式、设置和开机启动项在哪、多大。只读。
-/// 软件本身（安装文件夹、卸载项）不在里面，交给卸载程序；卸载完再用 `scan_leftovers` 找它没删干净的。
-#[tauri::command]
-async fn analyze_uninstall(app: AppHandle, id: String) -> CmdResult<LeftoverScan> {
-    blocking(app, move |_app, state| {
-        let app = find_installed(&state, &id)?;
-        let target = Target::of(&app);
-        let others: Vec<InstalledApp> = state.installed.lock().map(|list| list.iter().filter(|other| other.id != id).cloned().collect()).unwrap_or_default();
-        let items = leftovers::scan_before(&target, &others);
-        if let Ok(mut sessions) = state.uninstall.lock() {
-            sessions.insert(id.clone(), UninstallSession { target, found: items.clone() });
-        }
-        let app_path = app.uninstall_command.clone().filter(|_| app.source == "registry").or_else(|| (!app.location.is_empty()).then(|| app.location.clone()));
-        Ok(LeftoverScan { items, still_installed: false, app_path })
-    })
-    .await
-}
-
-/// 卸载。Windows 上启动系统登记的卸载程序；macOS 上把 .app 移到废纸篓。
-#[tauri::command]
-async fn uninstall_installed(app: AppHandle, id: String) -> CmdResult<()> {
-    blocking(app, move |_app, state| {
-        let app = find_installed(&state, &id)?;
-        if !app.uninstallable {
-            return Err("not_uninstallable".into());
-        }
-        // 卸载以后就查不到它的安装位置、发布者了，先记下来，找残留时用；分析过的话留着分析的结果
-        if let Ok(mut sessions) = state.uninstall.lock() {
-            sessions.entry(id.clone()).or_insert_with(|| UninstallSession { target: Target::of(&app), found: Vec::new() });
-        }
-        if installed::run_uninstaller(&app).map_err(|e| e.to_string())? {
-            return Ok(());
-        }
-        if cfg!(target_os = "macos") && Path::new(&app.location).is_dir() {
-            return trash::delete(&app.location).map_err(|e| e.to_string());
-        }
-        Err("not_uninstallable".into())
-    })
-    .await
-}
-
-/// 卸载程序还没跑完（软件还在）。Windows 看卸载信息还在不在；macOS 是直接移到废纸篓，不用等。
-#[tauri::command]
-async fn uninstall_status(app: AppHandle, id: String) -> bool {
-    blocking(app, move |_app, state| {
-        let target = state.uninstall.lock().ok().and_then(|s| s.get(&id).map(|s| s.target.clone()));
-        target.is_some_and(|target| leftovers::still_installed(&target))
-    })
-    .await
-}
-
-/// 找刚卸载的软件留下的文件夹、文件和注册表项。只读。
-#[tauri::command]
-async fn scan_leftovers(app: AppHandle, id: String) -> CmdResult<LeftoverScan> {
-    blocking(app, move |_app, state| {
-        let target = state.uninstall.lock().ok().and_then(|s| s.get(&id).map(|s| s.target.clone())).ok_or_else(|| "not_found".to_string())?;
-        let others: Vec<InstalledApp> = state.installed.lock().map(|list| list.iter().filter(|app| app.id != id).cloned().collect()).unwrap_or_default();
-        let still_installed = leftovers::still_installed(&target);
-        let items = leftovers::scan(&target, &others, still_installed);
-        if let Some(session) = state.uninstall.lock().ok().as_mut().and_then(|s| s.get_mut(&id)) {
-            session.found = items.clone();
-        }
-        Ok(LeftoverScan { items, still_installed, app_path: None })
-    })
-    .await
-}
-
-/// 清理勾选的残留（按上次找到的列表里的序号）：文件和文件夹移到回收站，注册表项先备份再删。
-/// `elevated` 为真时以管理员身份做（Windows 会弹 UAC 提示），用在普通权限删不掉的那些上。
-#[tauri::command]
-async fn remove_leftovers(app: AppHandle, id: String, indices: Vec<usize>, elevated: bool) -> CmdResult<RemoveReport> {
-    blocking(app, move |app, state| {
-        let items: Vec<Leftover> = {
-            let sessions = state.uninstall.lock().map_err(|_| "internal".to_string())?;
-            let session = sessions.get(&id).ok_or_else(|| "not_found".to_string())?;
-            indices.iter().filter_map(|i| session.found.get(*i).cloned()).collect()
-        };
-        let backups = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("uninstall-backups");
-        if elevated {
-            leftovers::remove_elevated(&items, &backups)
-        } else {
-            Ok(leftovers::remove(&items, &backups))
-        }
-    })
-    .await
-}
-
-/// 在文件管理器里显示分析或查找到的某一项（按序号；注册表项没法显示）。
-#[tauri::command]
-async fn reveal_leftover(app: AppHandle, id: String, index: usize) -> CmdResult<()> {
-    blocking(app, move |app, state| {
-        let item = state.uninstall.lock().ok().and_then(|s| s.get(&id).and_then(|s| s.found.get(index).cloned())).ok_or_else(|| "not_found".to_string())?;
-        if !matches!(item.kind, leftovers::LeftoverKind::Folder | leftovers::LeftoverKind::File) || !Path::new(&item.path).exists() {
-            return Err("file_missing".into());
-        }
-        app.opener().reveal_item_in_dir(&item.path).map_err(|e| e.to_string())
-    })
-    .await
-}
-
-/// 打开清理时备份注册表的文件夹。只接受备份文件夹里面的路径。
-#[tauri::command]
-async fn open_uninstall_backup(app: AppHandle, path: String) -> CmdResult<()> {
-    blocking(app, move |app, _state| {
-        let backups = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("uninstall-backups");
-        let path = PathBuf::from(path);
-        if !path.starts_with(&backups) || !path.is_dir() {
-            return Err("file_missing".into());
-        }
-        app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
-    })
-    .await
-}
-
-#[tauri::command]
-async fn reveal_installed(app: AppHandle, id: String) -> CmdResult<()> {
-    blocking(app, move |app, state| {
-        let target = find_installed(&state, &id)?;
-        if target.location.is_empty() || !Path::new(&target.location).exists() {
-            return Err("file_missing".into());
-        }
-        app.opener().reveal_item_in_dir(&target.location).map_err(|e| e.to_string())
     })
     .await
 }
@@ -1243,7 +809,7 @@ async fn trace_start(app: AppHandle, software_id: String, version_id: String, fi
             return Err("trace_busy".into());
         }
         let _busy = trace_busy(&state)?;
-        let (installer, software_name, version, file_name, root, data_dir) = with_repo(&state, |repo| {
+        let (installer, software_name, version, file_name, root, data_dir) = read_repo(&state, |repo| {
             let path = repo.file_path(&software_id, &version_id, &file_id)?;
             let software = repo.lib.software.iter().find(|s| s.id == software_id).ok_or(shibapack_core::Error::Code("not_found"))?;
             let version = software.versions.iter().find(|v| v.id == version_id).ok_or(shibapack_core::Error::Code("not_found"))?;
@@ -1690,7 +1256,7 @@ async fn ai_explain_folders(app: AppHandle, paths: Vec<Vec<String>>, mode: Strin
                 .collect()
         };
         let dir = cache_dir(&state)?;
-        let language = with_repo(&state, |repo| Ok(repo.lib.settings.language.clone()))?;
+        let language = read_repo(&state, |repo| Ok(repo.lib.settings.language.clone()))?;
         let key_of = |shown: &str| aicache::folder_key(std::env::consts::OS, shown, &language);
         let mut out = HashMap::new();
         let mut todo = Vec::new();
@@ -1875,7 +1441,7 @@ struct PathsAdded {
 
 /// 一条收藏、它的备份文件夹、仓库根目录。拿到就放开仓库：备份、恢复可能要复制一会儿。
 fn saved_path(state: &State<AppState>, id: &str) -> CmdResult<(SavedPath, PathBuf, PathBuf)> {
-    with_repo(state, |repo| {
+    read_repo(state, |repo| {
         let item = repo.lib.paths.iter().find(|p| p.id == id).cloned().ok_or(shibapack_core::Error::Code("not_found"))?;
         let dir = paths::backups_root(repo).join(&item.id);
         Ok((item, dir, repo.root().to_path_buf()))
@@ -1908,7 +1474,7 @@ async fn paths_remove(app: AppHandle, ids: Vec<String>, delete_backups: bool) ->
 #[tauri::command]
 async fn path_states(app: AppHandle) -> CmdResult<HashMap<String, PathState>> {
     blocking(app, move |_, state| {
-        let (items, root) = with_repo(&state, |repo| Ok((repo.lib.paths.clone(), paths::backups_root(repo))))?;
+        let (items, root) = read_repo(&state, |repo| Ok((repo.lib.paths.clone(), paths::backups_root(repo))))?;
         Ok(paths::states(&items, &root).into_iter().collect())
     })
     .await
@@ -1988,314 +1554,6 @@ async fn path_reveal_backup(app: AppHandle, id: String, name: String) -> CmdResu
     .await
 }
 
-// ── 清理 ─────────────────────────────────────────────────────
-
-/// 仓库里的每个文件（大小、SHA-256、软件名、版本号），拿来和下载文件夹里的安装包比对。
-fn library_files(lib: &Library) -> Vec<cleanup::LibraryFile> {
-    lib.software
-        .iter()
-        .flat_map(|s| {
-            s.versions.iter().flat_map(move |v| {
-                v.files.iter().map(move |f| cleanup::LibraryFile { size: f.size, sha256: f.sha256.clone(), software: s.name.clone(), version: v.version.clone() })
-            })
-        })
-        .collect()
-}
-
-/// 扫描和清理要用到的：仓库在哪（整个封住不碰）、仓库里下载用的临时文件夹、仓库里的文件、用户的设置。
-fn cleanup_context(app: &AppHandle, state: &State<AppState>) -> CmdResult<cleanup::Context> {
-    let (root, downloads, library) = {
-        let guard = state.repo.lock().map_err(|_| "internal".to_string())?;
-        match guard.as_ref() {
-            Some(repo) => (Some(repo.root().to_path_buf()), Some(repo.downloads_dir()), library_files(&repo.lib)),
-            None => (None, None, Vec::new()),
-        }
-    };
-    let local = local_state_dir(app)?;
-    let options = cleanup::load_options(&local);
-    let mut ctx = cleanup::Context::new(root.as_deref(), downloads, library, options);
-    // 用户点过“看看废纸篓”并允许了，扫描时才问访达（否则第一次扫描就会弹授权）；自检时不问
-    ctx.ask_finder = ctx.options.ask_finder && state.selftest.is_none();
-    ctx.cache_dir = Some(local);
-    ctx.installed = state
-        .installed
-        .lock()
-        .map(|apps| apps.iter().filter(|app| !app.location.is_empty()).map(|app| (app.name.clone(), PathBuf::from(&app.location))).collect())
-        .unwrap_or_default();
-    Ok(ctx)
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CleanupProgress {
-    done: usize,
-    total: usize,
-    /// 正在等用户在系统的授权提示里输入密码或点“是”。
-    waiting_admin: bool,
-}
-
-/// 只读地找一遍能清理的东西。每量完一项通过 `cleanup://item` 发给界面，最后返回全部。
-#[tauri::command]
-async fn cleanup_scan(app: AppHandle) -> CmdResult<Vec<cleanup::CleanItem>> {
-    blocking(app, move |app, state| {
-        let _turn = state.cleanup_turn.lock().unwrap_or_else(|e| e.into_inner());
-        let ctx = cleanup_context(app, &state)?;
-        state.cleanup_cancel.store(false, Ordering::SeqCst);
-        let scan = cleanup::scan_with(
-            &ctx,
-            &|item| {
-                let _ = app.emit("cleanup://item", item);
-            },
-            &|done, total| {
-                let _ = app.emit("cleanup://scan", CleanupProgress { done, total, waiting_admin: false });
-            },
-            &state.cleanup_cancel,
-        );
-        let items = scan.items();
-        if let Ok(mut cached) = state.cleanup.lock() {
-            *cached = Some(scan);
-        }
-        Ok(items)
-    })
-    .await
-}
-
-/// 清理勾选的项：每一项给 id 和不要的条目序号。删之前每一条都再查一遍。进度通过 `cleanup://progress` 发给界面。
-/// 做完写一份清理记录，放在本机应用数据目录的 `cleanup-history/`。
-#[tauri::command]
-async fn cleanup_run(app: AppHandle, picks: Vec<cleanup::Pick>) -> CmdResult<cleanup::Report> {
-    blocking(app, move |app, state| {
-        let _turn = state.cleanup_turn.lock().unwrap_or_else(|e| e.into_inner());
-        let ctx = cleanup_context(app, &state)?;
-        let scan = state.cleanup.lock().ok().and_then(|scan| scan.clone()).ok_or_else(|| "not_found".to_string())?;
-        // 清理前后各看一眼系统报告的可用空间，和我们自己算的对一对
-        let free = || ctx.vars.get("home").and_then(cleanup::special::free_space);
-        let disk_before = free();
-        // 要管理员权限的项另外交给提权的进程，一次授权做完
-        let (admin, normal): (Vec<cleanup::Pick>, Vec<cleanup::Pick>) = picks.into_iter().partition(|pick| scan.is_admin(&pick.id));
-        let (mut report, mut run) = cleanup::clean(&scan, &normal, &ctx, &|done, total| {
-            let _ = app.emit("cleanup://progress", CleanupProgress { done, total, waiting_admin: false });
-        });
-        if !admin.is_empty() {
-            let ids: Vec<String> = admin.iter().map(|pick| pick.id.clone()).collect();
-            let _ = app.emit("cleanup://progress", CleanupProgress { done: 0, total: 0, waiting_admin: true });
-            match cleanup::elevate::clean_as_admin(&ids, scan.skipped_paths(&admin), &ctx.options, ctx.repo_root.as_deref()) {
-                Ok((elevated, elevated_run)) => {
-                    report.merge(elevated);
-                    run.freed += elevated_run.freed;
-                    run.trashed += elevated_run.trashed;
-                    run.skipped += elevated_run.skipped;
-                    run.items.extend(elevated_run.items);
-                }
-                Err(reason) => {
-                    if reason != "cancelled" {
-                        log_failure_to(&state, "cleanup", &reason, &ids.join(", "));
-                    }
-                    run.skipped += ids.len();
-                    report.refuse(&ids, &reason);
-                }
-            }
-        }
-        report.disk_before = disk_before;
-        report.disk_after = free();
-        if !run.items.is_empty() || run.skipped > 0 {
-            report.history = cleanup::history::record(&local_state_dir(app)?.join("cleanup-history"), &run).ok();
-        }
-        // 扫描结果留着：界面接着用 `cleanup_rescan` 只重新量清过的这几项。
-        // 已经不在的条目就算再传回来，删之前的复查也会当作“已经不在了”
-        Ok(report)
-    })
-    .await
-}
-
-/// 问访达废纸篓里有几项（macOS 没有完全磁盘访问权限时）。第一次会弹“允许控制访达”的授权。
-/// 允许了就记下来，以后扫描时直接问；不允许时返回 `automation_denied`。返回更新后的全部项。
-#[tauri::command]
-async fn cleanup_count_trash(app: AppHandle) -> CmdResult<Vec<cleanup::CleanItem>> {
-    blocking(app, move |app, state| {
-        #[cfg(target_os = "macos")]
-        {
-            if cleanup::special::finder_trash_count().is_none() {
-                return Err("automation_denied".into());
-            }
-            let local = local_state_dir(app)?;
-            let mut options = cleanup::load_options(&local);
-            options.ask_finder = true;
-            cleanup::save_options(&local, &options).map_err(|e| e.to_string())?;
-            let _turn = state.cleanup_turn.lock().unwrap_or_else(|e| e.into_inner());
-            let ctx = cleanup_context(app, &state)?;
-            let mut cached = state.cleanup.lock().map_err(|_| "internal".to_string())?;
-            let scan = cached.as_mut().ok_or_else(|| "not_found".to_string())?;
-            scan.rescan(&ctx, &["trash.empty".to_string()]);
-            Ok(scan.items())
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (app, state);
-            Err("not_supported".into())
-        }
-    })
-    .await
-}
-
-/// 这一项要在别处清：打开系统的存储设置（Windows.old），或者打开那个应用（微信、飞书……用它自带的清理）。
-#[tauri::command]
-async fn cleanup_open_tool(app: AppHandle, id: String) -> CmdResult<()> {
-    blocking(app, move |app, state| {
-        let (tool, root) = {
-            let cached = state.cleanup.lock().map_err(|_| "internal".to_string())?;
-            let item = cached.as_ref().and_then(|scan| scan.item(&id)).ok_or_else(|| "not_found".to_string())?;
-            (item.tool.clone().unwrap_or_default(), item.roots.first().cloned())
-        };
-        match tool.as_str() {
-            "storage" => {
-                let url = if cfg!(windows) { "ms-settings:storagesense" } else { "x-apple.systempreferences:com.apple.settings.Storage" };
-                app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
-            }
-            "app" => {
-                let path = root.filter(|p| Path::new(p).exists()).ok_or_else(|| "file_missing".to_string())?;
-                app.opener().open_path(path, None::<&str>).map_err(|e| e.to_string())
-            }
-            _ => Err("not_supported".into()),
-        }
-    })
-    .await
-}
-
-/// 停下正在进行的扫描：不再量新的，已经量完的照样作为结果（不完整）。
-#[tauri::command]
-fn cleanup_cancel_scan(state: State<AppState>) {
-    state.cleanup_cancel.store(true, Ordering::SeqCst);
-}
-
-/// 只重新量这几项（清理完以后），返回更新后的全部项。还没扫过时返回 `not_found`。
-#[tauri::command]
-async fn cleanup_rescan(app: AppHandle, ids: Vec<String>) -> CmdResult<Vec<cleanup::CleanItem>> {
-    blocking(app, move |app, state| {
-        let _turn = state.cleanup_turn.lock().unwrap_or_else(|e| e.into_inner());
-        let ctx = cleanup_context(app, &state)?;
-        let mut cached = state.cleanup.lock().map_err(|_| "internal".to_string())?;
-        let scan = cached.as_mut().ok_or_else(|| "not_found".to_string())?;
-        scan.rescan(&ctx, &ids);
-        Ok(scan.items())
-    })
-    .await
-}
-
-/// 让 AI 解释几个清理项：这些文件是什么、删了会怎样。做法和解释启动项一样：以前解释过的用记下的，
-/// 没解释过的凑成一批问。发给 AI 的是名字、文件夹（用户文件夹写成 `~`）、大小和里面最大的几样的名字。
-#[tauri::command]
-async fn ai_explain_cleanup(app: AppHandle, ids: Vec<String>, mode: String) -> CmdResult<Explanations> {
-    blocking(app, move |app, state| {
-        let home = if cfg!(windows) { std::env::var_os("USERPROFILE") } else { std::env::var_os("HOME") }.map(PathBuf::from);
-        let facts: Vec<(String, String)> = {
-            let cached = state.cleanup.lock().map_err(|_| "internal".to_string())?;
-            let scan = cached.as_ref().ok_or_else(|| "not_found".to_string())?;
-            ids.iter().filter_map(|id| scan.facts(id, home.as_deref()).map(|text| (id.clone(), text))).collect()
-        };
-        let dir = cache_dir(&state)?;
-        let language = with_repo(&state, |repo| Ok(repo.lib.settings.language.clone()))?;
-        // 文件夹不一样（比如改了自定义规则）就算另一项，重新问
-        let key_of = |id: &str, text: &str| {
-            let folders = text.lines().find(|line| line.starts_with("folders:")).unwrap_or("");
-            aicache::explain_key(std::env::consts::OS, "cleanup", &format!("{id} {folders}"), &language)
-        };
-        let mut explanations = HashMap::new();
-        let mut todo: Vec<&(String, String)> = Vec::new();
-        {
-            let _turn = state.ai_cache_turn.lock().unwrap_or_else(|e| e.into_inner());
-            let cache = AiCache::load(&dir);
-            for entry in &facts {
-                match cache.explain.get(&key_of(&entry.0, &entry.1)).filter(|_| mode != "refresh") {
-                    Some(hit) => {
-                        explanations.insert(entry.0.clone(), Explanation { text: hit.text.clone(), model: hit.model.clone(), at: hit.at.clone(), cached: true });
-                    }
-                    None => todo.push(entry),
-                }
-            }
-        }
-        if mode == "cached" || todo.is_empty() {
-            return Ok(Explanations { explanations, asked: 0, missing: 0 });
-        }
-        let cancel = Arc::new(AtomicBool::new(false));
-        if let Ok(mut current) = state.ai_cancel.lock() {
-            current.store(true, Ordering::SeqCst);
-            *current = cancel.clone();
-        }
-        let (service, library) = repo_ai(&state)?;
-        let questions: Vec<(String, String)> = todo.iter().map(|entry| (*entry).clone()).collect();
-        let answers = ai::explain_cleanup_many(&service, &library.settings.language, &questions, &cancel, &mut |done, total| {
-            let _ = app.emit("ai://progress", AiProgress { done, total });
-        })
-        .map_err(|e| e.code())?;
-        let at = shibapack_core::now();
-        let model = service.model().to_string();
-        let _turn = state.ai_cache_turn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut cache = AiCache::load(&dir);
-        for (id, text) in &answers {
-            let Some(entry) = todo.iter().find(|entry| &entry.0 == id) else { continue };
-            cache.explain.insert(key_of(&entry.0, &entry.1), CachedText { text: text.clone(), model: model.clone(), at: at.clone() });
-            explanations.insert(id.clone(), Explanation { text: text.clone(), model: model.clone(), at: at.clone(), cached: false });
-        }
-        let _ = cache.save(&dir);
-        Ok(Explanations { explanations, asked: todo.len(), missing: todo.len() - answers.len() })
-    })
-    .await
-}
-
-/// 让这一项要先关掉的程序正常退出（不强行结束），最多等 10 秒。返回更新后的这一项（`running` 看它退了没有）。
-#[tauri::command]
-async fn cleanup_quit_app(app: AppHandle, id: String) -> CmdResult<cleanup::CleanItem> {
-    blocking(app, move |_app, state| {
-        let mut scan = state.cleanup.lock().map_err(|_| "internal".to_string())?;
-        scan.as_mut().and_then(|scan| scan.quit_app(&id)).ok_or_else(|| "not_found".to_string())
-    })
-    .await
-}
-
-/// 在文件管理器里定位这一项的某一条，或者它的第一个文件夹。
-#[tauri::command]
-async fn cleanup_reveal(app: AppHandle, id: String, index: Option<usize>) -> CmdResult<()> {
-    blocking(app, move |app, state| {
-        let path = state.cleanup.lock().ok().and_then(|scan| scan.as_ref().and_then(|scan| scan.locate(&id, index))).ok_or_else(|| "not_found".to_string())?;
-        if std::fs::symlink_metadata(&path).is_err() {
-            return Err("file_missing".into());
-        }
-        app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
-    })
-    .await
-}
-
-/// 浏览器里有 Cookie 的网站，给保留名单出主意。只读，先复制一份 Cookie 文件再读。
-#[tauri::command]
-async fn cleanup_cookie_sites(app: AppHandle) -> CmdResult<Vec<cleanup::CookieSite>> {
-    blocking(app, move |app, state| Ok(cleanup::cookie_sites(&cleanup_context(app, &state)?))).await
-}
-
-/// 自定义的清理文件夹和排除的文件夹。
-#[tauri::command]
-async fn cleanup_options(app: AppHandle) -> CmdResult<cleanup::Options> {
-    blocking(app, move |app, _state| Ok(cleanup::load_options(&local_state_dir(app)?))).await
-}
-
-/// 保存自定义的清理文件夹和排除的文件夹。自定义文件夹要过保护检查，不行时返回 `cleanup_protected:路径` 这样的错误。
-#[tauri::command]
-async fn cleanup_set_options(app: AppHandle, options: cleanup::Options) -> CmdResult<cleanup::Options> {
-    blocking(app, move |app, state| {
-        let ctx = cleanup_context(app, &state)?;
-        let options = cleanup::check_options(&ctx.guard, options)?;
-        cleanup::save_options(&local_state_dir(app)?, &options).map_err(|e| e.to_string())?;
-        Ok(options)
-    })
-    .await
-}
-
-/// 最近 20 次清理（不带具体路径）。
-#[tauri::command]
-async fn cleanup_history(app: AppHandle) -> CmdResult<Vec<cleanup::history::Run>> {
-    blocking(app, move |app, _state| Ok(cleanup::history::list(&local_state_dir(app)?.join("cleanup-history"), false))).await
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Explanation {
@@ -2308,7 +1566,7 @@ struct Explanation {
 
 /// 仓库里放缓存的文件夹（AI 的答案、Homebrew 目录）。
 fn cache_dir(state: &State<AppState>) -> CmdResult<PathBuf> {
-    with_repo(state, |repo| Ok(repo.data_dir().join("cache")))
+    read_repo(state, |repo| Ok(repo.data_dir().join("cache")))
 }
 
 #[derive(Serialize)]
@@ -2333,7 +1591,7 @@ async fn ai_explain_startup_many(app: AppHandle, ids: Vec<String>, mode: String)
             ids.iter().filter_map(|id| list.iter().find(|item| &item.id == id).cloned()).collect()
         };
         let dir = cache_dir(&state)?;
-        let language = with_repo(&state, |repo| Ok(repo.lib.settings.language.clone()))?;
+        let language = read_repo(&state, |repo| Ok(repo.lib.settings.language.clone()))?;
         let key_of = |item: &StartupItem| aicache::explain_key(std::env::consts::OS, &item.source, &item.label, &language);
 
         let mut explanations = HashMap::new();
@@ -2508,7 +1766,7 @@ struct IconUpdate {
 #[tauri::command]
 async fn fetch_icon(app: AppHandle, id: String) -> CmdResult<Option<IconUpdate>> {
     blocking(app, move |_app, state| {
-        let (root, query) = with_repo(&state, |repo| Ok((repo.root().to_path_buf(), repo.web_icon_query(&id)?)))?;
+        let (root, query) = read_repo(&state, |repo| Ok((repo.root().to_path_buf(), repo.web_icon_query(&id)?)))?;
         let Some(query) = query else { return Ok(None) };
         // 联网期间不占着仓库的锁
         let found = webicon::fetch_web_icon(&query.homepage, query.github.as_deref(), query.the_svg_name.as_deref())
@@ -2535,7 +1793,7 @@ async fn fetch_summary(app: AppHandle, name: String, refresh: Option<bool>) -> C
         if name.is_empty() {
             return Err("not_found".into());
         }
-        let (language, existing, translate) = with_repo(&state, |repo| {
+        let (language, existing, translate) = read_repo(&state, |repo| {
             let settings = &repo.lib.settings;
             let existing = if refresh.unwrap_or(false) { None } else { repo.lib.summaries.get(&name).cloned() };
             Ok((settings.language.clone(), existing, settings.translate_summaries))
@@ -2555,7 +1813,7 @@ async fn fetch_summary(app: AppHandle, name: String, refresh: Option<bool>) -> C
         }
         match library {
             Some(library) => Ok(library),
-            None => with_repo(&state, |repo| Ok(repo.lib.clone())),
+            None => read_repo(&state, |repo| Ok(repo.lib.clone())),
         }
     })
     .await
@@ -2589,7 +1847,7 @@ async fn source_lookup(app: AppHandle, kind: SourceKind, reference: String) -> C
 #[tauri::command]
 async fn source_search(app: AppHandle, query: String) -> CmdResult<Vec<Candidate>> {
     blocking(app, move |_app, state| {
-        let cache = with_repo(&state, |repo| Ok(repo.data_dir().join("cache")))?;
+        let cache = read_repo(&state, |repo| Ok(repo.data_dir().join("cache")))?;
         sources::search_homebrew(&cache, &query, 30).map_err(|e| e.code().to_string())
     })
     .await
@@ -2646,7 +1904,7 @@ async fn unsubscribe(app: AppHandle, software_id: String) -> CmdResult<Library> 
 #[tauri::command]
 async fn check_updates(app: AppHandle) -> CmdResult<CheckResult> {
     blocking(app, move |app, state| {
-        let targets: Vec<(String, String, SourceKind, String)> = with_repo(&state, |repo| {
+        let targets: Vec<(String, String, SourceKind, String)> = read_repo(&state, |repo| {
             let subscribed = repo.lib.software.iter().filter_map(|software| {
                 let subscription = software.subscription.as_ref()?;
                 Some((software.id.clone(), software.name.clone(), subscription.source, subscription.reference.clone()))
@@ -2690,7 +1948,7 @@ async fn check_updates(app: AppHandle) -> CmdResult<CheckResult> {
 async fn download_asset(app: AppHandle, software_id: String, url: String) -> CmdResult<Library> {
     blocking(app, move |app, state| {
         // 只下载索引里记着的地址，不接受前端随便给一个
-        let (asset, version, dir) = with_repo(&state, |repo| {
+        let (asset, version, dir) = read_repo(&state, |repo| {
             let software = repo.lib.software.iter().find(|s| s.id == software_id).ok_or(shibapack_core::Error::Code("not_found"))?;
             let release = software.subscription.as_ref().and_then(|s| s.latest.as_ref()).ok_or(shibapack_core::Error::Code("not_found"))?;
             let asset = release.assets.iter().find(|a| a.url == url).ok_or(shibapack_core::Error::Code("not_found"))?;
@@ -2761,7 +2019,7 @@ async fn tidy_root(app: AppHandle) -> CmdResult<ImportResult> {
 #[tauri::command]
 async fn list_lang_packs(app: AppHandle) -> CmdResult<Vec<serde_json::Value>> {
     blocking(app, move |_app, state| {
-        with_repo(&state, |repo| Ok(repo.lang_packs()))
+        read_repo(&state, |repo| Ok(repo.lang_packs()))
     })
     .await
 }
@@ -2819,7 +2077,7 @@ fn ai_service(settings: &AiSettings, key: Option<String>) -> CmdResult<ai::Servi
 
 /// 仓库设置里的 AI 服务，和此刻索引的一份副本。联网期间不占着仓库的锁。
 fn repo_ai(state: &State<AppState>) -> CmdResult<(ai::Service, Library)> {
-    let library = with_repo(state, |repo| Ok(repo.lib.clone()))?;
+    let library = read_repo(state, |repo| Ok(repo.lib.clone()))?;
     Ok((ai_service(&library.settings.ai, None)?, library))
 }
 
@@ -3152,8 +2410,8 @@ pub fn run() {
             set_repo_root,
             get_library,
             refresh_library,
-            import_paths,
-            cancel_import,
+            import_commands::import_paths,
+            import_commands::cancel_import,
             update_software,
             update_version,
             delete_software,
@@ -3179,10 +2437,10 @@ pub fn run() {
             export_backup,
             import_backup,
             empty_trash,
-            list_installed,
-            measure_installed,
-            match_installed,
-            analyze_uninstall,
+            installed_commands::list_installed,
+            installed_commands::measure_installed,
+            installed_commands::match_installed,
+            installed_commands::analyze_uninstall,
             system_overview,
             set_window_glass,
             disk_locations,
@@ -3209,35 +2467,35 @@ pub fn run() {
             system_sample,
             process_icons,
             end_process,
-            uninstall_installed,
-            uninstall_status,
-            scan_leftovers,
-            remove_leftovers,
-            reveal_leftover,
-            open_uninstall_backup,
-            reveal_installed,
+            installed_commands::uninstall_installed,
+            installed_commands::uninstall_status,
+            installed_commands::scan_leftovers,
+            installed_commands::remove_leftovers,
+            installed_commands::reveal_leftover,
+            installed_commands::open_uninstall_backup,
+            installed_commands::reveal_installed,
             list_startup,
             startup_action,
             reveal_startup,
             open_startup_settings,
-            cleanup_scan,
-            cleanup_run,
-            cleanup_quit_app,
-            cleanup_reveal,
-            cleanup_options,
-            cleanup_set_options,
-            cleanup_history,
-            cleanup_cookie_sites,
-            cleanup_cancel_scan,
-            cleanup_count_trash,
-            cleanup_open_tool,
-            cleanup_rescan,
-            ai_explain_cleanup,
+            cleanup_commands::cleanup_scan,
+            cleanup_commands::cleanup_run,
+            cleanup_commands::cleanup_quit_app,
+            cleanup_commands::cleanup_reveal,
+            cleanup_commands::cleanup_options,
+            cleanup_commands::cleanup_set_options,
+            cleanup_commands::cleanup_history,
+            cleanup_commands::cleanup_cookie_sites,
+            cleanup_commands::cleanup_cancel_scan,
+            cleanup_commands::cleanup_count_trash,
+            cleanup_commands::cleanup_open_tool,
+            cleanup_commands::cleanup_rescan,
+            cleanup_commands::ai_explain_cleanup,
             ai_explain_startup_many,
             fill_icons,
             fill_file_info,
-            inspect_drop,
-            preview_import_categories,
+            import_commands::inspect_drop,
+            import_commands::preview_import_categories,
             fetch_icon,
             fetch_summary,
             selftest_report,

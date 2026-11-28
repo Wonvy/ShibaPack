@@ -1,7 +1,7 @@
 {
   "name": "shibapack",
   "private": true,
-  "version": "0.16.0",
+  "version": "0.17.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,6 +11,7 @@
     "tauri": "tauri",
     "app": "tauri dev",
     "test:core": "cargo test -p shibapack-core",
+    "test:e2e": "playwright test",
     "bundle": "TAURI_SIGNING_PRIVATE_KEY=$HOME/.tauri/shibapack-updater.key TAURI_SIGNING_PRIVATE_KEY_PASSWORD= tauri build"
   },
   "dependencies": {
@@ -29,6 +30,7 @@
     "zustand": "^5.1.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@tailwindcss/vite": "^4.3.5",
     "@tauri-apps/cli": "^2.12.6",
     "@types/node": "^26.6.6",

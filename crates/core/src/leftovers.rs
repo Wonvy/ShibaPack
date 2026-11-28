@@ -84,22 +84,26 @@ impl Target {
 }
 
 /// 卸载命令里的程序所在的文件夹：`"D:\Apps\Foo\UnInstall.exe" /S` → `D:\Apps\Foo`。
-/// msiexec、rundll32 这类系统程序、带环境变量的不算。
+/// msiexec、rundll32 这类系统程序不作为软件目录的依据。
 fn uninstaller_dir(command: &str) -> Option<PathBuf> {
-    let command = command.trim();
-    let exe = match command.strip_prefix('"') {
-        Some(rest) => rest.split('"').next()?,
-        None => &command[..command.to_ascii_lowercase().find(".exe")? + 4],
+    #[cfg(windows)]
+    let exe = crate::installed::registered_uninstaller_path(command)?;
+    #[cfg(not(windows))]
+    let exe = {
+        let command = command.trim();
+        PathBuf::from(match command.strip_prefix('"') {
+            Some(rest) => rest.split_once('"')?.0,
+            None => &command[..command.to_ascii_lowercase().find(".exe")? + 4],
+        })
     };
-    if exe.contains('%') {
+    if !exe.is_absolute() || !exe.is_file() {
         return None;
     }
-    let file = exe.rsplit(['\\', '/']).next()?.to_ascii_lowercase();
-    if matches!(file.as_str(), "msiexec.exe" | "rundll32.exe" | "cmd.exe" | "powershell.exe") {
+    let file = exe.file_stem()?.to_string_lossy().to_ascii_lowercase();
+    if matches!(file.as_str(), "msiexec" | "rundll32" | "cmd" | "powershell" | "pwsh" | "wscript" | "cscript") {
         return None;
     }
-    let dir = Path::new(exe).parent()?;
-    dir.is_dir().then(|| dir.to_path_buf())
+    exe.parent().map(Path::to_path_buf)
 }
 
 /// 清理的结果。
@@ -329,7 +333,24 @@ pub fn scan(target: &Target, others: &[InstalledApp], still_installed: bool) -> 
 /// 卸载程序跑完以后再用 [`scan`] 找一遍，它没删干净的那时候再列出来。
 /// 这样只清数据、不卸载时，也不会动到软件本身。
 pub fn scan_before(target: &Target, others: &[InstalledApp]) -> Vec<Leftover> {
-    data_only(scan(target, others, false), &program_roots(), cfg!(windows))
+    let fold_case = cfg!(windows);
+    let mut program = program_roots();
+    if let Some((dir, _)) = preview_install_dir(target, others) {
+        program.push(path_key(dir, fold_case));
+    }
+    data_only(scan(target, others, false), &program, fold_case)
+}
+
+/// 仅展示可辨认的独立安装目录。推断的路径只用于预览和匹配，不能据此移除整个目录。
+pub fn preview_install_dir<'a>(target: &'a Target, others: &[InstalledApp]) -> Option<(&'a Path, bool)> {
+    preview_install_dir_with(target, others, &Protected::from_env(), cfg!(windows))
+}
+
+fn preview_install_dir_with<'a>(target: &'a Target, others: &[InstalledApp], protected: &Protected, fold_case: bool) -> Option<(&'a Path, bool)> {
+    let dir = target.install_dir.as_deref().or(target.app_dir.as_deref())?;
+    let key = path_key(dir, fold_case);
+    (dir.is_absolute() && dir.is_dir() && !protected.covers(&key) && !Neighbours::of(target, others, fold_case).uses(&key))
+        .then_some((dir, target.install_dir.is_none()))
 }
 
 /// 去掉属于软件本身的项，只留数据、快捷方式、设置和开机启动。`program` 是装软件的文件夹（`path_key` 过的）。
@@ -342,7 +363,7 @@ pub(crate) fn data_only(mut found: Vec<Leftover>, program: &[String], fold_case:
             return true;
         }
         let key = path_key(Path::new(&item.path), fold_case);
-        !program.iter().any(|root| key.starts_with(&format!("{root}/")))
+        !program.iter().any(|root| key == *root || key.strip_prefix(root).is_some_and(|rest| rest.starts_with('/')))
     });
     found
 }
@@ -366,12 +387,13 @@ struct Neighbours {
 impl Neighbours {
     fn of(target: &Target, others: &[InstalledApp], fold_case: bool) -> Neighbours {
         let own = target.registry_key.as_deref();
-        let others = others.iter().filter(|app| Some(app.id.as_str()) != own && app.name != target.name);
+        let others = others.iter().filter(|app| Some(app.id.as_str()) != own);
         let mut names = HashSet::new();
         let mut dirs = Vec::new();
         for app in others {
-            names.extend(name_variants(&app.name, &app.publisher));
-            if let Some(dir) = &app.install_dir {
+            let other = Target::of(app);
+            names.extend(Names::of(&other).variants);
+            if let Some(dir) = &other.app_dir {
                 dirs.push(path_key(dir, fold_case));
             }
         }
@@ -405,15 +427,22 @@ pub(crate) fn scan_files(target: &Target, others: &[InstalledApp], roots: &Roots
         add(dir, LeftoverKind::Folder, Confidence::High, "installDir", &mut found);
     }
 
-    // 2. Program Files、AppData、ProgramData 里同名的文件夹，或者“发布者\软件名”
+    // 2. Program Files、AppData、ProgramData 里同名的文件夹，或者“发布者\软件名”；
+    // 数据目录中的独立配置文件也列出，须手动确认。
     for (list, exact) in [(&roots.program, Confidence::High), (&roots.data, Confidence::Medium)] {
         for root in list {
+            if exact == Confidence::Medium {
+                scan_data_files(root, &pick, &add, &mut found);
+            }
             for entry in subdirs(root) {
                 let name = file_name(&entry);
                 match pick(&name) {
                     Some((_, true)) => add(&entry, LeftoverKind::Folder, exact, "name", &mut found),
                     Some((_, false)) => add(&entry, LeftoverKind::Folder, Confidence::Low, "nameContains", &mut found),
                     None if names.is_publisher(&name) => {
+                        if exact == Confidence::Medium {
+                            scan_data_files(&entry, &pick, &add, &mut found);
+                        }
                         for inner in subdirs(&entry) {
                             match pick(&file_name(&inner)) {
                                 Some((_, true)) => add(&inner, LeftoverKind::Folder, Confidence::High, "publisherName", &mut found),
@@ -468,6 +497,26 @@ pub(crate) fn scan_files(target: &Target, others: &[InstalledApp], roots: &Roots
     }
 
     tidy(found, fold_case)
+}
+
+fn scan_data_files(
+    root: &Path,
+    pick: &dyn Fn(&str) -> Option<(String, bool)>,
+    add: &impl Fn(&Path, LeftoverKind, Confidence, &str, &mut Vec<Leftover>),
+    found: &mut Vec<Leftover>,
+) {
+    for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let path = entry.path();
+        let extension = path.extension().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+        if matches!(extension.as_str(), "ini" | "cfg" | "conf" | "json" | "xml" | "yaml" | "yml" | "log" | "db" | "db-shm" | "db-wal" | "sqlite" | "sqlite3")
+            && matches!(pick(&stem(&path)), Some((_, true)))
+        {
+            add(&path, LeftoverKind::File, Confidence::Low, "dataFile", found);
+        }
+    }
 }
 
 /// macOS 的 ~/Library。bundle id 精确对得上的可信度高；名字对得上的只在 Application Support、Caches、Logs 里找，
@@ -737,7 +786,7 @@ pub fn elevated_entry() -> Option<i32> {
 /// 软件还在不在：Windows 看卸载信息的注册表键还在不在；macOS 看 .app 还在不在。
 pub fn still_installed(target: &Target) -> bool {
     match &target.registry_key {
-        Some(key) => registry::exists(key),
+        Some(key) => registry::possibly_exists(key),
         None => target.install_dir.as_deref().is_some_and(Path::exists),
     }
 }
@@ -839,6 +888,11 @@ mod registry {
     }
 
     #[cfg(not(windows))]
+    pub(super) fn possibly_exists(path: &str) -> bool {
+        exists(path)
+    }
+
+    #[cfg(not(windows))]
     pub(super) fn backup_and_delete(_item: &Leftover, _folder: &Path) -> Result<(), String> {
         Err("not_supported".into())
     }
@@ -856,6 +910,14 @@ mod registry {
     #[cfg(windows)]
     pub(super) fn exists(path: &str) -> bool {
         open(path).is_some_and(|(hive, sub)| hive.open_subkey(sub).is_ok())
+    }
+
+    #[cfg(windows)]
+    pub(super) fn possibly_exists(path: &str) -> bool {
+        open(path).is_none_or(|(hive, sub)| match hive.open_subkey(sub) {
+            Ok(_) => true,
+            Err(err) => err.kind() != std::io::ErrorKind::NotFound,
+        })
     }
 
     #[cfg(windows)]
@@ -1109,6 +1171,40 @@ mod tests {
         Protected { exact: Vec::new(), under: Vec::new() }
     }
 
+    #[test]
+    fn previews_standalone_data_files_and_excludes_files_shared_with_another_version() {
+        let base = tempfile::tempdir().unwrap();
+        let data = base.path().join("roaming");
+        let vendor = data.join("Acme");
+        std::fs::create_dir_all(&vendor).unwrap();
+        for path in [data.join("Widget Studio.ini"), vendor.join("Widget Studio.db-wal"), data.join("Widget Studio.exe"), data.join("Widget Studio Notes.ini")] {
+            std::fs::write(path, b"x").unwrap();
+        }
+        let target = Target { name: "Widget Studio".into(), publisher: "Acme".into(), ..Target::default() };
+        let roots = Roots { data: vec![data], ..Roots::default() };
+        let found = scan_files(&target, &[], &roots, &no_protection(), cfg!(windows));
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|item| item.kind == LeftoverKind::File && item.reason == "dataFile" && item.confidence == Confidence::Low));
+
+        let other = installed("other", "Widget Studio", "Acme", None);
+        assert!(scan_files(&target, &[other], &roots, &no_protection(), cfg!(windows)).is_empty());
+    }
+
+    #[test]
+    fn installation_folder_preview_marks_inference_and_hides_shared_directories() {
+        let base = tempfile::tempdir().unwrap();
+        let app_dir = base.path().join("Apps").join("Widget Studio");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let target = Target { name: "Widget Studio".into(), app_dir: Some(app_dir.clone()), ..Target::default() };
+        let protected = no_protection();
+        assert_eq!(preview_install_dir_with(&target, &[], &protected, cfg!(windows)), Some((app_dir.as_path(), true)));
+
+        let target = Target { install_dir: Some(app_dir.clone()), ..target };
+        assert_eq!(preview_install_dir_with(&target, &[], &protected, cfg!(windows)), Some((app_dir.as_path(), false)));
+        let other = installed("other", "Widget Studio", "Acme", Some(&app_dir));
+        assert_eq!(preview_install_dir_with(&target, &[other], &protected, cfg!(windows)), None);
+    }
+
     fn dirs(base: &Path, list: &[&str]) {
         for path in list {
             std::fs::create_dir_all(base.join(path)).unwrap();
@@ -1126,7 +1222,11 @@ mod tests {
         let apps = crate::installed::list_installed(dir.path());
         let app = apps.iter().find(|a| a.name.eq_ignore_ascii_case(&name)).expect("这台电脑上没有这个软件");
         let others: Vec<InstalledApp> = apps.iter().filter(|a| a.id != app.id).cloned().collect();
-        let found = scan(&Target::of(app), &others, false);
+        let target = Target::of(app);
+        if let Some((folder, inferred)) = preview_install_dir(&target, &others) {
+            eprintln!("安装目录（{}）：{}", if inferred { "推断" } else { "登记" }, folder.display());
+        }
+        let found = scan_before(&target, &others);
         for item in &found {
             let size = item.size.map(|s| format!("{:.1} MB", s as f64 / 1e6)).unwrap_or_default();
             eprintln!("{:<6} {:<13} {:<14} {:>10}  {}{}", format!("{:?}", item.confidence), format!("{:?}", item.kind), item.reason, size, item.path, item.value.as_deref().map(|v| format!(" → {v}")).unwrap_or_default());
@@ -1162,7 +1262,7 @@ mod tests {
         assert_eq!(target.install_dir, None, "推出来的文件夹不当成安装文件夹去删");
 
         let found = scan_files(&target, &[], &roots, &no_protection(), false);
-        let at = |rel: &str| found.iter().find(|f| f.path == b.join(rel).to_string_lossy());
+        let at = |rel: &str| found.iter().find(|f| Path::new(&f.path) == b.join(rel));
         assert_eq!(at("local/NetEase/CloudMusic").unwrap().reason, "publisherName");
         assert!(at("roaming/CloudMusic").is_some());
         assert!(at("local/NetEase").is_none(), "发布者文件夹本身不删");
@@ -1176,13 +1276,13 @@ mod tests {
         std::fs::write(b.join("start/Netease/网易邮箱.lnk"), b"").unwrap();
         let roots = Roots { start_menu: vec![b.join("start")], ..roots };
         let found = scan_files(&target, &[], &roots, &no_protection(), false);
-        let at = |rel: &str| found.iter().find(|f| f.path == b.join(rel).to_string_lossy());
+        let at = |rel: &str| found.iter().find(|f| Path::new(&f.path) == b.join(rel));
         assert_eq!(at("start/Startup/CloudMusic.lnk").unwrap().reason, "shortcut");
         assert!(at("start/Netease/网易云音乐.lnk").is_some());
         assert!(at("start/Netease/网易邮箱.lnk").is_none());
         let obsidian = Target { name: "Obsidian".into(), publisher: "Obsidian".into(), ..Target::default() };
         let found = scan_files(&obsidian, &[], &roots, &no_protection(), false);
-        let at = |rel: &str| found.iter().find(|f| f.path == b.join(rel).to_string_lossy());
+        let at = |rel: &str| found.iter().find(|f| Path::new(&f.path) == b.join(rel));
         assert_eq!(at("local/obsidian-updater").unwrap().confidence, Confidence::Medium);
         assert_eq!(at("local/obsidian-backup").unwrap().confidence, Confidence::Low);
 
@@ -1225,7 +1325,7 @@ mod tests {
 
         let npp = Target { name: "Notepad++ (64-bit x64)".into(), publisher: "Notepad++ Team".into(), ..Target::default() };
         let found = scan_files(&npp, &others, &roots, &no_protection(), false);
-        let at = |rel: &str| found.iter().find(|f| f.path == b.join(rel).to_string_lossy());
+        let at = |rel: &str| found.iter().find(|f| Path::new(&f.path) == b.join(rel));
         assert_eq!(at("pf/Notepad++").unwrap().confidence, Confidence::High);
         assert_eq!(at("roaming/Notepad++").unwrap().confidence, Confidence::Medium);
         assert_eq!(at("roaming/notepad++backup").unwrap().confidence, Confidence::Low);
@@ -1244,7 +1344,7 @@ mod tests {
             ..Target::default()
         };
         let found = scan_files(&widget, &others, &roots, &no_protection(), false);
-        let at = |rel: &str| found.iter().find(|f| f.path == b.join(rel).to_string_lossy());
+        let at = |rel: &str| found.iter().find(|f| Path::new(&f.path) == b.join(rel));
         assert_eq!(at("pfx86/Acme/Widget Studio").unwrap().reason, "installDir", "安装文件夹只列一次");
         assert_eq!(found.iter().filter(|f| f.path.contains("Widget Studio") && f.path.contains("pfx86")).count(), 1);
         assert!(at("pfx86/Acme").is_none(), "发布者文件夹本身不删");
@@ -1259,7 +1359,7 @@ mod tests {
         // 公共文件夹不算
         let protected = Protected { exact: vec![path_key(&b.join("pf/Notepad++"), false)], under: Vec::new() };
         let found = scan_files(&npp, &others, &roots, &protected, false);
-        assert!(found.iter().all(|f| f.path != b.join("pf/Notepad++").to_string_lossy()));
+        assert!(found.iter().all(|f| Path::new(&f.path) != b.join("pf/Notepad++")));
     }
 
     #[test]
@@ -1300,7 +1400,10 @@ mod tests {
             ..Target::default()
         };
         let found = scan_files(&target, &[], &roots, &no_protection(), false);
-        let names: Vec<String> = found.iter().map(|f| f.path.strip_prefix(&*lib.to_string_lossy()).unwrap().to_string()).collect();
+        let names: Vec<String> = found.iter().map(|f| {
+            let rel = Path::new(&f.path).strip_prefix(&lib).unwrap();
+            format!("/{}", rel.to_string_lossy().replace('\\', "/"))
+        }).collect();
         for expected in [
             "/Application Support/com.acme.widget",
             "/Application Support/Widget Studio",
@@ -1316,10 +1419,10 @@ mod tests {
             assert!(names.iter().any(|n| n == expected), "缺少 {expected}：{names:?}");
         }
         assert!(!names.iter().any(|n| n.contains("widgetpro") || n.contains("Unrelated") || n.contains("Other")));
-        let versioned = found.iter().find(|f| f.path.ends_with("Acme/WidgetStudio2024.3")).expect("发布者文件夹里带版本号的");
+        let versioned = found.iter().find(|f| Path::new(&f.path).ends_with("Acme/WidgetStudio2024.3")).expect("发布者文件夹里带版本号的");
         assert_eq!((versioned.confidence, versioned.reason.as_str()), (Confidence::Low, "nameContains"));
         assert!(!names.iter().any(|n| n.ends_with("/Acme")), "发布者文件夹本身不删");
-        let pref = found.iter().find(|f| f.path.ends_with("Preferences/com.acme.widget.plist")).unwrap();
+        let pref = found.iter().find(|f| Path::new(&f.path).ends_with("Preferences/com.acme.widget.plist")).unwrap();
         assert_eq!((pref.confidence, pref.reason.as_str(), pref.kind), (Confidence::High, "bundleId", LeftoverKind::File));
 
         // 苹果自己的应用不找

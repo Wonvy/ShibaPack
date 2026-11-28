@@ -1,16 +1,55 @@
-# 推到 main 时在 Linux 和 Windows 上按发布时的方式（release）编译一遍桌面程序，不打包、不发布。
+# 推到 main 或提交 PR 时运行核心测试，并在 Linux 和 Windows 上检查桌面版编译。
 #
 # 编译失败时把错误原文写进 annotations：不登录 GitHub 也能看到（Actions 日志要登录才能看），
 # 用 https://api.github.com/repos/Wonvy/ShibaPack/check-runs/<任务 id>/annotations 读。
-# macOS 在本机就能编译检查，这里不跑。
+# Linux 跑全套核心测试。Windows 和 macOS 跑和仓库写入相关的测试，避免全套测试里的系统路径假设。
 name: build-check
 
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
+  browser-workflows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+
+  core-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 全套核心测试
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p shibapack-core
+      - name: 仓库写入、整理和导入测试
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          cargo test --locked -p shibapack-core store::tests
+          cargo test --locked -p shibapack-core ops::tests
+          cargo test --locked -p shibapack-core import::tests
+          cargo test --locked -p shibapack-core leftovers::tests
+      - name: Windows 卸载程序启动测试
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p shibapack-core installed::platform
+
   build:
     strategy:
       fail-fast: false

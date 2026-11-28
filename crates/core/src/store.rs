@@ -2,11 +2,13 @@
 
 use crate::{model::*, Error, Result};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
-    fs,
-    io::Write,
+    fs::{self, File, TryLockError},
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
+    sync::{Arc, Weak},
     time::{Duration, SystemTime},
 };
 
@@ -23,6 +25,12 @@ const TRASH_KEEP: Duration = Duration::from_secs(30 * 24 * 3600);
 /// 索引文件的修改时间和大小。和上次读写时不一样，就是被别的程序改过。
 type DiskStamp = (SystemTime, u64);
 
+/// 持有者离开时由系统释放锁。锁文件本身始终保留，所有设备锁的是同一个文件。
+#[must_use]
+pub struct WriteLock {
+    _file: Arc<File>,
+}
+
 pub struct Repo {
     root: PathBuf,
     pub lib: Library,
@@ -30,6 +38,9 @@ pub struct Repo {
     pub recovered: Option<String>,
     /// 最近一次读入或写出索引后，索引文件的样子。
     disk_stamp: Option<DiskStamp>,
+    disk_hash: Option<[u8; 32]>,
+    /// 本机的事务可复用导入批次持有的锁，但 Repo 本身不会让锁一直留着。
+    writer: Weak<File>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -91,41 +102,55 @@ impl Repo {
             hide_on_windows(&data);
         }
 
-        let mut repo = Repo { root, lib: Library::default(), recovered: None, disk_stamp: None };
-        let index = repo.index_path();
-        if index.exists() {
-            match read_library(&index) {
-                Ok(lib) => {
-                    repo.lib = lib;
-                    repo.disk_stamp = stamp_of(&index);
-                }
-                Err(err @ (Error::Io(_) | Error::Code(_) | Error::Step(..))) => return Err(err),
-                Err(Error::Json(_)) => {
-                    // 留下损坏的文件供排查，再从备份里找一份能读的
-                    fs::rename(&index, unique_path(repo.root.join("software.json.corrupt")))?;
-                    let restored = repo.backups().into_iter().find_map(|b| {
-                        read_library(&repo.backup_dir().join(&b.name)).ok().map(|lib| (b.name, lib))
-                    });
-                    match restored {
-                        Some((name, lib)) => {
-                            repo.lib = lib;
-                            repo.recovered = Some(name);
-                        }
-                        None => repo.recovered = Some(String::new()),
-                    }
-                    repo.write_index()?;
-                }
-            }
-        } else {
-            if fresh {
-                repo.lib.categories = crate::classify::default_categories(&repo.lib.settings.language);
-            }
-            repo.write_index()?;
+        let mut repo = Repo {
+            root,
+            lib: Library::default(),
+            recovered: None,
+            disk_stamp: None,
+            disk_hash: None,
+            writer: Weak::new(),
+        };
+        match repo.refresh_index(true) {
+            Ok(_) => {}
+            Err(Error::Json(_)) => repo.initialize_or_recover(fresh)?,
+            Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => repo.initialize_or_recover(fresh)?,
+            Err(err) => return Err(err),
         }
         // 旧仓库仍然可以打开；临时不能写入时，下次保存会再补一次。
-        let _ = repo.transact(|repo| if repo.embed_legacy_icons() { repo.save() } else { Ok(()) });
-        repo.purge_trash();
+        if let Ok(_writer) = repo.begin_write() {
+            let _ = repo.transact(|repo| if repo.embed_legacy_icons() { repo.save() } else { Ok(()) });
+            repo.purge_trash();
+        }
         Ok(repo)
+    }
+
+    fn initialize_or_recover(&mut self, fresh: bool) -> Result<()> {
+        let (_writer, _) = self.acquire_write_lock()?;
+        let index = self.index_path();
+        // 等到拿到锁才决定是否恢复，另一台电脑可能已经建好或修好了索引。
+        match self.refresh_index(true) {
+            Ok(_) => Ok(()),
+            Err(Error::Json(_)) => {
+                fs::rename(&index, unique_path(self.root.join("software.json.corrupt")))?;
+                let restored = self.backups().into_iter().find_map(|b| {
+                    read_library(&self.backup_dir().join(&b.name)).ok().map(|lib| (b.name, lib))
+                });
+                if let Some((name, lib)) = restored {
+                    self.lib = lib;
+                    self.recovered = Some(name);
+                } else {
+                    self.recovered = Some(String::new());
+                }
+                self.write_index()
+            }
+            Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+                if fresh {
+                    self.lib.categories = crate::classify::default_categories(&self.lib.settings.language);
+                }
+                self.write_index()
+            }
+            Err(err) => Err(err),
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -170,9 +195,10 @@ impl Repo {
         }
     }
 
-    /// 保存索引：写临时文件 → 读回校验 → 需要时备份旧索引 → 原子替换。
+    /// 保存索引：确认基于当前索引 → 按需备份 → 写临时文件 → 读回校验 → 原子替换。
     pub fn save(&mut self) -> Result<()> {
-        if self.index_path().exists() && self.backup_due() {
+        let _writer = self.lock_for_save()?;
+        if self.backup_due() {
             self.backup_current()?;
         }
         self.write_index()
@@ -180,17 +206,15 @@ impl Repo {
 
     /// 保存，并且不管离上次备份多久，先把改动前的索引备份一份。用在删除这类没法撤销的改动上。
     pub fn save_with_backup(&mut self) -> Result<()> {
-        if self.index_path().exists() {
-            self.backup_current()?;
-        }
+        let _writer = self.lock_for_save()?;
+        self.backup_current()?;
         self.write_index()
     }
 
     fn write_index(&mut self) -> Result<()> {
         self.embed_legacy_icons();
         self.lib.format = FORMAT;
-        // 临时文件名带上进程号：万一有两个程序同时在存，不会互相写进对方的临时文件
-        let tmp = self.root.join(format!("software.json.{}.tmp", std::process::id()));
+        let tmp = self.root.join(format!("software.json.{}.tmp", uuid::Uuid::new_v4()));
         let json = serde_json::to_vec_pretty(&self.lib)?;
         let written = (|| -> Result<()> {
             let mut file = fs::File::create(&tmp)?;
@@ -198,14 +222,15 @@ impl Repo {
             file.sync_all()?;
             drop(file);
             read_library(&tmp)?;
+            fs::rename(&tmp, self.index_path())?;
             Ok(())
         })();
         if let Err(err) = written {
             let _ = fs::remove_file(&tmp);
             return Err(err);
         }
-        fs::rename(&tmp, self.index_path())?;
         self.disk_stamp = stamp_of(&self.index_path());
+        self.disk_hash = Some(Sha256::digest(&json).into());
         self.write_catalog();
         Ok(())
     }
@@ -233,43 +258,86 @@ impl Repo {
         changed
     }
 
-    /// 索引文件被别的程序改过（另一个 ShibaPack、另一台电脑、手动编辑）时重新读入，返回是否重新读了。
-    ///
-    /// 文件暂时读不到（NAS 掉线）或内容坏了时什么都不做，继续用手里这份；格式比这个版本新时报错，
-    /// 这时不能再往里写，否则会把新版本记下的内容丢掉。
+    fn acquire_write_lock(&mut self) -> Result<(WriteLock, bool)> {
+        if let Some(file) = self.writer.upgrade() {
+            return Ok((WriteLock { _file: file }, false));
+        }
+        let file = File::options().write(true).create(true).truncate(false).open(self.data_dir().join("index.lock"))?;
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => return Err(Error::Code("repo_busy")),
+            Err(TryLockError::Error(err)) => return Err(err.into()),
+        }
+        let file = Arc::new(file);
+        self.writer = Arc::downgrade(&file);
+        Ok((WriteLock { _file: file }, true))
+    }
+
+    /// 开始修改前独占仓库，并从磁盘确认索引是最新的。分批导入可在释放本机互斥锁后继续持有它。
+    pub fn begin_write(&mut self) -> Result<WriteLock> {
+        let (writer, acquired) = self.acquire_write_lock()?;
+        if acquired {
+            self.refresh_index(true)?;
+        }
+        Ok(writer)
+    }
+
+    /// 内存里已经有待保存的改动，不能靠重新读入解决冲突。
+    pub(crate) fn lock_for_save(&mut self) -> Result<WriteLock> {
+        let (writer, _) = self.acquire_write_lock()?;
+        let bytes = fs::read(self.index_path())?;
+        if self.disk_hash != Some(Sha256::digest(&bytes).into()) {
+            return Err(Error::Code("repo_changed"));
+        }
+        Ok(writer)
+    }
+
+    /// 浏览时保留上一次读到的索引，NAS 恢复连接后可以再刷新。
     pub fn reload_if_changed(&mut self) -> Result<bool> {
-        let index = self.index_path();
-        let current = stamp_of(&index);
-        if current.is_none() || current == self.disk_stamp {
+        if self.writer.strong_count() > 0 {
             return Ok(false);
         }
-        match read_library(&index) {
-            Ok(lib) => {
-                self.lib = lib;
-                self.disk_stamp = current;
-                Ok(true)
-            }
-            Err(err @ Error::Code(_)) => Err(err),
-            Err(_) => Ok(false),
+        match self.refresh_index(false) {
+            Err(Error::Io(_) | Error::Json(_)) => Ok(false),
+            result => result,
         }
+    }
+
+    fn refresh_index(&mut self, force: bool) -> Result<bool> {
+        let index = self.index_path();
+        if !force && stamp_of(&index) == self.disk_stamp {
+            return Ok(false);
+        }
+        let mut file = File::open(index)?;
+        let meta = file.metadata()?;
+        let stamp = (meta.modified()?, meta.len());
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        let hash = Sha256::digest(&bytes).into();
+        let changed = self.disk_hash != Some(hash);
+        if changed {
+            self.lib = parse_library(&bytes)?;
+            self.disk_hash = Some(hash);
+        }
+        self.disk_stamp = Some(stamp);
+        Ok(changed)
     }
 
     /// 做一次修改：先读入别处对索引的改动，再执行 `run`。`run` 失败时把内存里的索引退回去，
     /// 免得改了一半的记录在下一次（哪怕是无关的）保存时被写进文件。
     pub fn transact<T>(&mut self, run: impl FnOnce(&mut Repo) -> Result<T>) -> Result<T> {
-        self.reload_if_changed()?;
+        let _writer = self.begin_write()?;
         let before = self.lib.clone();
-        let stamp = self.disk_stamp;
+        let hash = self.disk_hash;
         let result = run(self);
         if result.is_err() {
             self.lib = before;
             // 中途已经存过（比如导入时分批保存）：以文件里的为准，那些记录对应的文件已经在仓库里了
-            if self.disk_stamp != stamp {
-                match read_library(&self.index_path()) {
-                    Ok(lib) => self.lib = lib,
-                    // 这会儿读不到：下次操作前再读
-                    Err(_) => self.disk_stamp = None,
-                }
+            if self.disk_hash != hash {
+                self.disk_stamp = None;
+                self.disk_hash = None;
+                // 这会儿读不到：下次操作前再读。
+                let _ = self.refresh_index(true);
             }
         }
         result
@@ -308,6 +376,7 @@ impl Repo {
 
     /// 立即备份（界面上的“立即备份”）。
     pub fn create_backup(&mut self) -> Result<BackupInfo> {
+        let _writer = self.lock_for_save()?;
         self.write_index()?;
         self.backup_current()
     }
@@ -346,6 +415,7 @@ impl Repo {
             return Err(Error::Code("invalid_backup"));
         }
         let lib = read_library(&self.backup_dir().join(name)).map_err(|_| Error::Code("invalid_backup"))?;
+        let _writer = self.lock_for_save()?;
         self.backup_current()?;
         self.lib = lib;
         self.write_index()
@@ -353,6 +423,7 @@ impl Repo {
 
     /// 把索引导出到仓库之外的一个文件。
     pub fn export_to(&mut self, dest: &Path) -> Result<()> {
+        let _writer = self.lock_for_save()?;
         self.write_index()?;
         // 选中的正好是索引本身：把文件复制到自己身上会把它清空
         let index = fs::canonicalize(self.index_path())?;
@@ -386,6 +457,7 @@ impl Repo {
         if !well_formed(&lib) {
             return Err(Error::Code("invalid_backup"));
         }
+        let _writer = self.lock_for_save()?;
         self.backup_current()?;
         self.lib = lib;
         self.write_index()
@@ -884,6 +956,51 @@ mod tests {
         let names: Vec<String> = Repo::open(dir.path()).unwrap().lib.categories.into_iter().map(|c| c.name).collect();
         assert_eq!(names, ["别处加的", "这里加的"]);
         assert!(!here.reload_if_changed().unwrap(), "自己写的不算别处的改动");
+    }
+
+    #[test]
+    fn other_repositories_can_read_but_cannot_write_during_a_batch() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = Repo::open(dir.path()).unwrap();
+        let writer = first.begin_write().unwrap();
+        first.lib.categories = vec![category("导入中")];
+
+        let mut second = Repo::open(dir.path()).unwrap();
+        let blocked = second.transact(|_| -> Result<()> { panic!("拿不到锁就不能执行操作") });
+        assert!(matches!(blocked, Err(Error::Code("repo_busy"))));
+        assert!(second.lib.categories.iter().all(|c| c.name != "导入中"));
+        first.save().unwrap();
+        assert!(matches!(second.save(), Err(Error::Code("repo_busy"))));
+
+        drop(writer);
+        second.transact(|repo| {
+            assert_eq!(repo.lib.categories[0].name, "导入中");
+            repo.lib.categories.push(category("重试成功"));
+            repo.save()
+        }).unwrap();
+        assert_eq!(read_library(&first.index_path()).unwrap().categories.len(), 2);
+    }
+
+    #[test]
+    fn save_detects_an_external_edit_even_with_the_same_size_and_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join(INDEX_FILE);
+        fs::write(&index, r#"{"format":1,"software":[{"id":"demo","name":"Old","addedAt":""}]}"#).unwrap();
+        let mut repo = Repo::open(dir.path()).unwrap();
+        let writer = repo.begin_write().unwrap();
+        let old_stamp = stamp_of(&index).unwrap();
+        let edited = fs::read_to_string(&index).unwrap().replace("Old", "New");
+        fs::write(&index, &edited).unwrap();
+        File::options().write(true).open(&index).unwrap().set_modified(old_stamp.0).unwrap();
+        assert_eq!(stamp_of(&index), Some(old_stamp));
+
+        assert!(matches!(repo.save(), Err(Error::Code("repo_changed"))));
+        assert_eq!(fs::read_to_string(&index).unwrap(), edited);
+        drop(writer);
+        repo.transact(|repo| {
+            assert_eq!(repo.lib.software[0].name, "New");
+            repo.save()
+        }).unwrap();
     }
 
     #[test]

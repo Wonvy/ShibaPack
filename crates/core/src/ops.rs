@@ -111,6 +111,7 @@ impl Repo {
     }
 
     pub fn update_software(&mut self, id: &str, edit: SoftwareEdit) -> Result<()> {
+        let _writer = self.begin_write()?;
         let s = self.software_at(id)?;
         let name = edit.name.trim().to_string();
         if name.is_empty() {
@@ -147,6 +148,7 @@ impl Repo {
     }
 
     pub fn update_version(&mut self, software_id: &str, version_id: &str, edit: VersionEdit) -> Result<()> {
+        let _writer = self.begin_write()?;
         let s = self.software_at(software_id)?;
         let v = self.version_at(s, version_id)?;
         let version = edit.version.trim().to_string();
@@ -302,6 +304,7 @@ impl Repo {
     ///
     /// 别的记录还在用的同一个文件不移走。返回需要调用方送进系统回收站的外部文件。
     fn remove_records(&mut self, files: &[PackageFile], delete_from_disk: bool, edit: impl FnOnce(&mut Library)) -> Result<Vec<PathBuf>> {
+        let _writer = self.lock_for_save()?;
         let (mut managed, mut external) = (Vec::new(), Vec::new());
         if delete_from_disk {
             let removing: HashSet<&str> = files.iter().map(|f| f.id.as_str()).collect();
@@ -433,6 +436,7 @@ impl Repo {
     /// 读过的按 SHA-256 记在 `.shibapack/cache/fileinfo.json`（读不出来的也记），同一个文件只读一次。
     /// 一次最多真的去读 `limit` 个文件。返回 (有没有改动, 还有没有没读的)。
     pub fn fill_file_info(&mut self, limit: usize) -> Result<(bool, bool)> {
+        let _writer = self.begin_write()?;
         let cache_dir = self.data_dir().join("cache");
         let mut cache = InfoCache::load(&cache_dir);
         let (mut reads, mut more) = (0, false);
@@ -557,6 +561,7 @@ impl Repo {
 
     /// 存下联网找到的图标。查询信息变了或软件已经有图标时，忽略旧结果。
     pub fn set_web_icon(&mut self, software_id: &str, query: &WebIconQuery, found: Option<WebIcon>) -> Result<Option<String>> {
+        let _writer = self.begin_write()?;
         if self.web_icon_query(software_id)?.as_ref() != Some(query) {
             return Ok(None);
         }
@@ -584,6 +589,7 @@ impl Repo {
     /// 先从它自己的安装包里取；取不到再看这台电脑上是不是装着同一个软件，借用那边的图标。
     /// 试过但取不到的记在 `tried` 里，同一次运行中不再重复尝试。返回 (有没有改动, 还有没有没试过的)。
     pub fn fill_icons(&mut self, limit: usize, tried: &mut HashSet<String>, installed: &[InstalledApp]) -> Result<(bool, bool)> {
+        let _writer = self.begin_write()?;
         let mut changed = self.embed_legacy_icons();
         let pending: Vec<usize> = (0..self.lib.software.len())
             .filter(|&s| {
@@ -681,6 +687,7 @@ impl Repo {
 
     /// 把下载好的文件收进仓库：挪到 `软件名/版本号/` 下面并登记为托管文件。
     pub fn adopt_download(&mut self, software_id: &str, version: &str, downloaded: &Path, asset: &Asset, sha256: String) -> Result<()> {
+        let _writer = self.begin_write()?;
         let s = self.software_at(software_id)?;
         let size = fs::metadata(downloaded)?.len();
         let file_name = downloaded.file_name().unwrap_or_default().to_string_lossy().to_string();
@@ -725,6 +732,7 @@ impl Repo {
 
     /// 整理仓库根目录：把直接丢在根目录里的安装包识别出来，挪进各自的 `软件名/版本号/` 文件夹并登记。
     pub fn tidy_root(&mut self) -> Result<ImportReport> {
+        let _writer = self.begin_write()?;
         let loose: Vec<PathBuf> = fs::read_dir(self.root())?
             .flatten()
             .map(|entry| entry.path())

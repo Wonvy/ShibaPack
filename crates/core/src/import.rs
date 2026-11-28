@@ -20,6 +20,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod transfer;
+use transfer::{checkpoint, copy_file, remove_staging};
+
 /// 扫描文件夹时最多往下走几层。
 const MAX_SCAN_DEPTH: usize = 6;
 /// 导入时每新登记这么多个文件，或者离上次保存过了这么久，就先存一次索引。
@@ -125,32 +128,45 @@ pub struct Hashed {
 /// 读一个待导入的文件、算哈希。不需要占着仓库，可以在别的操作照常进行时做。
 /// 文件夹整个当作一个安装包：哈希按里面每个文件的相对路径和内容算，大小是全部文件加起来。
 pub fn hash_source(src: &Path) -> Result<Hashed> {
+    hash_source_cancellable(src, &|| false)
+}
+
+pub fn hash_source_cancellable(src: &Path, cancelled: &dyn Fn() -> bool) -> Result<Hashed> {
+    checkpoint(cancelled)?;
     let meta = fs::metadata(src)?;
     let abs = clean_path(&fs::canonicalize(src)?);
     let file_name = abs.file_name().unwrap_or_default().to_string_lossy().to_string();
     if meta.is_dir() {
-        let (size, sha256) = hash_folder(&abs)?;
+        let (size, sha256) = hash_folder_cancellable(&abs, cancelled)?;
         let (info, platform) = folder_info(&abs);
+        checkpoint(cancelled)?;
         return Ok(Hashed { source: src.to_path_buf(), abs, file_name, size, sha256, is_dir: true, info, platform });
     }
     if !meta.is_file() {
         return Err(Error::Code("not_a_file"));
     }
-    let sha256 = sha256_file(&abs)?;
+    let sha256 = sha256_file_cancellable(&abs, cancelled)?;
     let info = fileinfo::read(&abs);
+    checkpoint(cancelled)?;
     Ok(Hashed { source: src.to_path_buf(), abs, file_name, size: meta.len(), sha256, is_dir: false, info, platform: None })
 }
 
 /// 文件夹的哈希：按相对路径排好，每个文件的“相对路径 + 内容哈希”串起来再算一次。和文件放在哪无关，
 /// 内容一样的文件夹哈希就一样（查重复用）。返回（总大小，哈希）。
 pub fn hash_folder(dir: &Path) -> Result<(u64, String)> {
-    let mut files: Vec<(String, PathBuf)> = walkdir::WalkDir::new(dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .map(|e| (to_rel(e.path().strip_prefix(dir).unwrap_or(e.path())), e.into_path()))
-        .collect();
+    hash_folder_cancellable(dir, &|| false)
+}
+
+fn hash_folder_cancellable(dir: &Path, cancelled: &dyn Fn() -> bool) -> Result<(u64, String)> {
+    let mut files = Vec::new();
+    for entry in walkdir::WalkDir::new(dir).follow_links(false) {
+        checkpoint(cancelled)?;
+        if let Ok(entry) = entry {
+            if entry.file_type().is_file() {
+                files.push((to_rel(entry.path().strip_prefix(dir).unwrap_or(entry.path())), entry.into_path()));
+            }
+        }
+    }
     files.sort();
     let mut hasher = Sha256::new();
     let mut size = 0;
@@ -158,7 +174,7 @@ pub fn hash_folder(dir: &Path) -> Result<(u64, String)> {
         size += fs::metadata(path)?.len();
         hasher.update(rel.as_bytes());
         hasher.update([0]);
-        hasher.update(sha256_file(path)?.as_bytes());
+        hasher.update(sha256_file_cancellable(path, cancelled)?.as_bytes());
         hasher.update([0]);
     }
     Ok((size, hex::encode(hasher.finalize())))
@@ -373,9 +389,10 @@ pub fn launch_target(path: &Path) -> PathBuf {
 }
 
 /// 把整个文件夹复制过去（不跟符号链接，链接本身照原样复制）。
-fn copy_dir(src: &Path, dest: &Path) -> std::io::Result<()> {
+fn copy_dir(src: &Path, dest: &Path, cancelled: &dyn Fn() -> bool) -> Result<()> {
     fs::create_dir_all(dest)?;
     for entry in walkdir::WalkDir::new(src).min_depth(1).follow_links(false) {
+        checkpoint(cancelled)?;
         let entry = entry.map_err(std::io::Error::other)?;
         let target = dest.join(entry.path().strip_prefix(src).unwrap_or(entry.path()));
         if entry.file_type().is_dir() {
@@ -383,8 +400,10 @@ fn copy_dir(src: &Path, dest: &Path) -> std::io::Result<()> {
         } else if entry.file_type().is_symlink() {
             #[cfg(unix)]
             std::os::unix::fs::symlink(fs::read_link(entry.path())?, &target)?;
+        } else if entry.file_type().is_file() {
+            copy_file(entry.path(), &target, cancelled)?;
         } else {
-            fs::copy(entry.path(), &target)?;
+            return Err(Error::Code("not_a_file"));
         }
     }
     Ok(())
@@ -428,8 +447,13 @@ pub struct Placed {
 /// 把展开好的文件列表收集出来：文件原样保留，文件夹里只取安装包。不进隐藏文件夹，也不进仓库自己的数据目录。
 /// `packages` 里的文件夹和 .app 整个当作一个安装包，不往里面找。
 pub fn collect_files(paths: &[PathBuf], data_dir: &Path, packages: &HashSet<PathBuf>) -> Vec<PathBuf> {
+    collect_files_cancellable(paths, data_dir, packages, &|| false).unwrap_or_default()
+}
+
+pub fn collect_files_cancellable(paths: &[PathBuf], data_dir: &Path, packages: &HashSet<PathBuf>, cancelled: &dyn Fn() -> bool) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for path in paths {
+        checkpoint(cancelled)?;
         let as_package = path.is_dir() && (is_app_bundle(path) || packages.contains(&fs::canonicalize(path).map(|p| clean_path(&p)).unwrap_or_else(|_| path.clone())));
         if as_package {
             files.push(path.clone());
@@ -439,6 +463,7 @@ pub fn collect_files(paths: &[PathBuf], data_dir: &Path, packages: &HashSet<Path
                 !hidden && !entry.path().starts_with(data_dir) && entry.file_name() != DATA_DIR
             });
             while let Some(entry) = walker.next() {
+                checkpoint(cancelled)?;
                 let Ok(entry) = entry else { continue };
                 // 文件夹里的 .app 是一个整体，不往里面走
                 if entry.depth() > 0 && entry.file_type().is_dir() && is_app_bundle(entry.path()) {
@@ -454,16 +479,21 @@ pub fn collect_files(paths: &[PathBuf], data_dir: &Path, packages: &HashSet<Path
     }
     files.sort();
     files.dedup();
-    files
+    checkpoint(cancelled)?;
+    Ok(files)
 }
 
 /// 复制（或移动）进仓库的 `软件名/版本号/原文件名`。复制时先写 `.part` 再改名，中途失败不会留下半个文件。
 /// 不碰索引，只需要仓库根目录，可以在不占着仓库的情况下做。
 pub fn place_file(root: &Path, hashed: &Hashed, placement: &Placement, move_file: bool) -> Result<Placed> {
-    if hashed.is_dir {
-        return place_folder(root, hashed, placement, move_file);
-    }
-    let (src, size, sha256) = (&hashed.abs, hashed.size, hashed.sha256.as_str());
+    place_file_cancellable(root, hashed, placement, move_file, &|| false)
+}
+
+pub fn place_file_cancellable(
+    root: &Path, hashed: &Hashed, placement: &Placement, move_file: bool, cancelled: &dyn Fn() -> bool,
+) -> Result<Placed> {
+    checkpoint(cancelled)?;
+    let src = &hashed.abs;
     match &placement.target {
         Target::InRepo(rel) => return Ok(Placed { storage: Storage::Managed, path: rel.clone(), disk: src.clone(), created: false }),
         Target::Indexed => {
@@ -481,37 +511,58 @@ pub fn place_file(root: &Path, hashed: &Hashed, placement: &Placement, move_file
         Placed { storage: Storage::Managed, path, disk: dest, created }
     };
     if dest.exists() {
-        // 仓库里已经有一模一样的文件（比如之前删了记录但没删文件）：直接用它
-        let same = fs::metadata(&dest).map(|m| m.len() == size).unwrap_or(false) && sha256_file(&dest).map(|h| h == sha256).unwrap_or(false);
-        if same {
-            return Ok(managed(dest, false));
+        // 之前删了记录但没删掉的同一份安装包可以直接登记。
+        match contents_match(&dest, hashed, cancelled) {
+            Ok(true) => return Ok(managed(dest, false)),
+            Err(err) if err.reason() == "cancelled" => return Err(err),
+            _ => dest = unique_path(dest),
         }
-        dest = unique_path(dest);
     }
-    // 同一个磁盘上：直接改名，一步完成，不会有半个文件
+
+    // 同盘改名是原子的。从成功改名起必须登记，避免源文件已经移走却找不到记录。
+    checkpoint(cancelled)?;
     if move_file && fs::rename(src, &dest).is_ok() {
         return Ok(managed(dest, true));
     }
-    let part = dest.with_file_name(format!("{}.part", dest.file_name().unwrap_or_default().to_string_lossy()));
-    let copied = (|| -> std::io::Result<()> {
-        fs::copy(src, &part)?;
-        sync_import_copy(&part)?;
-        fs::rename(&part, &dest)
-    })();
-    if let Err(err) = copied {
-        let _ = fs::remove_file(&part);
-        return Err(err.into());
-    }
-    if move_file {
-        // 跨磁盘移动：确认仓库里这份和原文件一模一样，才删原文件。对不上就当没导入，原文件不动
-        if fs::metadata(&dest).map(|m| m.len()).ok() != Some(size) || sha256_file(&dest)? != sha256 {
-            let _ = fs::remove_file(&dest);
+
+    // 复制和跨盘校验只碰本次导入的临时目录。最后一次取消检查过后才提交。
+    let staging = dir.join(format!(".import-{}.part", uuid::Uuid::new_v4()));
+    fs::create_dir(&staging)?;
+    let payload = staging.join("payload");
+    let result = (|| -> Result<()> {
+        if hashed.is_dir {
+            copy_dir(src, &payload, cancelled)?;
+        } else {
+            copy_file(src, &payload, cancelled)?;
+            sync_import_copy(&payload)?;
+        }
+        if move_file && !contents_match(&payload, hashed, cancelled)? {
             return Err(Error::Code("copy_mismatch"));
         }
-        // 删不掉（比如原文件在只读的磁盘映像或光盘上）就留着，文件已经安全地在仓库里了
-        let _ = fs::remove_file(src);
+        checkpoint(cancelled)?;
+        fs::rename(&payload, &dest)?;
+        Ok(())
+    })();
+    remove_staging(&staging);
+    result?;
+    if move_file {
+        if hashed.is_dir {
+            let _ = fs::remove_dir_all(src);
+        } else {
+            let _ = fs::remove_file(src);
+        }
     }
     Ok(managed(dest, true))
+}
+
+fn contents_match(path: &Path, hashed: &Hashed, cancelled: &dyn Fn() -> bool) -> Result<bool> {
+    let meta = fs::metadata(path)?;
+    if hashed.is_dir && meta.is_dir() {
+        let (size, sha256) = hash_folder_cancellable(path, cancelled)?;
+        return Ok(size == hashed.size && sha256 == hashed.sha256);
+    }
+    Ok(!hashed.is_dir && meta.is_file() && meta.len() == hashed.size
+        && sha256_file_cancellable(path, cancelled)? == hashed.sha256)
 }
 
 #[cfg(not(windows))]
@@ -533,50 +584,6 @@ fn sync_import_copy(path: &Path) -> std::io::Result<()> {
         fs::set_permissions(path, permissions)?;
     }
     Ok(())
-}
-
-/// 文件夹当作安装包时的 `place_file`：整个复制（或移动）到 `软件名/版本号/文件夹名`。
-/// 复制时先放进 `.part` 文件夹，复制完再改名；移动跨磁盘时核对内容一模一样才删原文件夹。
-fn place_folder(root: &Path, hashed: &Hashed, placement: &Placement, move_dir: bool) -> Result<Placed> {
-    let src = &hashed.abs;
-    match &placement.target {
-        Target::InRepo(rel) => return Ok(Placed { storage: Storage::Managed, path: rel.clone(), disk: src.clone(), created: false }),
-        Target::Indexed => {
-            return Ok(Placed { storage: Storage::Indexed, path: src.to_string_lossy().to_string(), disk: src.clone(), created: false })
-        }
-        Target::Managed => {}
-    }
-    let version = &placement.identity.version;
-    let version_dir = if version.is_empty() { "unknown".to_string() } else { sanitize(version) };
-    let dir = root.join(sanitize(&placement.folder)).join(version_dir);
-    fs::create_dir_all(&dir)?;
-    let mut dest = dir.join(&hashed.file_name);
-    let managed = |dest: PathBuf, created: bool| {
-        let path = dest.strip_prefix(root).map(to_rel).unwrap_or_default();
-        Placed { storage: Storage::Managed, path, disk: dest, created }
-    };
-    if dest.exists() {
-        if dest.is_dir() && hash_folder(&dest).map(|(_, h)| h == hashed.sha256).unwrap_or(false) {
-            return Ok(managed(dest, false));
-        }
-        dest = unique_path(dest);
-    }
-    if move_dir && fs::rename(src, &dest).is_ok() {
-        return Ok(managed(dest, true));
-    }
-    let part = dest.with_file_name(format!("{}.part", dest.file_name().unwrap_or_default().to_string_lossy()));
-    if let Err(err) = copy_dir(src, &part).and_then(|()| fs::rename(&part, &dest)) {
-        let _ = fs::remove_dir_all(&part);
-        return Err(err.into());
-    }
-    if move_dir {
-        if hash_folder(&dest)?.1 != hashed.sha256 {
-            let _ = fs::remove_dir_all(&dest);
-            return Err(Error::Code("copy_mismatch"));
-        }
-        let _ = fs::remove_dir_all(src);
-    }
-    Ok(managed(dest, true))
 }
 
 /// 认不出是什么软件时文件名里常见的词：这种时候用文件自带的产品名。
@@ -611,6 +618,7 @@ impl Repo {
         hint: &ImportHint,
         on_progress: &mut dyn FnMut(Progress),
     ) -> Result<ImportReport> {
+        let _writer = self.begin_write()?;
         on_progress(Progress { phase: "collect".into(), current: 0, total: 0, file: String::new() });
         let files = collect_files(paths, &self.data_dir(), &hint.package_set());
         let total = files.len();
@@ -852,11 +860,17 @@ fn to_rel(rel: &Path) -> String {
 }
 
 pub fn sha256_file(path: &Path) -> Result<String> {
+    sha256_file_cancellable(path, &|| false)
+}
+
+fn sha256_file_cancellable(path: &Path, cancelled: &dyn Fn() -> bool) -> Result<String> {
+    checkpoint(cancelled)?;
     let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1024 * 1024];
     loop {
         let n = file.read(&mut buf)?;
+        checkpoint(cancelled)?;
         if n == 0 {
             break;
         }
@@ -868,6 +882,56 @@ pub fn sha256_file(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hash_can_stop_between_blocks_of_one_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("Large-1.0.exe");
+        fs::write(&source, vec![7; 4 * 1024 * 1024]).unwrap();
+        let checks = std::cell::Cell::new(0);
+        let hash = sha256_file_cancellable(&source, &|| {
+            checks.set(checks.get() + 1);
+            checks.get() >= 3
+        });
+        assert!(matches!(hash, Err(Error::Code("cancelled"))));
+        assert_eq!(fs::metadata(&source).unwrap().len(), 4 * 1024 * 1024);
+    }
+
+    #[test]
+    fn cancelled_copy_removes_staging_without_touching_the_source_or_index() {
+        for folder in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let repo = Repo::open(&temp.path().join("repo")).unwrap();
+            let source = temp.path().join(if folder { "Large-1.0" } else { "Large-1.0.exe" });
+            let data = if folder {
+                fs::create_dir(&source).unwrap();
+                source.join("large.bin")
+            } else {
+                source.clone()
+            };
+            fs::write(&data, vec![7; 8 * 1024 * 1024]).unwrap();
+            let hashed = hash_source(&source).unwrap();
+            let Plan::Add(placement) = repo.plan_import(&hashed, Storage::Managed, &ImportHint::default()) else {
+                panic!("fixture should be a new package");
+            };
+            let copied = std::cell::Cell::new(false);
+            let result = place_file_cancellable(repo.root(), &hashed, &placement, false, &|| {
+                copied.set(copied.get() || walkdir::WalkDir::new(repo.root()).into_iter().flatten().any(|entry| {
+                    (entry.file_name() == "large.bin" || entry.file_name() == "payload")
+                        && entry.file_type().is_file() && entry.metadata().is_ok_and(|meta| meta.len() > 0)
+                }));
+                copied.get()
+            });
+            assert!(copied.get(), "the copy must have started");
+            assert!(matches!(result, Err(Error::Code("cancelled"))));
+            assert_eq!(fs::metadata(&data).unwrap().len(), hashed.size);
+            assert!(walkdir::WalkDir::new(repo.root()).into_iter().flatten().all(|entry| {
+                !entry.file_name().to_string_lossy().ends_with(".part") && entry.file_name() != source.file_name().unwrap()
+            }));
+            assert!(Repo::open(repo.root()).unwrap().lib.software.is_empty());
+            assert!(place_file(repo.root(), &hashed, &placement, false).is_ok());
+        }
+    }
 
     fn import(repo: &mut Repo, paths: &[PathBuf], mode: Storage) -> ImportReport {
         repo.import_paths(paths, mode, &ImportHint::default(), &mut |_| {}).unwrap()
@@ -1090,6 +1154,26 @@ mod tests {
         fs::write(&indexed, b"other").unwrap();
         repo.import_paths_with(&[indexed.clone()], Storage::Indexed, true, &ImportHint::default(), &mut |_| {}).unwrap();
         assert!(indexed.exists());
+    }
+
+    #[test]
+    fn move_import_leaves_the_source_alone_when_another_writer_holds_the_lock() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        let mut first = Repo::open(repo_dir.path()).unwrap();
+        let mut second = Repo::open(repo_dir.path()).unwrap();
+        let source = src.path().join("Tool-1.0.exe");
+        fs::write(&source, b"tool").unwrap();
+
+        let writer = first.begin_write().unwrap();
+        let result = second.import_paths_with(std::slice::from_ref(&source), Storage::Managed, true, &ImportHint::default(), &mut |_| {});
+        assert!(matches!(result, Err(Error::Code("repo_busy"))));
+        assert_eq!(fs::read(&source).unwrap(), b"tool");
+
+        drop(writer);
+        let report = second.import_paths_with(&[source.clone()], Storage::Managed, true, &ImportHint::default(), &mut |_| {}).unwrap();
+        assert_eq!(report.imported, 1);
+        assert!(!source.exists());
     }
 
     #[test]

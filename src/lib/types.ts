@@ -2,7 +2,7 @@
 
 export type Platform = "windows" | "macos" | "linux" | "android" | "ios" | "cross";
 export type Storage = "managed" | "indexed";
-export type Theme = "system" | "dark" | "light";
+export type Theme = "system" | "dark" | "light" | "paper";
 /** 界面语言。内置 zh-CN 和 en-US，导入语言包后可以是别的代码。 */
 export type Language = string;
 export type SourceKind = "homebrew" | "github" | "winget";
@@ -177,7 +177,9 @@ export interface Summary {
 }
 
 export interface Settings {
-  theme: Theme;
+  theme: Exclude<Theme, "paper">;
+  /** 浅色主题的纸张外观，旧版会按浅色显示。 */
+  paperTheme?: boolean;
   accent: string;
   language: Language;
   defaultStorage: Storage;

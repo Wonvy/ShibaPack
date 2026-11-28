@@ -184,7 +184,7 @@ const lib: Library = {
       fetchedAt: stamp(2),
     },
   },
-  settings: { theme: "system", accent: "blue", language: "zh-CN", defaultStorage: "managed", moveOnImport: false, autoClassifyOnImport: false, fetchSummaries: true, theSvgIcons: false, translateSummaries: true, offlineCatalog: true, autoUpdate: true,
+  settings: { theme: "light", paperTheme: true, accent: "sky", language: "zh-CN", defaultStorage: "managed", moveOnImport: false, autoClassifyOnImport: false, fetchSummaries: true, theSvgIcons: false, translateSummaries: true, offlineCatalog: true, autoUpdate: true,
     // 预览里假装已经设好了 AI，界面上的 AI 按钮才会出来
     ai: { preset: "deepseek", baseUrl: "https://api.deepseek.com", model: "deepseek-chat" },
   },

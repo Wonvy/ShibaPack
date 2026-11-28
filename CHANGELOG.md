@@ -8,6 +8,18 @@ One section per version, titled `## <version>`, with a Chinese and an English pa
 `.github/workflows/release.yml` puts that section into the GitHub Release notes and `latest.json`; the update window
 in ShibaPack (opened from the version number in the bottom-right corner) shows the part that matches the interface language.
 
+## 0.18.0
+
+### 中文
+
+- 新增「纸张质感」主题，使用暖米色和细颗粒纹理，可在「设置 → 通用」中切换。
+- 新增「晴空蓝」强调色。新建仓库默认使用纸张质感和晴空蓝，已有仓库保留已保存的外观偏好。
+
+### English
+
+- Added a Paper theme with warm beige tones and a fine grain. Select it in Settings → General.
+- Added a Sky Blue accent. New libraries use Paper and Sky Blue by default, and existing libraries retain their saved appearance preferences.
+
 ## 0.17.0
 
 ### 中文

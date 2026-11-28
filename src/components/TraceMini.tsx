@@ -19,7 +19,7 @@ export function TraceMini() {
     void api.getLibrary().then(
       (library) => {
         useApp.setState({ library });
-        applyTheme(library.settings.theme, library.settings.accent);
+        applyTheme(library.settings);
       },
       () => {},
     );

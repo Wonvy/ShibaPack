@@ -753,6 +753,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut repo = Repo::open(dir.path()).unwrap();
         assert!(repo.index_path().exists());
+        assert!(repo.lib.settings.paper_theme);
+        assert_eq!(repo.lib.settings.theme, "light");
+        assert_eq!(repo.lib.settings.accent, "sky");
         let names: Vec<_> = repo.lib.categories.iter().map(|category| category.name.as_str()).collect();
         assert_eq!(names, ["开发工具", "设计创作", "办公效率", "影音媒体", "网络工具", "聊天社交", "系统工具", "游戏娱乐"]);
         assert!(repo.lib.categories.iter().all(|category| category.parent_id.is_none() && category.icon.is_some()));
@@ -764,6 +767,7 @@ mod tests {
 
         let again = Repo::open(dir.path()).unwrap();
         assert_eq!(again.lib.categories, repo.lib.categories);
+        assert_eq!(again.lib.settings, repo.lib.settings);
         assert!(again.recovered.is_none());
         let leftovers = fs::read_dir(dir.path()).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).count();
         assert_eq!(leftovers, 0, "不应留下临时文件");
@@ -771,6 +775,25 @@ mod tests {
         repo.lib.categories.clear();
         repo.save().unwrap();
         assert!(Repo::open(dir.path()).unwrap().lib.categories.is_empty(), "清空分类后不应重新添加默认分类");
+    }
+
+    #[test]
+    fn paper_theme_round_trips_with_a_compatible_light_setting() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = r#"{ "format": 1, "settings": { "theme": "light", "accent": "green" } }"#;
+        fs::write(dir.path().join(INDEX_FILE), old).unwrap();
+        let mut repo = Repo::open(dir.path()).unwrap();
+        assert!(!repo.lib.settings.paper_theme);
+        assert_eq!(repo.lib.settings.accent, "green");
+
+        let mut settings = repo.lib.settings.clone();
+        settings.paper_theme = true;
+        repo.set_settings(settings).unwrap();
+
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(repo.index_path()).unwrap()).unwrap();
+        assert_eq!(saved["settings"]["theme"], "light");
+        assert_eq!(saved["settings"]["paperTheme"], true);
+        assert!(Repo::open(dir.path()).unwrap().lib.settings.paper_theme);
     }
 
     #[test]

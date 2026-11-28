@@ -230,9 +230,12 @@ pub struct Summary {
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     /// system / dark / light
-    #[serde(default = "default_theme")]
+    #[serde(default = "legacy_default_theme")]
     pub theme: String,
-    #[serde(default = "default_accent")]
+    /// 纸张主题以浅色保存，旧版打开同一个仓库时也能正常显示。
+    #[serde(default)]
+    pub paper_theme: bool,
+    #[serde(default = "legacy_default_accent")]
     pub accent: String,
     #[serde(default = "default_language")]
     pub language: String,
@@ -283,10 +286,11 @@ fn default_true() -> bool {
     true
 }
 
-fn default_theme() -> String {
+// 已有索引缺少外观字段时，沿用原来的默认值。
+fn legacy_default_theme() -> String {
     "system".into()
 }
-fn default_accent() -> String {
+fn legacy_default_accent() -> String {
     "blue".into()
 }
 fn default_language() -> String {
@@ -296,8 +300,9 @@ fn default_language() -> String {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            theme: default_theme(),
-            accent: default_accent(),
+            theme: "light".into(),
+            paper_theme: true,
+            accent: "sky".into(),
             language: default_language(),
             default_storage: Storage::Managed,
             move_on_import: false,

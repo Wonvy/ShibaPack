@@ -21,6 +21,7 @@ import { dropOnCategory, fileDropTargetAt } from "./lib/filedrop";
 import { SIDEBAR, SIDEBAR_RAIL, usePrefs } from "./lib/prefs";
 import { useStartup } from "./lib/startup";
 import { type Route, useApp, useT } from "./lib/store";
+import { themeChoice } from "./lib/theme";
 import { scheduleUpdateChecks } from "./lib/updater";
 import { InstalledDetail, InstalledView } from "./views/InstalledView";
 import { LibraryView } from "./views/LibraryView";
@@ -63,7 +64,8 @@ export default function App() {
   const floatingDetailWidth = Math.min(detailWidth, Math.max(0, windowWidth - sidebarWidth - 48));
 
   // 毛玻璃：让系统给窗口加模糊效果；系统支持（返回 true）才把界面的底色换成半透明
-  const glass = usePrefs((state) => state.glass);
+  const theme = useApp((state) => state.library ? themeChoice(state.library.settings) : null);
+  const glass = usePrefs((state) => state.glass) && (theme ?? document.documentElement.dataset.theme) !== "paper";
   useEffect(() => {
     let alive = true;
     void api

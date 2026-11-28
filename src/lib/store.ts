@@ -349,7 +349,7 @@ export const useApp = create<AppState>()((set, get) => {
   };
 
   const adopt = (library: Library) => {
-    applyTheme(library.settings.theme, library.settings.accent);
+    applyTheme(library.settings);
     try {
       localStorage.setItem("shibapack.lang", library.settings.language);
     } catch {
@@ -588,7 +588,7 @@ export const useApp = create<AppState>()((set, get) => {
       const before = library.settings;
       const settings = { ...before, ...patch };
       // 先改界面再存盘，切主题不用等磁盘
-      applyTheme(settings.theme, settings.accent);
+      applyTheme(settings);
       set({ library: { ...library, settings } });
       if (await get().apply(() => api.setSettings(settings))) {
         if (settings.fetchSummaries && (!before.fetchSummaries || before.theSvgIcons !== settings.theSvgIcons)) {
@@ -601,7 +601,7 @@ export const useApp = create<AppState>()((set, get) => {
       // 没存上（比如 NAS 断了）：界面退回原来的设置，免得看着改了、下次打开又变回去
       const current = get().library;
       if (current) {
-        applyTheme(before.theme, before.accent);
+        applyTheme(before);
         set({ library: { ...current, settings: before } });
       }
     },

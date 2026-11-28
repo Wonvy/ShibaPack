@@ -28,7 +28,7 @@ Everything lives in a folder you choose. The index is a plain `software.json` fi
 - **Failure log.** Failed imports, updates and startup item changes are recorded under **Settings → Failure log**. The log stays on this computer.
 - **Offline catalog.** Optionally writes an `index.html` at the library root, so you can browse the library in any browser, even without ShibaPack.
 - **Updates itself.** ShibaPack checks GitHub Releases and can install its own updates.
-- Light and dark themes, English and Chinese interface, and importable language packs.
+- Light, dark and paper themes, English and Chinese interface, and importable language packs.
 
 ## Screenshots
 

@@ -6,7 +6,7 @@ import { api, hostPlatform, isTauri, pickJsonFile, pickSavePath } from "../lib/a
 import { usePrefs } from "../lib/prefs";
 import { type Key, effectivePack, errorText, languages } from "../lib/i18n";
 import { useApp, useLanguage, useT } from "../lib/store";
-import { ACCENTS, ACCENT_NAMES } from "../lib/theme";
+import { ACCENTS, ACCENT_NAMES, resolveTheme, themeChoice } from "../lib/theme";
 import { checkForUpdate, startUpdate } from "../lib/updater";
 import type { Theme } from "../lib/types";
 
@@ -159,11 +159,13 @@ function GeneralPage() {
   const attempt = useApp((state) => state.attempt);
   const notify = useApp((state) => state.notify);
   const useLangPacks = useApp((state) => state.useLangPacks);
-  const dark = document.documentElement.dataset.theme !== "light";
+  const theme = themeChoice(settings);
+  const resolved = resolveTheme(theme);
   const glass = usePrefs((state) => state.glass);
   const setPrefs = usePrefs((state) => state.set);
   // 毛玻璃只有桌面版的 macOS 和 Windows 有（Windows 要 11）
   const glassSupported = isTauri && hostPlatform !== "linux";
+  const canUseGlass = glassSupported && theme !== "paper";
   const available = languages();
   const current = available.find((l) => l.code === settings.language);
 
@@ -193,12 +195,13 @@ function GeneralPage() {
     <>
       <Row label={t("settings.theme")}>
         <Segmented<Theme>
-          value={settings.theme}
-          onChange={(theme) => void save({ theme })}
+          value={theme}
+          onChange={(next) => void save(next === "paper" ? { theme: "light", paperTheme: true } : { theme: next, paperTheme: false })}
           options={[
             { value: "system", label: t("theme.system") },
             { value: "dark", label: t("theme.dark") },
             { value: "light", label: t("theme.light") },
+            { value: "paper", label: t("theme.paper") },
           ]}
         />
       </Row>
@@ -211,14 +214,14 @@ function GeneralPage() {
               aria-label={t(`accent.${name}` as Key)}
               aria-pressed={settings.accent === name}
               onClick={() => void save({ accent: name })}
-              style={{ background: ACCENTS[name][dark ? "dark" : "light"].accent }}
+              style={{ background: ACCENTS[name][resolved].accent }}
               className={cx("size-5 rounded-full", settings.accent === name && "ring-2 ring-fg ring-offset-2 ring-offset-panel")}
             />
           ))}
         </div>
       </Row>
-      <Row label={t("settings.glass")} hint={t(glassSupported ? "settings.glassHint" : "settings.glassUnsupported")}>
-        <Switch checked={glass && glassSupported} disabled={!glassSupported} label={t("settings.glass")} onChange={(on) => setPrefs({ glass: on })} />
+      <Row label={t("settings.glass")} hint={t(theme === "paper" ? "settings.glassPaper" : glassSupported ? "settings.glassHint" : "settings.glassUnsupported")}>
+        <Switch checked={glass && canUseGlass} disabled={!canUseGlass} label={t("settings.glass")} onChange={(on) => setPrefs({ glass: on })} />
       </Row>
       <Row label={t("settings.language")} hint={t("settings.langHint")}>
         <Select compact aria-label={t("settings.language")} value={settings.language} onChange={(event) => void save({ language: event.target.value })}>

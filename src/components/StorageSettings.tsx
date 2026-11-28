@@ -3,15 +3,15 @@
 // “备份”页的备份列表与恢复、索引导出导入。
 
 import { CircleCheck, TriangleAlert } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { deleteVersions } from "../lib/actions";
-import { api, pickJsonFile, pickSavePath } from "../lib/api";
+import { api, onVerifyProgress, pickFiles, pickFolder, pickJsonFile, pickSavePath } from "../lib/api";
 import { errorText } from "../lib/i18n";
 import { formatDate, formatSize, prunable } from "../lib/library";
 import { useApp, useLanguage, useT } from "../lib/store";
-import type { BackupInfo, MissingFile, Stats, VerifyReport } from "../lib/types";
-import { confirm } from "./dialogs";
-import { Button, Select, SettingRow } from "./ui";
+import type { BackupInfo, MissingFile, Stats, VerifyProgress, VerifyReport } from "../lib/types";
+import { confirm, prompt } from "./dialogs";
+import { Button, Dropdown, Select, SettingRow } from "./ui";
 
 /** 仓库位置：路径、打开文件夹、换一个仓库。 */
 export function RepoLocation() {
@@ -75,6 +75,15 @@ export function StoragePage() {
   const [tidying, setTidying] = useState(false);
   const [report, setReport] = useState<VerifyReport | null>(null);
   const [verifying, setVerifying] = useState(false);
+  const [verifyProgress, setVerifyProgress] = useState<VerifyProgress | null>(null);
+  const [relinking, setRelinking] = useState(false);
+  const verifyJob = useRef<string | null>(null);
+  const missing = report?.problems.filter((item) => item.reason === "missing") ?? [];
+  useEffect(() => () => {
+    const job = verifyJob.current;
+    verifyJob.current = null;
+    if (job) void api.cancelVerify(job).catch(() => {});
+  }, []);
 
   // 每个软件只留最新 keep 个版本时要删的版本；本机装着的版本留着
   const pruneTargets = useMemo(
@@ -106,11 +115,75 @@ export function StoragePage() {
     setTidying(false);
   };
 
-  const verify = async () => {
+  const verify = async (deep: boolean) => {
+    if (verifyJob.current) return;
+    const revision = useApp.getState().status?.repoRevision;
+    const job = crypto.randomUUID();
+    verifyJob.current = job;
     setVerifying(true);
-    const next = await attempt(() => api.verifyData());
-    setVerifying(false);
-    if (next) setReport(next);
+    let unlisten: (() => void) | undefined;
+    const active = () => verifyJob.current === job && useApp.getState().status?.repoRevision === revision;
+    try {
+      unlisten = await onVerifyProgress((progress) => {
+        if (progress.job === job && active()) setVerifyProgress(progress);
+      });
+      if (!active()) return;
+      const next = await api.verifyData(deep, job, revision);
+      if (active()) setReport(next);
+    } catch (error) {
+      if (active()) {
+        const message = errorText(useApp.getState().library?.settings.language ?? "zh-CN", error);
+        useApp.getState().notify(message, String(error) === "cancelled" ? "info" : "error");
+      }
+    } finally {
+      unlisten?.();
+      if (verifyJob.current === job) {
+        verifyJob.current = null;
+        setVerifying(false);
+        setVerifyProgress(null);
+      }
+    }
+  };
+
+  const relink = async (items: MissingFile[], replacement: string, revision: number, oldRoot?: string) => {
+    if (useApp.getState().status?.repoRevision !== revision) return;
+    setRelinking(true);
+    try {
+      let linked: string[] = [];
+      const files = items.map(({ softwareId, versionId, fileId }) => ({ softwareId, versionId, fileId }));
+      if (await apply(async () => {
+        const result = await api.relinkData(files, replacement, revision, oldRoot);
+        linked = result.linked;
+        return result.library;
+      })) {
+        const changed = new Set(linked);
+        setReport((current) => current && { ...current, problems: current.problems.filter((item) => !changed.has(item.fileId)) });
+        useApp.getState().notify(t("storage.relinkResult", { n: linked.length, skipped: files.length - linked.length }));
+      }
+    } finally {
+      setRelinking(false);
+    }
+  };
+
+  const relinkOne = async (item: MissingFile, folder: boolean) => {
+    const revision = useApp.getState().status?.repoRevision;
+    if (revision === undefined) return;
+    const path = await attempt(() => folder ? pickFolder() : pickFiles(false).then((files) => files[0]));
+    if (path) await relink([item], path, revision);
+  };
+
+  const relinkMany = async () => {
+    const revision = useApp.getState().status?.repoRevision;
+    const first = missing[0];
+    if (revision === undefined || !first) return;
+    const oldRoot = await prompt({
+      title: t("storage.relinkMany"),
+      label: t("storage.relinkOldRoot"),
+      initial: first.path.replace(/[\\/][^\\/]+$/, ""),
+    });
+    if (!oldRoot) return;
+    const replacement = await attempt(pickFolder);
+    if (replacement) await relink(missing, replacement, revision, oldRoot);
   };
 
   const dropRecord = async (problem: MissingFile) => {
@@ -192,9 +265,15 @@ export function StoragePage() {
         label={t("storage.verify")}
         hint={t("storage.verifyHint")}
         below={
-          report && (
+          (report || verifyProgress) && (
             <>
-              {report.problems.length === 0 ? (
+              {verifyProgress && (
+                <div role="status" className="text-[12px] text-fg-3">
+                  {t("storage.verifyProgress", { n: verifyProgress.checked, total: verifyProgress.total })}
+                </div>
+              )}
+              {report?.unhashed ? <p className="my-1 text-[12px] text-fg-3">{t("storage.verifyUnhashed", { n: report.unhashed })}</p> : null}
+              {report && (report.problems.length === 0 ? (
                 <div className="flex items-center gap-2 text-[13px] text-success">
                   <CircleCheck size={15} strokeWidth={1.75} aria-hidden />
                   {t("storage.verifyOk", { n: report.checked })}
@@ -205,6 +284,11 @@ export function StoragePage() {
                     <TriangleAlert size={15} strokeWidth={1.75} aria-hidden />
                     {t("storage.verifyProblems", { n: report.checked, m: report.problems.length })}
                   </div>
+                  {missing.length > 1 && (
+                    <Button variant="ghost" size="sm" disabled={verifying || relinking} onClick={() => void relinkMany()}>
+                      {t("storage.relinkMany")}
+                    </Button>
+                  )}
                   {report.problems.map((problem) => (
                     <div key={problem.fileId} className="flex items-center gap-3 border-b border-line py-2 last:border-b-0">
                       <div className="min-w-0 flex-1">
@@ -217,20 +301,37 @@ export function StoragePage() {
                         </div>
                       </div>
                       <span className="shrink-0 text-[12px] text-warning">{t(`storage.reason.${problem.reason}`)}</span>
-                      <Button variant="ghost" onClick={() => void dropRecord(problem)}>
+                      {problem.reason === "missing" && (
+                        <Dropdown items={[
+                          { label: t("storage.relinkFile"), onSelect: () => void relinkOne(problem, false) },
+                          { label: t("storage.relinkFolder"), onSelect: () => void relinkOne(problem, true) },
+                        ]}>
+                          <Button variant="ghost" disabled={verifying || relinking}>{t("storage.relink")}</Button>
+                        </Dropdown>
+                      )}
+                      <Button variant="ghost" disabled={verifying || relinking} onClick={() => void dropRecord(problem)}>
                         {t("storage.removeRecord")}
                       </Button>
                     </div>
                   ))}
                 </>
-              )}
+              ))}
             </>
           )
         }
       >
-        <Button busy={verifying} onClick={() => void verify()}>
-          {t("storage.verifyRun")}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button disabled={verifying || relinking} onClick={() => void verify(false)}>{t("storage.verifyRun")}</Button>
+          <Button disabled={verifying || relinking} onClick={() => void verify(true)}>{t("storage.verifyDeep")}</Button>
+          {verifying && (
+            <Button disabled={!verifyProgress} onClick={() => {
+              const job = verifyJob.current;
+              if (job) void attempt(() => api.cancelVerify(job));
+            }}>
+              {t("common.cancel")}
+            </Button>
+          )}
+        </div>
       </SettingRow>
 
       <SettingRow label={t("storage.trash")}>

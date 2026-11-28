@@ -2,6 +2,7 @@
 
 import {
   ArrowDown,
+  ArrowDownUp,
   ArrowUp,
   CheckSquare,
   FolderOpen,
@@ -22,19 +23,21 @@ import {
 } from "lucide-react";
 import { type ReactNode, useContext, useEffect, useMemo, useState } from "react";
 import { useGridMotion } from "../components/gridMotion";
+import { TABLE_ROW_HEIGHT, useWindowRows, visibleRows } from "../components/windowRows";
 import { SummaryCard, useHoverCard } from "../components/HoverCard";
 import { type ColumnDef, type ColumnSamples, type Columns, ColumnsContext, TableHeader, useTableColumns, useWidth } from "../components/columns";
 import { InstalledSoftwareIcon } from "../components/SoftwareIcon";
 import { SummaryText } from "../components/SummaryText";
-import { Button, Chip, ContextMenu, EmptyState, FilterMenu, IconButton, type MenuEntry, ViewMenu, cx } from "../components/ui";
+import { Button, Chip, ContextMenu, Dropdown, EmptyState, FilterMenu, IconButton, type MenuEntry, ViewMenu, cx } from "../components/ui";
 import { analyzeApp, editSummary, uninstallApp } from "../lib/actions";
 import { api } from "../lib/api";
-import { compareVersions, formatDate, formatSize, primaryVersion, shownSummary, summaryName } from "../lib/library";
-import { type InstalledView as InstalledViewKind, usePrefs } from "../lib/prefs";
+import { compareSoftwareNames, compareVersions, formatDate, formatSize, primaryVersion, shownSummary, sortByInstallDate, summaryName } from "../lib/library";
+import { type InstalledSort, type InstalledView as InstalledViewKind, usePrefs } from "../lib/prefs";
 import { useAiReady, useApp, useLanguage, useT } from "../lib/store";
 import type { InstalledApp, Software } from "../lib/types";
 
-type Column = "name" | "version" | "date" | "size";
+const SORT_COLUMNS = ["name", "version", "date", "size"] as const;
+type Column = typeof SORT_COLUMNS[number];
 // 列表的列：名称、版本、仓库里有没有、安装日期、大小。宽度可以拖，右键表头勾选显示哪几列；
 // 栏窄时安装日期、大小、仓库从右往左暂时收起（见 components/columns）。
 // 列表工具栏也提供批量卸载入口。
@@ -70,7 +73,8 @@ export function InstalledView({ detailToggle }: { detailToggle: ReactNode }) {
   const view = usePrefs((state) => state.installedView);
   const setPrefs = usePrefs((state) => state.set);
   const [frame, frameWidth] = useWidth<HTMLDivElement>();
-  const [sort, setSort] = useState<{ column: Column; asc: boolean }>({ column: "name", asc: true });
+  const sort = usePrefs((state) => state.installedSort);
+  const setSort = (installedSort: InstalledSort) => setPrefs({ installedSort });
 
   // 统计出来的实际占用优先；还没统计完、或者统计不了时用安装程序登记的大小
   const sizeOf = (app: InstalledApp) => sizes[app.id] ?? app.size ?? null;
@@ -78,8 +82,9 @@ export function InstalledView({ detailToggle }: { detailToggle: ReactNode }) {
   // 已安装软件 id → 仓库里对应的软件
   const stored = useMemo(() => {
     const map = new Map<string, Software>();
+    const byId = new Map(software?.map((item) => [item.id, item]));
     for (const [softwareId, appId] of Object.entries(links)) {
-      const found = software?.find((s) => s.id === softwareId);
+      const found = byId.get(softwareId);
       if (found) map.set(appId, found);
     }
     return map;
@@ -92,16 +97,19 @@ export function InstalledView({ detailToggle }: { detailToggle: ReactNode }) {
         (!query || app.name.toLowerCase().includes(query) || app.publisher.toLowerCase().includes(query)) &&
         (repoFilter === "all" || stored.has(app.id) === (repoFilter === "in")),
     );
-    const byName = (a: InstalledApp, b: InstalledApp) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
-    const compare: Record<Column, (a: InstalledApp, b: InstalledApp) => number> = {
+    const { column, asc } = sort;
+    if (column === "date") return sortByInstallDate(items, asc);
+    const byName = (a: InstalledApp, b: InstalledApp) => compareSoftwareNames(a.name, b.name);
+    const compare: Record<Exclude<Column, "date">, (a: InstalledApp, b: InstalledApp) => number> = {
       name: byName,
       version: (a, b) => compareVersions(a.version, b.version) || byName(a, b),
-      date: (a, b) => a.installedAt.localeCompare(b.installedAt) || byName(a, b),
       size: (a, b) => (sizes[a.id] ?? a.size ?? -1) - (sizes[b.id] ?? b.size ?? -1) || byName(a, b),
     };
-    return items.sort((a, b) => compare[sort.column](a, b) * (sort.asc ? 1 : -1));
+    return items.sort((a, b) => compare[column](a, b) * (asc ? 1 : -1));
   }, [installed, search, sort, sizes, stored, repoFilter]);
   const gridViewport = useGridMotion(view === "grid", list);
+  const windowRows = useWindowRows(gridViewport, view === "list" ? list.length : 0);
+  const { first, last } = visibleRows(windowRows, list.length, 4);
 
   const samples = useMemo<ColumnSamples<InstalledColumn>>(() => view !== "list" ? [] : [
     {
@@ -116,7 +124,7 @@ export function InstalledView({ detailToggle }: { detailToggle: ReactNode }) {
       return {
         version: app.version,
         repo: { text: repoColumnText(t, software), extra: software ? 4 : 0 },
-        date: formatDate(app.installedAt, language),
+        date: formatDate(app.installedAt, language) || t("installed.unknown"),
         size: size === null ? "" : formatSize(size),
       };
     }),
@@ -161,13 +169,18 @@ export function InstalledView({ detailToggle }: { detailToggle: ReactNode }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [list, selectedId, chosen.length, setInstalledSelection, selectInstalled]);
 
-  const header = (column: Column, label: string, className?: string) => {
+  const sortBy = (column: Column, toggle = false) => {
+    if (sort.column !== column) setSort({ column, asc: column === "name" });
+    else if (toggle) setSort({ column, asc: !sort.asc });
+  };
+
+  const header = (column: Column, label: string) => {
     const Arrow = sort.asc ? ArrowUp : ArrowDown;
     return (
       <button
         type="button"
-        onClick={() => setSort({ column, asc: sort.column === column ? !sort.asc : column === "name" })}
-        className={cx("flex items-center gap-1 text-left hover:text-fg-2", className)}
+        onClick={() => sortBy(column, true)}
+        className="flex items-center gap-1 text-left hover:text-fg-2"
       >
         {label}
         {sort.column === column && <Arrow size={12} strokeWidth={2} aria-hidden />}
@@ -201,6 +214,19 @@ export function InstalledView({ detailToggle }: { detailToggle: ReactNode }) {
           ]}
         />
         <div className="flex min-w-0 items-center justify-end gap-0.5">
+          <Dropdown items={[
+            ...SORT_COLUMNS.map((column) => ({
+              label: t(`installed.col.${column}`),
+              checked: sort.column === column,
+              onSelect: () => sortBy(column),
+            })),
+            { label: t("lib.sortAsc"), separated: true, checked: sort.asc, onSelect: () => setSort({ ...sort, asc: true }) },
+            { label: t("lib.sortDesc"), checked: !sort.asc, onSelect: () => setSort({ ...sort, asc: false }) },
+          ]}>
+            <IconButton label={t("lib.sortBy")} className="data-[state=open]:bg-hover data-[state=open]:text-fg">
+              <ArrowDownUp size={15} strokeWidth={1.75} aria-hidden />
+            </IconButton>
+          </Dropdown>
           <IconButton label={t("installed.refresh")} disabled={loading} onClick={() => void reload()}>
             <RefreshCw size={15} strokeWidth={1.75} className={loading ? "animate-spin" : ""} />
           </IconButton>
@@ -249,12 +275,13 @@ export function InstalledView({ detailToggle }: { detailToggle: ReactNode }) {
           )}
           <div
             ref={gridViewport}
+            style={windowRows ? { paddingTop: 4 + first * TABLE_ROW_HEIGHT, paddingBottom: 64 + (list.length - last) * TABLE_ROW_HEIGHT } : undefined}
             className={cx(
               "min-h-0 flex-1 overflow-y-auto pt-1 pb-16",
               view === "grid" ? "grid auto-rows-min grid-cols-[repeat(auto-fill,minmax(112px,1fr))] content-start gap-1 overflow-x-hidden px-3" : "px-2",
             )}
           >
-            {list.map((app) =>
+            {list.slice(first, last).map((app) =>
               view === "list" ? (
                 <InstalledRow
                   key={app.id}
@@ -373,6 +400,7 @@ function InstalledRow({
   onSelect: (event: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) => void;
   onOpen: (id: string) => void;
 }) {
+  const t = useT();
   const language = useLanguage();
   const menu = useInstalledMenu(app, group);
   const subtitle = useSubtitle(app);
@@ -395,7 +423,7 @@ function InstalledRow({
         }}
         onKeyDown={(event) => event.key === "Enter" && onSelect(event)}
         style={{ gridTemplateColumns: columns.template }}
-        className={cx("group grid min-h-[52px] items-center gap-x-2 rounded-md py-1.5 pr-3 pl-2.5 transition-colors", selected ? "bg-active" : "hover:bg-hover")}
+        className={cx("group grid h-[52px] items-center gap-x-2 rounded-md py-1.5 pr-3 pl-2.5 transition-colors", selected ? "bg-active" : "hover:bg-hover")}
       >
         {hover.card}
         <div className="flex min-w-0 items-center gap-2.5">
@@ -413,7 +441,7 @@ function InstalledRow({
             <RepoCell software={software} onOpen={onOpen} />
           </div>
         )}
-        {show("date") && <div className="tabular truncate text-right text-[12px] text-fg-3">{app.installedAt && formatDate(app.installedAt, language)}</div>}
+        {show("date") && <div className="tabular truncate text-right text-[12px] text-fg-3">{formatDate(app.installedAt, language) || t("installed.unknown")}</div>}
         {show("size") && <div className="tabular truncate text-right text-[12px] text-fg-2">{size === null ? "" : formatSize(size)}</div>}
       </div>
     </ContextMenu>
@@ -635,7 +663,7 @@ function InstalledSingle() {
           <Fact label={t("installed.source")}>
             <Chip>{t(`source.${app.source}`)}</Chip>
           </Fact>
-          <Fact label={t("installed.date")}>{app.installedAt ? formatDate(app.installedAt, language) : t("installed.unknown")}</Fact>
+          <Fact label={t("installed.date")}>{formatDate(app.installedAt, language) || t("installed.unknown")}</Fact>
           <Fact label={t("installed.size")}>
             {size !== null ? formatSize(size) : measuring ? t("installed.measuring") : t("installed.unknown")}
           </Fact>

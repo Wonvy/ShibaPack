@@ -159,6 +159,10 @@ jobs:
           updaterJsonPreferNsis: true
           args: ${{ matrix.args }} ${{ env.UNSIGNED_ARGS }}
 
+      - name: Windows 桌面回归
+        if: runner.os == 'Windows'
+        run: node tests/native/windows-smoke.mjs
+
   # 三个系统都打包成功了才走到这里（有一个失败，这一步就不会运行，草稿留着不发布）。
   # 一发布，已安装的 ShibaPack 就会自动更新到这个版本。
   publish:

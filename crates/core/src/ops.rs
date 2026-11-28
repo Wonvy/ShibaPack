@@ -4,7 +4,7 @@ use crate::{
     catalog::CATALOG_FILE,
     fileinfo::{self, InfoCache},
     icons,
-    identify::{is_installer, normalize_name, same_software},
+    identify::{compare_versions, is_installer, normalize_name, same_software},
     import::{sha256_file, ImportHint, ImportItem, ImportReport},
     installed::InstalledApp,
     model::*,
@@ -584,6 +584,60 @@ impl Repo {
         Ok(Some(icon))
     }
 
+    /// 手动从安装包或本机重新取图标。索引保存成功前，原来的图标文件仍可用。
+    pub fn refresh_icon(&mut self, software_id: &str, installed: &[InstalledApp]) -> Result<Option<String>> {
+        let _writer = self.begin_write()?;
+        let s = self.software_at(software_id)?;
+        let software = &self.lib.software[s];
+        let mut versions: Vec<_> = software.versions.iter().collect();
+        let is_default = |version: &Version| software.default_version_id.as_deref() == Some(version.id.as_str());
+        versions.sort_by(|a, b| is_default(b).cmp(&is_default(a)).then_with(|| compare_versions(&b.version, &a.version)));
+        let stem = format!("{}-refresh-", id_stem(software_id));
+        let Some(icon) = self.find_local_icon(&software.name, versions.into_iter(), &format!("{stem}{}", new_id()), installed) else {
+            return Ok(None);
+        };
+        let path = self.root_join(&icon);
+        let Some(data) = icons::portable_icon(&path) else {
+            let _ = fs::remove_file(&path);
+            return Ok(None);
+        };
+        let software = &mut self.lib.software[s];
+        let previous_icon = software.icon.replace(icon.clone());
+        let previous_data = software.icon_data.replace(data);
+        if let Err(error) = self.save() {
+            self.lib.software[s].icon = previous_icon;
+            self.lib.software[s].icon_data = previous_data;
+            let _ = fs::remove_file(&path);
+            return Err(error);
+        }
+        // 只清理这个软件以前手动生成的副本，保留旧索引可能引用的其他图标。
+        if let Some(previous) = previous_icon.filter(|previous| {
+            !self.lib.software.iter().any(|software| software.icon.as_ref() == Some(previous))
+        }) {
+            let previous = self.root_join(&previous);
+            if previous.parent() == Some(self.icons_dir().as_path())
+                && previous.file_name().is_some_and(|name| name.to_string_lossy().starts_with(&stem))
+            {
+                let _ = fs::remove_file(previous);
+            }
+        }
+        Ok(Some(icon))
+    }
+
+    fn find_local_icon<'a>(
+        &self, software_name: &str, versions: impl Iterator<Item = &'a Version>, stem: &str, installed: &[InstalledApp],
+    ) -> Option<String> {
+        versions
+            .flat_map(|v| &v.files)
+            .map(|file| self.abs_path(file))
+            .filter_map(|path| crate::import::icon_source(&path))
+            .find_map(|path| self.icon_from(stem, &path))
+            .or_else(|| installed.iter()
+                .filter(|app| same_software(&app.name, software_name))
+                .filter_map(|app| app.icon.as_deref())
+                .find_map(|path| self.icon_from(stem, Path::new(path))))
+    }
+
     /// 给还没有图标的软件补图标，一次最多处理 `limit` 个。联网取的图标也会被换掉：安装包里的更准。
     ///
     /// 先从它自己的安装包里取；取不到再看这台电脑上是不是装着同一个软件，借用那边的图标。
@@ -599,19 +653,7 @@ impl Repo {
             .collect();
         for &s in pending.iter().take(limit) {
             let software = &self.lib.software[s];
-            let id = software.id.clone();
-            let own = software
-                .versions
-                .iter()
-                .flat_map(|v| &v.files)
-                .map(|f| self.abs_path(f))
-                .filter_map(|path| crate::import::icon_source(&path))
-                .find_map(|path| self.icon_from(&id, &path));
-            let borrowed = || {
-                let app = installed.iter().find(|app| app.icon.is_some() && same_software(&app.name, &software.name))?;
-                self.icon_from(&id, Path::new(app.icon.as_deref()?))
-            };
-            if let Some(icon) = own.or_else(borrowed) {
+            if let Some(icon) = self.find_local_icon(&software.name, software.versions.iter(), &software.id, installed) {
                 self.set_local_icon(s, icon);
                 changed = true;
             }
@@ -914,6 +956,36 @@ mod tests {
             starred: software.starred,
             default_version_id: software.default_version_id.clone(),
         }
+    }
+
+    #[test]
+    fn refreshing_an_icon_prefers_the_default_version_and_preserves_it_on_a_miss() {
+        let (root, _src, mut repo) = repo_with(&[("Paint-1.0.exe", b"old"), ("Paint-2.0.exe", b"new")]);
+        let software = &mut repo.lib.software[0];
+        let id = software.id.clone();
+        for version in &mut software.versions {
+            let name = format!("source-{}.png", version.version);
+            let pixel = if version.version == "1.0" { vec![255, 0, 0, 255] } else { vec![0, 0, 255, 255] };
+            let image = ico::IconImage::from_rgba_data(1, 1, pixel);
+            image.write_png(&mut fs::File::create(root.path().join(&name)).unwrap()).unwrap();
+            version.files[0].path = name;
+        }
+        repo.save().unwrap();
+
+        let latest = repo.refresh_icon(&id, &[]).unwrap().unwrap();
+        assert_eq!(fs::read(root.path().join(latest)).unwrap(), fs::read(root.path().join("source-2.0.png")).unwrap());
+        let mut edit = edit_of(&repo.lib.software[0]);
+        edit.default_version_id = repo.lib.software[0].versions.iter().find(|version| version.version == "1.0").map(|version| version.id.clone());
+        repo.update_software(&id, edit).unwrap();
+        let chosen = repo.refresh_icon(&id, &[]).unwrap().unwrap();
+        assert_eq!(fs::read(root.path().join(&chosen)).unwrap(), fs::read(root.path().join("source-1.0.png")).unwrap());
+
+        fs::remove_file(root.path().join("source-1.0.png")).unwrap();
+        fs::remove_file(root.path().join("source-2.0.png")).unwrap();
+        assert_eq!(repo.refresh_icon(&id, &[]).unwrap(), None);
+        let saved = Repo::open(root.path()).unwrap();
+        assert_eq!(saved.lib.software[0].icon.as_deref(), Some(chosen.as_str()));
+        assert!(saved.lib.software[0].icon_data.is_some());
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 import { newId } from "./library";
 import { maskAiKey } from "./ai";
-import { siNotion, siPostman } from "simple-icons";
+import { siBlender, siNotion, siPostman } from "simple-icons";
 import type {
   AiProgress,
   ProcessInfo,
@@ -37,6 +37,7 @@ import type {
   Storage,
   Suggestion,
   VerifyReport,
+  VerifyProgress,
   VersionEdit,
 } from "./types";
 
@@ -44,6 +45,14 @@ const ROOT = "/Users/demo/Installers";
 const MB = 1024 * 1024;
 const stamp = (daysAgo: number) => new Date(Date.now() - daysAgo * 86400000).toISOString();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const verifyListeners = new Set<(progress: VerifyProgress) => void>();
+const verifyJobs = new Map<string, () => void>();
+const relinkedFiles = new Set<string>();
+
+export function mockOnVerifyProgress(handler: (progress: VerifyProgress) => void): () => void {
+  verifyListeners.add(handler);
+  return () => verifyListeners.delete(handler);
+}
 // 地址后加 ?en：演示数据和界面都换成英文（给英文说明文档截图用）
 const english = new URLSearchParams(location.search).has("en");
 const tr = (zh: string, en: string) => (english ? en : zh);
@@ -434,7 +443,7 @@ let installedApps: InstalledApp[] = [
   app("Figma", "125.4.9", "Figma, Inc", 402, 60),
   app("Obsidian", "1.7.4", "Dynalist Inc", 398, 150),
   app("Safari", "18.2", "Apple", 14, 400, "system"),
-  app("Calculator", "11.0", "Apple", 6, 400, "system"),
+  { ...app("Calculator", "11.0", "Apple", 6, 400, "system"), installedAt: "" },
   // 预览里假装 Edge 是 Windows 上用卸载程序卸的那种，好看到“等待卸载程序”和注册表残留
   { ...app("Microsoft Edge", "131.0.2903.86", "Microsoft Corporation", 1310, 30), source: "registry", location: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application" },
   app("DataGrip", "2024.3", "JetBrains s.r.o", 2260, 45),
@@ -544,6 +553,7 @@ function mockStartupAction(id: string, action: string) {
 }
 
 let configured = !location.search.includes("setup") && !location.search.includes("offline");
+let repoRevision = 0;
 // 新仓库有默认分类，软件和简介从空白开始。
 if (location.search.includes("empty") || location.search.includes("setup")) {
   lib.software = [];
@@ -704,6 +714,10 @@ const explainCache: Record<string, { text: string; model: string; at: string; ca
 const classifyCache: Record<string, Suggestion> = {};
 
 export async function mockCall(command: string, args: Record<string, unknown>): Promise<unknown> {
+  if (command === "cancel_verify") {
+    verifyJobs.get(String(args.job))?.();
+    return null;
+  }
   await sleep(40);
   if (command.startsWith("disk_") || command === "ai_explain_folders") return (await import("./mockDisk")).mockDiskCall(command, args);
   if (command.startsWith("trace_") || command.endsWith("_trace") || command === "list_traces") return (await import("./mockTrace")).mockTraceCall(command, args);
@@ -711,12 +725,16 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
   switch (command) {
     case "get_status":
     case "set_repo_root": {
-      if (command === "set_repo_root") configured = true;
+      if (command === "set_repo_root") {
+        configured = true;
+        repoRevision++;
+      }
       // ?offline：上次的仓库在 NAS 上、这会儿没连上
       const offline = !configured && location.search.includes("offline");
       const status: Status = {
         configured,
         repoRoot: configured ? ROOT : null,
+        repoRevision,
         recovered: null,
         lastRoot: offline ? "/Volumes/NAS/Installers" : null,
         openError: offline ? "missing" : null,
@@ -833,18 +851,40 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
     case "import_backup":
       return snapshot();
     case "verify_data": {
-      await sleep(500);
-      const owner = lib.software.find((s) => s.versions.some((v) => v.files.some((f) => f.storage === "indexed")));
+      const job = String(args.job ?? "");
+      const checked = stats().files;
+      const stop = new Promise<true>((resolve) => verifyJobs.set(job, () => resolve(true)));
+      verifyListeners.forEach((handler) => handler({ job, checked: 0, total: checked }));
+      const cancelled = await Promise.race([stop, sleep(500).then(() => false)]);
+      verifyJobs.delete(job);
+      if (cancelled) throw "cancelled";
+      const owner = lib.software.find((s) => s.versions.some((v) => v.files.some((f) => f.storage === "indexed" && !relinkedFiles.has(f.id))));
       const version = owner?.versions[0];
-      const missing = version?.files.find((f) => f.storage === "indexed");
+      const missing = version?.files.find((f) => f.storage === "indexed" && !relinkedFiles.has(f.id));
       const report: VerifyReport = {
-        checked: stats().files,
+        checked,
+        unhashed: 0,
         problems:
           owner && version && missing
             ? [{ softwareId: owner.id, versionId: version.id, fileId: missing.id, software: owner.name, version: version.version, name: missing.name, path: missing.path, reason: "missing" }]
             : [],
       };
       return report;
+    }
+    case "relink_data": {
+      const files = args.files as { softwareId: string; versionId: string; fileId: string }[];
+      const linked: string[] = [];
+      for (const ref of files) {
+        const file = lib.software.find((s) => s.id === ref.softwareId)
+          ?.versions.find((v) => v.id === ref.versionId)?.files.find((f) => f.id === ref.fileId);
+        if (!file) continue;
+        const old = args.oldRoot ? String(args.oldRoot).replace(/[\\/]+$/, "") : null;
+        if (old && !file.path.startsWith(old + "/")) continue;
+        file.path = old ? String(args.replacement) + file.path.slice(old.length) : String(args.replacement);
+        relinkedFiles.add(file.id);
+        linked.push(file.id);
+      }
+      return { library: snapshot(), linked };
     }
     case "source_lookup":
       await sleep(500);
@@ -1138,6 +1178,15 @@ export async function mockCall(command: string, args: Record<string, unknown>): 
     case "fill_icons":
     case "fill_file_info":
       return { library: null, more: false };
+    case "refresh_icon": {
+      const software = lib.software.find((item) => item.id === args.id);
+      if (software?.name !== "Blender") return null;
+      const icon = `.shibapack/icons/${software.id}-refresh.svg`;
+      const iconData = `data:image/svg+xml;base64,${btoa(siBlender.svg.replace("<svg ", `<svg fill="#${siBlender.hex}" `))}`;
+      software.icon = icon;
+      software.iconData = iconData;
+      return { icon, iconData };
+    }
     case "inspect_drop":
       return (args.paths as string[]).map((path) => inspectEntry(path, Boolean(args.includeChildren)));
     case "preview_import_categories":

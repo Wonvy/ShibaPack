@@ -91,3 +91,7 @@ jobs:
           if [ ! -s errors.log ]; then tail -n 40 build.log > errors.log; fi
           awk 'BEGIN {RS = "@@END@@\n"} NF {gsub(/%/, "%25"); gsub(/\r/, ""); gsub(/\n/, "%0A"); print "::error title=编译失败::" $0}' errors.log | head -n 10
           exit 1
+
+      - name: Windows 桌面回归
+        if: runner.os == 'Windows'
+        run: node tests/native/windows-smoke.mjs

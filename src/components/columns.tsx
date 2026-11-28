@@ -201,7 +201,7 @@ function ResizeGrip({ table, def, width }: { table: TableId; def: ColumnDef; wid
       <span
         className={cx(
           "w-px transition-colors",
-          dragging ? "bg-accent" : "bg-line-strong opacity-60 group-hover/grip:bg-accent group-hover/grip:opacity-100",
+          dragging ? "bg-accent-fill" : "bg-line-strong opacity-60 group-hover/grip:bg-accent-fill group-hover/grip:opacity-100",
         )}
       />
     </div>

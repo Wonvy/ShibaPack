@@ -82,7 +82,66 @@ pub struct MissingFile {
 #[serde(rename_all = "camelCase")]
 pub struct VerifyReport {
     pub checked: usize,
+    pub unhashed: usize,
     pub problems: Vec<MissingFile>,
+}
+
+pub struct Verification {
+    files: Vec<(MissingFile, u64, String)>,
+}
+
+impl Verification {
+    pub fn run(
+        self, deep: bool, cancelled: &dyn Fn() -> bool, progress: &mut impl FnMut(usize, usize),
+    ) -> Result<VerifyReport> {
+        let mut report = VerifyReport::default();
+        let total = self.files.len();
+        progress(0, total);
+        for (mut file, size, hash) in self.files {
+            if cancelled() {
+                return Err(Error::Code("cancelled"));
+            }
+            let path = Path::new(&file.path);
+            let reason = match fs::metadata(path) {
+                Ok(meta) if meta.is_file() && meta.len() != size => Some("size"),
+                Ok(meta) if meta.is_file() && deep && !hash.is_empty() => {
+                    match crate::import::sha256_file_cancellable(path, cancelled) {
+                        Ok(found) => (!found.eq_ignore_ascii_case(&hash)).then_some("hash"),
+                        Err(err) if matches!(err, Error::Code("cancelled")) => return Err(err),
+                        Err(_) => Some("unreadable"),
+                    }
+                }
+                Ok(meta) if meta.is_dir() && deep && !hash.is_empty() => {
+                    match crate::import::hash_folder_cancellable(path, cancelled) {
+                        Ok((bytes, _)) if bytes != size => Some("size"),
+                        Ok((_, found)) => (!found.eq_ignore_ascii_case(&hash)).then_some("hash"),
+                        Err(err) if matches!(err, Error::Code("cancelled")) => return Err(err),
+                        Err(_) => Some("unreadable"),
+                    }
+                }
+                Ok(meta) if meta.is_dir() => match crate::import::folder_size_cancellable(path, cancelled) {
+                    Ok(found) => (found != size).then_some("size"),
+                    Err(err) if matches!(err, Error::Code("cancelled")) => return Err(err),
+                    Err(_) => Some("unreadable"),
+                },
+                Ok(meta) if meta.is_file() => None,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some("missing"),
+                _ => Some("unreadable"),
+            };
+            if let Some(reason) = reason {
+                file.reason = reason.to_owned();
+                report.problems.push(file);
+            } else if deep && hash.is_empty() {
+                report.unhashed += 1;
+            }
+            report.checked += 1;
+            progress(report.checked, total);
+        }
+        if cancelled() {
+            return Err(Error::Code("cancelled"));
+        }
+        Ok(report)
+    }
 }
 
 impl Repo {
@@ -488,21 +547,16 @@ impl Repo {
 
     /// 逐个检查索引里的文件是否还在、大小是否对得上。
     pub fn verify(&self) -> VerifyReport {
-        let mut report = VerifyReport::default();
+        self.verification().run(false, &|| false, &mut |_, _| {}).expect("fast verification cannot be cancelled")
+    }
+
+    /// 固定校验所用的索引快照，读取文件时不再占用仓库锁。
+    pub fn verification(&self) -> Verification {
+        let mut files = Vec::new();
         for software in &self.lib.software {
             for version in &software.versions {
                 for file in &version.files {
-                    report.checked += 1;
-                    let path = self.abs_path(file);
-                    let reason = match fs::metadata(&path) {
-                        Ok(meta) if meta.is_file() && meta.len() == file.size => continue,
-                        Ok(meta) if meta.is_file() => "size",
-                        // 当作安装包导入的文件夹：里面的文件加起来的大小对得上就行
-                        Ok(meta) if meta.is_dir() && crate::import::folder_size(&path) == file.size => continue,
-                        Ok(meta) if meta.is_dir() => "size",
-                        _ => "missing",
-                    };
-                    report.problems.push(MissingFile {
+                    files.push((MissingFile {
                         software_id: software.id.clone(),
                         version_id: version.id.clone(),
                         file_id: file.id.clone(),
@@ -510,12 +564,12 @@ impl Repo {
                         version: version.version.clone(),
                         name: file.name.clone(),
                         path: self.abs_path(file).to_string_lossy().to_string(),
-                        reason: reason.to_string(),
-                    });
+                        reason: String::new(),
+                    }, file.size, file.sha256.clone()));
                 }
             }
         }
-        report
+        Verification { files }
     }
 
     /// 把一个托管文件移进仓库的回收站，并清掉因此变空的文件夹。
@@ -794,6 +848,55 @@ mod tests {
         assert_eq!(saved["settings"]["theme"], "light");
         assert_eq!(saved["settings"]["paperTheme"], true);
         assert!(Repo::open(dir.path()).unwrap().lib.settings.paper_theme);
+    }
+
+    #[test]
+    fn deep_verification_reports_modified_contents_and_honours_cancellation() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let file = source.path().join("Example-1.0.exe");
+        fs::write(&file, b"original").unwrap();
+        let mut repo = Repo::open(dir.path()).unwrap();
+        repo.import_paths(&[file.clone()], Storage::Indexed, &crate::ImportHint::default(), &mut |_| {}).unwrap();
+        fs::write(&file, b"modified").unwrap();
+        assert!(repo.verify().problems.is_empty());
+        let report = repo.verification().run(true, &|| false, &mut |_, _| {}).unwrap();
+        assert_eq!(report.checked, 1);
+        assert_eq!(report.problems[0].reason, "hash");
+        assert!(matches!(repo.verification().run(true, &|| true, &mut |_, _| {}), Err(Error::Code("cancelled"))));
+    }
+
+    #[test]
+    fn batch_relink_requires_matching_contents_and_preserves_relative_paths() {
+        use crate::repository_repair::RepairFile;
+
+        let directory = tempfile::tempdir().unwrap();
+        let old = directory.path().join("Old");
+        let new = directory.path().join("New");
+        fs::create_dir_all(old.join("Sub")).unwrap();
+        fs::create_dir_all(new.join("Sub")).unwrap();
+        let good = old.join("Sub/Tool-1.0.exe");
+        let bad = old.join("Sub/Other-1.0.exe");
+        fs::write(&good, b"correct").unwrap();
+        fs::write(&bad, b"original").unwrap();
+        let mut repo = Repo::open(&directory.path().join("Repo")).unwrap();
+        repo.import_paths(&[good.clone(), bad.clone()], Storage::Indexed, &crate::ImportHint::default(), &mut |_| {}).unwrap();
+        fs::rename(good, new.join("Sub/Tool-1.0.exe")).unwrap();
+        fs::remove_file(bad).unwrap();
+        fs::write(new.join("Sub/Other-1.0.exe"), b"modified").unwrap();
+
+        let files = repo.verify().problems.into_iter().map(|file| RepairFile {
+            software_id: file.software_id,
+            version_id: file.version_id,
+            file_id: file.file_id,
+        }).collect();
+        let candidates = repo.plan_relink(files, &new, Some(&old)).unwrap();
+        let valid = candidates.into_iter().filter_map(|candidate| candidate.verify()).collect();
+        assert_eq!(repo.apply_relinks(valid).unwrap().len(), 1);
+        let again = Repo::open(repo.root()).unwrap();
+        let missing = again.verify().problems;
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].name, "Other-1.0.exe");
     }
 
     #[test]

@@ -149,7 +149,7 @@ function Start({ onChooseFolder }: { onChooseFolder: () => void }) {
                 </span>
                 {location.total > 0 && (
                   <span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-hover">
-                    <span className="block h-full rounded-full bg-accent" style={{ width: `${used * 100}%` }} />
+                    <span className="block h-full rounded-full bg-accent-fill" style={{ width: `${used * 100}%` }} />
                   </span>
                 )}
               </span>
@@ -250,7 +250,7 @@ function Result({ chart }: { chart: "sunburst" | "treemap" | "list" }) {
       {/* 扫描中：一条细的进度条在走 */}
       {scanning && (
         <div className="relative h-0.5 shrink-0 overflow-hidden bg-hover">
-          <div className="absolute inset-y-0 w-1/3 animate-slide rounded-full bg-accent" />
+          <div className="absolute inset-y-0 w-1/3 animate-slide rounded-full bg-accent-fill" />
         </div>
       )}
       <ContextMenu items={menu}>
@@ -747,7 +747,7 @@ function LargestFiles({ view, title, onTarget }: { view: DiskNode; title: string
             <span className="flex w-[110px] shrink-0 flex-col items-end gap-1">
               <span className="tabular text-[13px] font-medium">{formatSize(file.size)}</span>
               <span className="block h-[3px] w-full overflow-hidden rounded-full bg-hover">
-                <span className="block h-full rounded-full bg-accent" style={{ width: `${(file.size / biggest) * 100}%` }} />
+                <span className="block h-full rounded-full bg-accent-fill" style={{ width: `${(file.size / biggest) * 100}%` }} />
               </span>
             </span>
           </button>

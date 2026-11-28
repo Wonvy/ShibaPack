@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import { type PointerEvent, type ReactNode, createContext, memo, useContext, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useGridMotion } from "../components/gridMotion";
+import { TABLE_ROW_HEIGHT, scrollToRow, useWindowRows, visibleRows } from "../components/windowRows";
 import { useHoverSummary, useSoftwareHover } from "../components/HoverCard";
 import { type ColumnDef, type ColumnSamples, type Columns, ColumnsContext, TableHeader, useTableColumns, useWidth } from "../components/columns";
 import { PackageFileIcon, PlatformIcon, PlatformIcons } from "../components/PlatformIcon";
@@ -59,6 +60,7 @@ import {
   installerFor,
   moveManyTo,
   moveSoftwareTo,
+  refreshSoftwareIcon,
   revealSoftware,
   setDefaultVersion,
   starMany,
@@ -71,6 +73,7 @@ import { beginDrag } from "../lib/drag";
 import {
   PLATFORMS,
   categoryPath,
+  compareSoftwareNames,
   fileCount,
   filterSoftware,
   flattenTree,
@@ -131,7 +134,7 @@ export function LibraryView({ detailToggle }: { detailToggle: ReactNode }) {
   const list = useMemo(() => {
     const items = filterSoftware(library.software, library.categories, { scope, platform, installFilter, links, search: deferredSearch });
     const direction = sortAsc ? 1 : -1;
-    const byName = (a: Software, b: Software) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+    const byName = (a: Software, b: Software) => compareSoftwareNames(a.name, b.name);
     const compare: Record<SortKey, (a: Software, b: Software) => number> = {
       name: byName,
       platform: (a, b) => (softwarePlatforms(a)[0] ?? "").localeCompare(softwarePlatforms(b)[0] ?? "") || byName(a, b),
@@ -171,14 +174,21 @@ export function LibraryView({ detailToggle }: { detailToggle: ReactNode }) {
     const wanted = view === "grid" ? gridGroupByCategory : groupByCategory;
     const grouped = wanted && scope.kind === "all" && !search.trim();
     if (!grouped) return [{ key: "all", title: null as string | null, items: list }];
+    const byCategory = new Map<string | null, Software[]>();
+    for (const software of list) {
+      const category = software.categoryId || null;
+      const items = byCategory.get(category);
+      if (items) items.push(software);
+      else byCategory.set(category, [software]);
+    }
     const out = flattenTree(library.categories)
       .map(({ category }) => ({
         key: category.id,
         title: categoryPath(library.categories, category.id),
-        items: list.filter((s) => s.categoryId === category.id),
+        items: byCategory.get(category.id) ?? [],
       }))
       .filter((group) => group.items.length > 0);
-    const rest = list.filter((s) => !s.categoryId);
+    const rest = byCategory.get(null) ?? [];
     if (rest.length > 0) out.push({ key: "none", title: t("nav.uncategorized"), items: rest });
     return out;
   }, [list, library.categories, view, groupByCategory, gridGroupByCategory, scope.kind, search, t]);
@@ -186,6 +196,16 @@ export function LibraryView({ detailToggle }: { detailToggle: ReactNode }) {
   // 分组可以折叠（点分组标题；Alt 点或者右键可以全部折叠、全部展开）。只在分组显示时才算数
   const folded = useMemo(() => new Set(groups.length > 1 || groups[0]?.title !== null ? collapsedGroups : []), [groups, collapsedGroups]);
   const gridViewport = useGridMotion(view === "grid", groups, folded);
+  const windowRows = useWindowRows(gridViewport, view === "list" ? list.length : 0);
+  const groupOffsets = useMemo(() => {
+    let offset = 0;
+    return groups.map((group) => {
+      if (group.title !== null) offset += 40;
+      const rowsTop = offset;
+      if (!folded.has(group.key)) offset += group.items.length * TABLE_ROW_HEIGHT;
+      return rowsTop;
+    });
+  }, [groups, folded]);
   const toggleGroup = (key: string, all: boolean) => {
     const keys = groups.filter((group) => group.title !== null).map((group) => group.key);
     const open = folded.has(key);
@@ -259,7 +279,15 @@ export function LibraryView({ detailToggle }: { detailToggle: ReactNode }) {
         const anchor = app.selectedId && ids.includes(app.selectedId) ? ids.indexOf(app.selectedId) : -1;
         if (event.shiftKey && anchor >= 0) app.setSelection(ids.slice(Math.min(anchor, to), Math.max(anchor, to) + 1), app.selectedId);
         else app.select(id);
-        document.querySelector(`[data-software-id="${id}"]`)?.scrollIntoView({ block: "nearest" });
+        if (view === "list" && gridViewport.current) {
+          const group = groups.findIndex((group) => !folded.has(group.key) && group.items.some((item) => item.id === id));
+          if (group >= 0) {
+            const row = groups[group].items.findIndex((item) => item.id === id);
+            scrollToRow(gridViewport.current, groupOffsets[group] + row * TABLE_ROW_HEIGHT);
+          }
+        } else {
+          document.querySelector(`[data-software-id="${id}"]`)?.scrollIntoView({ block: "nearest" });
+        }
         return;
       }
       if (mod && event.key.toLowerCase() === "a") {
@@ -293,7 +321,7 @@ export function LibraryView({ detailToggle }: { detailToggle: ReactNode }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [ordered, view]);
+  }, [ordered, view, groups, folded, gridViewport, groupOffsets]);
 
   const title = {
     all: t("nav.all"),
@@ -372,7 +400,9 @@ export function LibraryView({ detailToggle }: { detailToggle: ReactNode }) {
           {view === "list" && <ListHeader />}
           <ListContext.Provider value={ordered}>
           <div ref={gridViewport} className={cx("min-h-0 flex-1 overflow-y-auto pb-16", view === "grid" && "overflow-x-hidden")} onClick={(event) => event.target === event.currentTarget && select(null)}>
-            {groups.map((group) => (
+            {groups.map((group, index) => {
+              const { first, last } = visibleRows(windowRows, group.items.length, groupOffsets[index]);
+              return (
               <section key={group.key}>
                 {group.title !== null && (
                   <ContextMenu items={groupMenu}>
@@ -381,7 +411,7 @@ export function LibraryView({ detailToggle }: { detailToggle: ReactNode }) {
                       aria-expanded={!folded.has(group.key)}
                       onClick={(event) => toggleGroup(group.key, event.altKey)}
                       // 箭头放在左边的留白里，分组名和下面的软件图标仍然对齐
-                      className="group/heading flex w-full items-center pt-4 pr-4 pb-1.5 pl-[3px] text-left text-[12px] text-fg-3 hover:text-fg-2"
+                      className="group/heading flex h-10 w-full items-center pt-4 pr-4 pb-1.5 pl-[3px] text-left text-[12px] text-fg-3 hover:text-fg-2"
                     >
                       <ChevronRight
                         size={12}
@@ -396,8 +426,8 @@ export function LibraryView({ detailToggle }: { detailToggle: ReactNode }) {
                   </ContextMenu>
                 )}
                 {!folded.has(group.key) && view === "list" && (
-                  <div className="px-2">
-                    {group.items.map((software) => (
+                  <div className="px-2" style={{ paddingTop: first * TABLE_ROW_HEIGHT, paddingBottom: (group.items.length - last) * TABLE_ROW_HEIGHT }}>
+                    {group.items.slice(first, last).map((software) => (
                       <Row key={software.id} software={software} selected={selectedSet.has(software.id)} />
                     ))}
                   </div>
@@ -417,7 +447,8 @@ export function LibraryView({ detailToggle }: { detailToggle: ReactNode }) {
                   </div>
                 )}
               </section>
-            ))}
+              );
+            })}
           </div>
           </ListContext.Provider>
           </ColumnsContext.Provider>
@@ -615,6 +646,7 @@ function useItem(software: Software) {
         },
         { label: t("classify.menu"), icon: Sparkles, onSelect: () => classify([software.id]) },
         ...describe([software]),
+        { label: t("icon.refresh"), icon: RefreshCw, onSelect: () => void refreshSoftwareIcon(software) },
         { label: t("menu.openFolder"), icon: FolderOpen, separated: true, onSelect: () => void revealSoftware(software) },
         // 卸载只在这里和详情栏的 ⋯ 菜单里，列表上不放按钮
         ...(installedApp?.uninstallable
@@ -1026,7 +1058,7 @@ const Row = memo(function Row({ software, selected }: { software: Software; sele
         onMouseLeave={() => { window.clearTimeout(hoverTimer.current); hoverTimer.current = undefined; setHovered(false); }}
         style={{ gridTemplateColumns: columns.template }}
         className={cx(
-          "group grid min-h-[52px] items-center gap-x-2 rounded-md py-1.5 pr-3 pl-2.5 transition-colors",
+          "group grid h-[52px] items-center gap-x-2 rounded-md py-1.5 pr-3 pl-2.5 transition-colors",
           selected ? "bg-active" : "hover:bg-hover",
         )}
       >

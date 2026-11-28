@@ -1,6 +1,6 @@
 // 从索引数据里推导界面要用的信息：最新版本、大小、平台、分类树等。
 
-import type { Asset, Category, Language, PackageFile, Platform, Release, Software, Summary, Version } from "./types";
+import type { Asset, Category, InstalledApp, Language, PackageFile, Platform, Release, Software, Summary, Version } from "./types";
 
 /** 猜一段文字是什么语言：有假名是日文，汉字占了两成以上是中文，否则当英文。和后端的 `detect_language` 一致。 */
 export function detectLanguage(text: string): string {
@@ -184,18 +184,41 @@ export function formatSize(bytes: number): string {
   return `${value >= 99.95 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
 }
 
+const dateFormats = new Map<string, Intl.DateTimeFormat>();
+
 export function formatDate(iso: string, language: Language, withTime = false): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
+  const key = `${language}:${withTime}`;
+  const cached = dateFormats.get(key);
+  if (cached) return cached.format(date);
   const options: Intl.DateTimeFormatOptions = withTime
     ? { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }
     : { year: "numeric", month: "2-digit", day: "2-digit" };
+  let formatter: Intl.DateTimeFormat;
   try {
-    return new Intl.DateTimeFormat(language, options).format(date);
+    formatter = new Intl.DateTimeFormat(language, options);
   } catch {
     // 导入的语言包可能用了系统不认识的语言代码
-    return new Intl.DateTimeFormat("en-US", options).format(date);
+    formatter = new Intl.DateTimeFormat("en-US", options);
   }
+  dateFormats.set(key, formatter);
+  return formatter.format(date);
+}
+
+const softwareNames = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+export const compareSoftwareNames = (a: string, b: string) => softwareNames.compare(a, b);
+
+/** 按实际时间排序，日期未知的条目始终放在最后。 */
+export function sortByInstallDate(apps: readonly InstalledApp[], ascending: boolean): InstalledApp[] {
+  const direction = ascending ? 1 : -1;
+  return apps.map((app) => ({ app, time: Date.parse(app.installedAt) })).sort((a, b) => {
+    const aKnown = Number.isFinite(a.time);
+    const bKnown = Number.isFinite(b.time);
+    if (aKnown !== bKnown) return aKnown ? -1 : 1;
+    if (aKnown && a.time !== b.time) return (a.time - b.time) * direction;
+    return compareSoftwareNames(a.app.name, b.app.name);
+  }).map(({ app }) => app);
 }
 
 /** 在线源上的最新版本是不是比仓库里的都新。 */

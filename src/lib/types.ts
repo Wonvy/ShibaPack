@@ -149,6 +149,7 @@ export interface CheckResult {
 }
 
 export interface DownloadProgress {
+  repoRevision?: number;
   softwareId: string;
   url: string;
   name: string;
@@ -158,6 +159,7 @@ export interface DownloadProgress {
 }
 
 export interface CheckProgress {
+  repoRevision?: number;
   current: number;
   total: number;
   name: string;
@@ -370,6 +372,7 @@ export interface PathBackup {
 export interface Status {
   configured: boolean;
   repoRoot: string | null;
+  repoRevision: number;
   /** 启动时索引损坏并做了恢复：所用的备份文件名；空字符串表示没有可用备份。 */
   recovered: string | null;
   /** 上次用的仓库没打开时：它的路径，和原因（`missing` 表示文件夹不在，否则是错误代码）。 */
@@ -529,12 +532,19 @@ export interface MissingFile {
   version: string;
   name: string;
   path: string;
-  reason: "missing" | "size";
+  reason: "missing" | "size" | "hash" | "unreadable";
 }
 
 export interface VerifyReport {
   checked: number;
+  unhashed: number;
   problems: MissingFile[];
+}
+
+export interface VerifyProgress {
+  job: string;
+  checked: number;
+  total: number;
 }
 
 // ── 清理 ─────────────────────────────────────────────────────

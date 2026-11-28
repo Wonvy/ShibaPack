@@ -34,8 +34,8 @@ import { Button, ContextMenu, Dropdown, ICON, cx } from "./ui";
 export function Logo({ size = 18 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 1024 1024" aria-hidden className="pointer-events-none shrink-0">
-      <rect x="64" y="64" width="896" height="896" rx="220" fill="var(--accent-strong)" />
-      <g fill="none" stroke="#fff" strokeWidth="64" strokeLinejoin="round" strokeLinecap="round">
+      <rect x="64" y="64" width="896" height="896" rx="220" fill="var(--accent)" />
+      <g fill="none" stroke="var(--on-accent)" strokeWidth="64" strokeLinejoin="round" strokeLinecap="round">
         <path d="M512 248 L760 380 L760 644 L512 776 L264 644 L264 380 Z" />
         <path d="M264 380 L512 512 L760 380 M512 512 L512 776" />
       </g>
@@ -174,7 +174,7 @@ export function AddMenuButton({ coveredWidth }: { coveredWidth: number }) {
               type="button"
               aria-label={label}
               className={cx(
-                "pointer-events-auto flex size-10 items-center justify-center rounded-full bg-accent-strong text-white shadow-pop transition-[filter] hover:brightness-110 data-[state=open]:brightness-110 motion-reduce:transition-none",
+                "pointer-events-auto flex size-10 items-center justify-center rounded-full bg-accent-fill text-on-accent shadow-pop transition-[filter] hover:brightness-105 data-[state=open]:brightness-105 motion-reduce:transition-none",
                 draft && "cursor-grabbing",
               )}
               {...hover.handlers}
@@ -226,7 +226,7 @@ function HeightHandle() {
       // 骑在顶栏的下边线上，上下各占几个像素，好按住
       className="group absolute inset-x-0 -bottom-[3px] z-20 h-1.5 cursor-row-resize"
     >
-      <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 transition-colors group-hover:h-0.5 group-hover:bg-accent group-active:h-0.5 group-active:bg-accent" />
+      <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 transition-colors group-hover:h-0.5 group-hover:bg-accent-fill group-active:h-0.5 group-active:bg-accent-fill" />
     </div>
   );
 }
@@ -320,7 +320,7 @@ export function ResizeHandle({
       onDoubleClick={onReset}
       className="group relative z-10 -mx-0.5 w-1 shrink-0 cursor-col-resize"
     >
-      <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-line transition-colors group-hover:w-0.5 group-hover:bg-accent group-active:w-0.5 group-active:bg-accent" />
+      <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-line transition-colors group-hover:w-0.5 group-hover:bg-accent-fill group-active:w-0.5 group-active:bg-accent-fill" />
     </div>
   );
 }
@@ -349,10 +349,10 @@ function ImportProgress({ progress }: { progress: Progress }) {
         className="pointer-events-none absolute inset-x-0 -top-px h-0.5 overflow-hidden bg-line"
       >
         {percent === undefined ? (
-          <div className="h-full w-2/5 bg-accent motion-safe:animate-slide" />
+          <div className="h-full w-2/5 bg-accent-fill motion-safe:animate-slide" />
         ) : (
           <div
-            className="h-full bg-accent transition-[width] duration-200"
+            className="h-full bg-accent-fill transition-[width] duration-200"
             style={{ width: `${percent}%` }}
           />
         )}
@@ -413,13 +413,13 @@ export function StatusBar() {
         ) : route === "cleanup" ? (
           // 清理页：状态栏写选了多少、直接删除和移到回收站各多少
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className={cx("size-1.5 shrink-0 rounded-full", cleanupBusy ? "bg-accent" : "bg-success")} />
+            <span className={cx("size-1.5 shrink-0 rounded-full", cleanupBusy ? "bg-accent-fill" : "bg-success")} />
             <span className="tabular truncate">{cleanupSummary}</span>
           </span>
         ) : (
         <>
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className={cx("size-1.5 shrink-0 rounded-full", busy ? "bg-accent" : "bg-success")} />
+            <span className={cx("size-1.5 shrink-0 rounded-full", busy ? "bg-accent-fill" : "bg-success")} />
             <span className="max-w-[360px] truncate">{activity}</span>
           </span>
           {route === "library" ? (
@@ -498,9 +498,9 @@ export function UpdateCard() {
       {update.phase === "downloading" ? (
         <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-line">
           {percent === null ? (
-            <div className="h-full w-2/5 animate-slide bg-accent" />
+            <div className="h-full w-2/5 animate-slide bg-accent-fill" />
           ) : (
-            <div className="h-full bg-accent transition-[width] duration-200" style={{ width: `${percent}%` }} />
+            <div className="h-full bg-accent-fill transition-[width] duration-200" style={{ width: `${percent}%` }} />
           )}
         </div>
       ) : (
@@ -636,7 +636,7 @@ function PathsStatus() {
   return (
     <>
       <span className="flex min-w-0 items-center gap-1.5">
-        <span className={cx("size-1.5 shrink-0 rounded-full", workingItem ? "bg-accent" : "bg-success")} />
+        <span className={cx("size-1.5 shrink-0 rounded-full", workingItem ? "bg-accent-fill" : "bg-success")} />
         <span className="max-w-[360px] truncate">{activity}</span>
       </span>
       <span className="tabular shrink-0">{t("paths.status.count", { n: list.length })}</span>
@@ -659,7 +659,7 @@ function DiskStatus() {
   const summary = useDisk((state) => state.summary);
   const view = useDisk((state) => state.view);
   const path = useDisk((state) => state.path);
-  const dot = <span className={cx("size-1.5 shrink-0 rounded-full", scanning ? "bg-accent" : "bg-success")} />;
+  const dot = <span className={cx("size-1.5 shrink-0 rounded-full", scanning ? "bg-accent-fill" : "bg-success")} />;
   if (scanning) {
     return (
       <span className="flex min-w-0 items-center gap-1.5">

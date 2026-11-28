@@ -5,7 +5,8 @@ import { create } from "zustand";
 import { aiUsable } from "./ai";
 import { api, onCheckProgress, onDownloadProgress, onImportProgress, pickFolder } from "./api";
 import { type Key, type Translate, type Vars, errorText, setLangPacks, translate } from "./i18n";
-import { filterSoftware, needsTranslation } from "./library";
+import { filterSoftware } from "./library";
+import { createRepositoryTasks } from "./store/repository";
 import { applyTheme } from "./theme";
 import { createImportSlice, type ImportSlice } from "./store/imports";
 import { createInstalledSlice, type InstalledSlice } from "./store/installed";
@@ -168,184 +169,16 @@ let toastSeq = 0;
 let aiKeyCheckedFor: string | null = null;
 // 开发模式下 React 会把启动逻辑跑两遍，这里保证只初始化一次
 let started = false;
-// 后台任务的状态：补图标、联网找图标、取简介
-let fillingIcons = false;
-let fillingInfo = false;
-/** 本机的图标（安装包里、已安装软件那边）至少补过一轮，之后才联网找，免得网站图标抢在真图标前面。 */
-let localIconsDone = false;
-/** 软件 id → 这次运行里已经用于联网查找图标的来源和信息。 */
-const askedIcons = new Map<string, string>();
-const iconQueue = new Set<string>();
-let iconWorkers = 0;
-/** 连续几次连不上就当作没有网，这次运行不再找。 */
-let iconFailures = 0;
-const ICON_WORKERS = 3;
-const askedSummaries = new Set<string>();
-/** 正在导入一批文件。 */
-const summaryQueue: { name: string; refresh: boolean }[] = [];
-let summaryWorkers = 0;
-let summariesOffline = false;
-const SUMMARY_WORKERS = 3;
-
 export const useApp = create<AppState>()((set, get) => {
   const language = () => get().library?.settings.language ?? fallbackLanguage();
+  const currentRevision = () => get().status?.repoRevision;
+  let choosingRepo = false;
 
-  const refreshLinks = async () => {
-    if (get().installed === null || get().library === null) return;
-    try {
-      const links = await api.matchInstalled();
-      set({ links: Object.fromEntries(Object.entries(links).filter(([, id]) => id in get().installedIndex)) });
-    } catch {
-      // 对应关系只是锦上添花，取不到就保持原样
-    }
-  };
-
-  /** 给没有图标的软件补图标。后端一次处理几个，这里一直调到没有剩余为止。 */
-  const fillIcons = async () => {
-    // 等已安装软件列出来再开始：图标可能要从那边借
-    if (fillingIcons || get().installed === null) return;
-    fillingIcons = true;
-    try {
-      for (let round = 0; round < 500; round++) {
-        const result = await api.fillIcons();
-        const current = get().library;
-        if (result.library && current) set({ library: { ...current, software: result.library.software } });
-        if (!result.more) break;
-      }
-    } catch {
-      // 补不上就继续用首字图标
-    } finally {
-      fillingIcons = false;
-      localIconsDone = true;
-    }
-    queueWebIcons();
-  };
-
-  /** 用安装包自带的属性（exe、msi 的产品版本、公司名）补版本号和发布者。读过的后端会缓存，不会每次重读。 */
-  const fillFileInfo = async () => {
-    if (fillingInfo) return;
-    fillingInfo = true;
-    try {
-      for (let round = 0; round < 500; round++) {
-        const result = await api.fillFileInfo();
-        const current = get().library;
-        if (result.library && current) set({ library: { ...current, software: result.library.software } });
-        if (!result.more) break;
-      }
-    } catch {
-      // 读不出来就保持原样
-    } finally {
-      fillingInfo = false;
-    }
-  };
-
-  /** 给还没有图标的软件用已启用的来源联网找图标，同时最多 3 个。 */
-  const queueWebIcons = () => {
-    const library = get().library;
-    if (!library?.settings.fetchSummaries || !localIconsDone || fillingIcons || iconFailures >= 3) return;
-    for (const software of library.software) {
-      if (software.iconData) continue;
-      const homepage = software.homepage.trim();
-      const github = software.subscription?.source === "github" ? software.subscription.reference.trim() : "";
-      const theSvgName = library.settings.theSvgIcons ? software.name.trim() : "";
-      if (!homepage && !github && !theSvgName) continue;
-      const key = JSON.stringify([homepage, github, theSvgName]);
-      if (askedIcons.get(software.id) === key) continue;
-      askedIcons.set(software.id, key);
-      iconQueue.add(software.id);
-    }
-    pumpIcons();
-  };
-
-  const pumpIcons = () => {
-    const root = get().status?.repoRoot;
-    const settings = get().library?.settings;
-    if (!settings?.fetchSummaries) return;
-    for (const id of iconQueue) {
-      if (iconWorkers >= ICON_WORKERS || iconFailures >= 3) break;
-      iconQueue.delete(id);
-      iconWorkers++;
-      api
-        .fetchIcon(id)
-        .then((update) => {
-          if (get().status?.repoRoot !== root) return;
-          iconFailures = 0;
-          const current = get().library;
-          // 只改这一个软件的图标，免得用旧的快照盖掉这期间的其他改动
-          if (update && current) {
-            set({ library: { ...current, software: current.software.map((s) => (s.id === id && !s.iconData ? { ...s, ...update } : s)) } });
-          }
-        })
-        .catch((error) => {
-          // 一个网站打不开不代表没网；连续几个都失败才停。没找到的下次启动再试
-          const current = get();
-          if (current.status?.repoRoot === root && current.library?.settings.fetchSummaries
-              && current.library.settings.theSvgIcons === settings.theSvgIcons && String(error).startsWith("offline")) {
-            iconFailures++;
-          }
-        })
-        .finally(() => {
-          iconWorkers--;
-          pumpIcons();
-        });
-    }
-  };
-
-  /** 联网取简介：同时最多 3 个，每个名字只问一次。简介按软件名存，仓库里的软件和只装在本机的软件都一样。 */
-  const pumpSummaries = () => {
-    while (summaryWorkers < SUMMARY_WORKERS && summaryQueue.length > 0 && !summariesOffline) {
-      const { name, refresh } = summaryQueue.shift()!;
-      summaryWorkers++;
-      api
-        .fetchSummary(name, refresh)
-        .then((library) => {
-          const current = get().library;
-          // 只取回简介这一部分，免得用旧的快照盖掉这期间的其他改动
-          if (current) set({ library: { ...current, summaries: library.summaries } });
-        })
-        .catch((error) => {
-          // 网络不通：这次运行不再自动尝试，下次启动再说（手动点“获取简介”还可以再试）
-          if (String(error).startsWith("offline")) {
-            summariesOffline = true;
-            summaryQueue.length = 0;
-            if (refresh) get().notify(errorText(language(), error), "error");
-          }
-        })
-        .finally(() => {
-          summaryWorkers--;
-          const { [name]: _done, ...rest } = get().summaryBusy;
-          set({ summaryBusy: rest });
-          pumpSummaries();
-        });
-    }
-  };
-
-  /** 这个名字要不要去取简介（或翻译）：要的话返回去重用的键，不要返回 null。 */
-  const summaryWanted = (library: Library, name: string): string | null => {
-    const { language: lang, translateSummaries } = library.settings;
-    const summary = library.summaries[name];
-    if (!summary) return name;
-    return translateSummaries && needsTranslation(summary, lang) ? `${name}\u0000${lang}` : null;
-  };
-
-  /** 排进取简介的队列。`first` 为真时插到最前面（用户正看着的软件先取）。 */
-  const enqueueSummary = (name: string, refresh: boolean, first: boolean) => {
-    const item = { name, refresh };
-    if (first) summaryQueue.unshift(item);
-    else summaryQueue.push(item);
-    set({ summaryBusy: { ...get().summaryBusy, [name]: true } });
-  };
-
-  // 还没有简介的去取；有简介、但不是界面语言又开着自动翻译的去翻译。每个名字（每种语言）这次运行只问一次
-  const queueSummaries = (library: Library) => {
-    if (!library.settings.fetchSummaries || summariesOffline) return;
-    for (const software of library.software) {
-      const key = summaryWanted(library, software.name);
-      if (key === null || askedSummaries.has(key)) continue;
-      askedSummaries.add(key);
-      enqueueSummary(software.name, false, false);
-    }
-    pumpSummaries();
+  let repositoryTasks: ReturnType<typeof createRepositoryTasks> | undefined;
+  const tasks = () => {
+    const revision = get().status?.repoRevision ?? 0;
+    if (repositoryTasks?.revision !== revision) repositoryTasks = createRepositoryTasks(revision, set, get, language);
+    return repositoryTasks;
   };
 
   const adopt = (library: Library) => {
@@ -363,11 +196,11 @@ export const useApp = create<AppState>()((set, get) => {
     const scopeGone =
       state.scope.kind === "category" && !library.categories.some((c) => c.id === (state.scope as { id: string }).id);
     set({ library, selectedId, selectedIds, ...(scopeGone ? { scope: { kind: "all" } as Scope } : {}) });
-    void refreshLinks();
-    void fillIcons();
-    void fillFileInfo();
-    queueWebIcons();
-    queueSummaries(library);
+    void tasks().refreshLinks();
+    void tasks().fillIcons();
+    void tasks().fillFileInfo();
+    tasks().queueWebIcons();
+    tasks().queueSummaries(library);
     if (library.settings.ai.baseUrl !== aiKeyCheckedFor) void get().refreshAiKey();
   };
 
@@ -387,7 +220,7 @@ export const useApp = create<AppState>()((set, get) => {
     aiBusy: {},
     toasts: [],
     settingsOpen: false,
-    ...createInstalledSlice(set, get, refreshLinks, fillIcons, language),
+    ...createInstalledSlice(set, get, () => tasks().refreshLinks(), () => tasks().fillIcons(), language),
     ...createSourceSlice(set, get, adopt, language),
     classifyIds: null,
     langRevision: 0,
@@ -399,8 +232,13 @@ export const useApp = create<AppState>()((set, get) => {
       started = true;
       window.addEventListener("hashchange", () => set({ route: routeFromHash() }));
       void onImportProgress((progress) => set({ progress: progress.phase === "done" ? null : progress }));
-      void onCheckProgress((progress) => set({ checking: progress.total > 0 ? progress : null }));
+      void onCheckProgress((progress) => {
+        if (progress.repoRevision === undefined || progress.repoRevision === currentRevision()) {
+          set({ checking: progress.total > 0 ? progress : null });
+        }
+      });
       void onDownloadProgress((progress) => {
+        if (progress.repoRevision !== undefined && progress.repoRevision !== currentRevision()) return;
         const downloads = { ...get().downloads };
         if (progress.done) delete downloads[progress.url];
         else downloads[progress.url] = { softwareId: progress.softwareId, name: progress.name, received: progress.received, total: progress.total };
@@ -410,7 +248,7 @@ export const useApp = create<AppState>()((set, get) => {
         const status = await api.getStatus();
         set({ status });
         if (status.configured) {
-          adopt(await api.getLibrary());
+          adopt(await api.getLibrary(status.repoRevision));
           if (status.recovered !== null) {
             const key: Key = status.recovered ? "recovered.backup" : "recovered.empty";
             get().notify(translate(language(), key, { name: status.recovered }), "error");
@@ -468,11 +306,14 @@ export const useApp = create<AppState>()((set, get) => {
     dismissToast: (id) => set({ toasts: get().toasts.filter((toast) => toast.id !== id) }),
 
     apply: async (task) => {
+      const revision = currentRevision();
       try {
-        adopt(await task());
+        const library = await task();
+        if (revision !== currentRevision()) return false;
+        adopt(library);
         return true;
       } catch (error) {
-        get().notify(errorText(language(), error), "error");
+        if (revision === currentRevision()) get().notify(errorText(language(), error), "error");
         return false;
       }
     },
@@ -487,35 +328,26 @@ export const useApp = create<AppState>()((set, get) => {
     },
 
     chooseRepo: async (path) => {
-      const folder = path ?? await get().attempt(pickFolder);
-      if (!folder) return;
-      const status = await get().attempt(() => api.setRepoRoot(folder));
-      if (!status) return;
-      askedSummaries.clear();
-      askedIcons.clear();
-      iconQueue.clear();
-      iconFailures = 0;
-      set({ status, selectedId: null, selectedIds: [], scope: { kind: "all" }, links: {} });
-      await get().apply(() => api.getLibrary());
-      void get().loadInstalled();
-      void api.listLangPacks().then(get().useLangPacks, () => {});
+      if (choosingRepo) return;
+      choosingRepo = true;
+      try {
+        const folder = path ?? await get().attempt(pickFolder);
+        if (!folder) return;
+        const status = await get().attempt(() => api.setRepoRoot(folder));
+        if (!status) return;
+        set({
+          status, library: null, selectedId: null, selectedIds: [], scope: { kind: "all" }, links: {},
+          summaryBusy: {}, aiBusy: {}, downloads: {}, checking: null, sourceDialog: null, classifyIds: null,
+        });
+        await get().apply(() => api.getLibrary(status.repoRevision));
+        void get().loadInstalled();
+        void api.listLangPacks().then(get().useLangPacks, () => {});
+      } finally {
+        choosingRepo = false;
+      }
     },
 
-    requestSummary: (name, refresh = false) => {
-      const library = get().library;
-      if (!library || !name.trim() || get().summaryBusy[name]) return;
-      if (refresh) {
-        // 手动点的：网络刚才不通也再试一次
-        summariesOffline = false;
-      } else {
-        if (!library.settings.fetchSummaries || summariesOffline) return;
-        const key = summaryWanted(library, name);
-        if (key === null || askedSummaries.has(key)) return;
-        askedSummaries.add(key);
-      }
-      enqueueSummary(name, refresh, true);
-      pumpSummaries();
-    },
+    requestSummary: (name, refresh) => tasks().requestSummary(name, refresh),
 
     refreshAiKey: async () => {
       const baseUrl = get().library?.settings.ai.baseUrl ?? "";
@@ -526,13 +358,15 @@ export const useApp = create<AppState>()((set, get) => {
     },
 
     writeSummary: async (name, text) => {
+      const revision = currentRevision();
       try {
-        const library = await api.setSummary(name, text);
+        const library = await api.setSummary(name, text, revision);
+        if (revision !== currentRevision()) return false;
         const current = get().library;
         if (current) set({ library: { ...current, summaries: library.summaries } });
         return true;
       } catch (error) {
-        get().notify(errorText(language(), error), "error");
+        if (revision === currentRevision()) get().notify(errorText(language(), error), "error");
         return false;
       }
     },
@@ -546,17 +380,20 @@ export const useApp = create<AppState>()((set, get) => {
       if (todo.length === 0) return;
       set({ aiBusy: { ...get().aiBusy, ...Object.fromEntries(todo.map((item) => [item.name, true])) } });
       const lang = language();
+      const revision = currentRevision();
       const release = () =>
         set({ aiBusy: Object.fromEntries(Object.entries(get().aiBusy).filter(([name]) => !todo.some((item) => item.name === name))) });
       try {
         if (todo.length === 1) {
-          const library = await api.aiDescribe(todo[0].name, todo[0].publisher);
+          const library = await api.aiDescribe(todo[0].name, todo[0].publisher, revision);
+          if (revision !== currentRevision()) return;
           const current = get().library;
           // 只取回简介这一部分，免得用旧的快照盖掉这期间的其他改动
           if (current) set({ library: { ...current, summaries: library.summaries } });
         } else {
           // 好几个时凑成一批问 AI（后端每次请求放 15 个），不是一个一个问
-          const result = await api.aiDescribeMany(todo);
+          const result = await api.aiDescribeMany(todo, revision);
+          if (revision !== currentRevision()) return;
           const current = get().library;
           if (current) set({ library: { ...current, summaries: result.library.summaries } });
           get().notify(
@@ -566,25 +403,27 @@ export const useApp = create<AppState>()((set, get) => {
           );
         }
       } catch (error) {
-        get().notify(errorText(lang, error), "error");
+        if (revision === currentRevision()) get().notify(errorText(lang, error), "error");
       } finally {
-        release();
+        if (revision === currentRevision()) release();
       }
     },
 
     refreshLibrary: async () => {
       if (!get().library) return;
+      const revision = currentRevision();
       try {
         const library = await api.refreshLibrary();
-        if (library) adopt(library);
+        if (library && revision === currentRevision()) adopt(library);
       } catch (error) {
-        get().notify(errorText(language(), error), "error");
+        if (revision === currentRevision()) get().notify(errorText(language(), error), "error");
       }
     },
 
     saveSettings: async (patch) => {
       const library = get().library;
       if (!library) return;
+      const revision = currentRevision();
       const before = library.settings;
       const settings = { ...before, ...patch };
       // 先改界面再存盘，切主题不用等磁盘
@@ -592,15 +431,13 @@ export const useApp = create<AppState>()((set, get) => {
       set({ library: { ...library, settings } });
       if (await get().apply(() => api.setSettings(settings))) {
         if (settings.fetchSummaries && (!before.fetchSummaries || before.theSvgIcons !== settings.theSvgIcons)) {
-          if (iconFailures >= 3) askedIcons.clear();
-          iconFailures = 0;
-          queueWebIcons();
+          tasks().retryWebIcons();
         }
         return;
       }
       // 没存上（比如 NAS 断了）：界面退回原来的设置，免得看着改了、下次打开又变回去
       const current = get().library;
-      if (current) {
+      if (current && revision === currentRevision()) {
         applyTheme(before);
         set({ library: { ...current, settings: before } });
       }

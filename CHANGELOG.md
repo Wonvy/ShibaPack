@@ -8,6 +8,28 @@ One section per version, titled `## <version>`, with a Chinese and an English pa
 `.github/workflows/release.yml` puts that section into the GitHub Release notes and `latest.json`; the update window
 in ShibaPack (opened from the version number in the bottom-right corner) shows the part that matches the interface language.
 
+## 0.19.0
+
+### 中文
+
+- 纸张质感主题的九种强调色与 ShibaPlan 对齐，默认晴空蓝为 `#0284C7`。
+- 主窗口重启后恢复大小、位置和最大化状态，并记住侧栏和详情栏的展开状态。
+- 「程序」页支持按安装日期排序并记住排序偏好，日期未知的条目始终放在末尾。
+- 修复部分 EXE 安装包的图标提取问题。软件库的右键菜单新增「更新图标」，已有条目可以自动或手动重新提取。
+- 切换仓库时隔离后台任务，避免旧仓库的结果写入或覆盖当前仓库。
+- 「设置 → 存储」新增可取消的 SHA-256 深度校验，支持单个或批量重新定位丢失的安装包。
+- 软件库和「程序」页的长列表只渲染可见区域附近的行，改善大仓库的筛选和滚动。
+
+### English
+
+- Matched the nine Paper theme accents to ShibaPlan. The default Sky Blue is `#0284C7`.
+- Restores the main window's size, position, and maximized state on restart and remembers whether the sidebar and details pane are open.
+- The Apps page supports sorting by install date and remembers the sort order. Entries with unknown dates always appear last.
+- Fixed icon extraction from some EXE installers and added Refresh icon to the library context menu.
+- Background work stays with the library that started it when switching libraries.
+- Storage settings now offer cancellable SHA-256 verification and can relink one or more missing installers.
+- Long lists in the library and Apps page render rows near the viewport, improving filtering and scrolling in large libraries.
+
 ## 0.18.0
 
 ### 中文

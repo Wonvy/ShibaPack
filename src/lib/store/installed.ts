@@ -73,8 +73,8 @@ export function createInstalledSlice(
       const scanRevision = revision;
       set({ installedLoading: true });
       try {
-        const root = get().status?.repoRoot;
-        const { apps: installed, cachedIcons } = await api.listInstalled();
+        const repoRevision = get().status?.repoRevision;
+        const { apps: installed, cachedIcons } = await api.listInstalled(repoRevision);
         if (scanRevision !== revision) return;
         const library = get().library;
         const stillThere = new Set(installed.map((app) => app.id));
@@ -88,7 +88,7 @@ export function createInstalledSlice(
           selectedInstalledId,
           selectedInstalledIds,
           installedScannedAt: Date.now(),
-          ...(cachedIcons && library && get().status?.repoRoot === root ? { library: { ...library, installedIcons: cachedIcons } } : {}),
+          ...(cachedIcons && library && get().status?.repoRevision === repoRevision ? { library: { ...library, installedIcons: cachedIcons } } : {}),
         });
         void refreshLinks();
         void fillIcons();

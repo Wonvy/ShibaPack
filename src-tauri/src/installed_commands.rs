@@ -1,4 +1,4 @@
-use super::{blocking, read_repo, with_repo, AppState, CmdResult};
+use super::{blocking, read_repo_revision, with_repo_revision, AppState, CmdResult};
 use serde::Serialize;
 use shibapack_core::{identify::same_software, installed, leftovers::{self, Leftover, RemoveReport, Target}, InstalledApp};
 use std::{collections::{BTreeMap, HashMap}, path::{Path, PathBuf}, sync::{atomic::Ordering, Arc, Mutex}, time::{Duration, Instant}};
@@ -44,8 +44,9 @@ pub(super) struct InstalledListing {
 
 /// 列出这台电脑上已安装的软件（会重新扫描）。
 #[tauri::command]
-pub(super) async fn list_installed(app: AppHandle) -> InstalledListing {
+pub(super) async fn list_installed(app: AppHandle, revision: Option<u32>) -> InstalledListing {
     blocking(app, move |_app, state| {
+        let revision = revision.or_else(|| Some(state.repo_revision.load(Ordering::SeqCst)));
         let apps = installed::list_installed(&state.icon_cache);
         let changed = if let Ok(mut cached) = state.installed.lock() {
             let changed = !cached.iter().map(|app| (&app.id, &app.icon)).eq(apps.iter().map(|app| (&app.id, &app.icon)));
@@ -59,7 +60,7 @@ pub(super) async fn list_installed(app: AppHandle) -> InstalledListing {
                 tried.clear();
             }
         }
-        let cached_icons = with_repo(&state, |repo| {
+        let cached_icons = with_repo_revision(&state, revision, |repo| {
             repo.cache_installed_icons(&apps)?;
             Ok(repo.lib.installed_icons.clone())
         }).ok();
@@ -144,10 +145,10 @@ pub(super) async fn measure_installed(app: AppHandle) -> HashMap<String, u64> {
 
 /// 仓库里的软件和已安装软件的对应关系：软件 id → 已安装软件 id。
 #[tauri::command]
-pub(super) async fn match_installed(app: AppHandle) -> CmdResult<HashMap<String, String>> {
+pub(super) async fn match_installed(app: AppHandle, revision: Option<u32>) -> CmdResult<HashMap<String, String>> {
     blocking(app, move |_app, state| {
         let apps = state.installed.lock().map(|list| list.clone()).unwrap_or_default();
-        read_repo(&state, |repo| {
+        read_repo_revision(&state, revision, |repo| {
             let links = repo.lib.software.iter().filter_map(|software| {
                 let app = apps.iter().find(|app| same_software(&app.name, &software.name))?;
                 Some((software.id.clone(), app.id.clone()))

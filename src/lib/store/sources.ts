@@ -45,33 +45,40 @@ export function createSourceSlice(
         return;
       }
       set({ checking: { current: 0, total: 1, name: "" } });
+      const revision = get().status?.repoRevision;
       try {
-        const result = await api.checkUpdates();
+        const result = await api.checkUpdates(revision);
+        if (get().status?.repoRevision !== revision) return;
         adopt(result.library);
         const updates = result.library.software.filter(hasUpdate).length;
         const key: Key = result.rateLimited ? "updates.rateLimited" : result.failed > 0 ? "updates.failed" : "updates.done";
         get().notify(translate(language(), key, { checked: result.checked, updates, failed: result.failed }), result.rateLimited ? "error" : "info");
       } catch (error) {
-        get().notify(errorText(language(), error), "error");
+        if (get().status?.repoRevision === revision) get().notify(errorText(language(), error), "error");
       } finally {
-        set({ checking: null });
+        if (get().status?.repoRevision === revision) set({ checking: null });
       }
     },
 
     downloadAsset: async (softwareId, asset) => {
       if (asset.url in get().downloads) return;
+      const revision = get().status?.repoRevision;
       // 先占个位：前面有别的文件在下的话，它会排队
       set({ downloads: { ...get().downloads, [asset.url]: { softwareId, name: asset.name, received: 0, total: asset.size } } });
       try {
-        adopt(await api.downloadAsset(softwareId, asset.url));
+        const library = await api.downloadAsset(softwareId, asset.url, revision);
+        if (get().status?.repoRevision !== revision) return;
+        adopt(library);
         get().notify(translate(language(), "download.done", { name: asset.name }));
       } catch (error) {
         // 自己点的取消不用再提示
-        if (!String(error).startsWith("cancelled")) get().notify(errorText(language(), error), "error");
+        if (get().status?.repoRevision === revision && !String(error).startsWith("cancelled")) get().notify(errorText(language(), error), "error");
       } finally {
-        const downloads = { ...get().downloads };
-        delete downloads[asset.url];
-        set({ downloads });
+        if (get().status?.repoRevision === revision) {
+          const downloads = { ...get().downloads };
+          delete downloads[asset.url];
+          set({ downloads });
+        }
       }
     },
 

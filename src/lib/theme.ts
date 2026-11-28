@@ -2,71 +2,64 @@
 
 import type { Settings, Theme } from "./types";
 
-type Shade = { accent: string; strong: string };
 type ResolvedTheme = Exclude<Theme, "system">;
 type ThemeSettings = Pick<Settings, "theme" | "paperTheme">;
 const DEFAULT_ACCENT = "sky";
+const WHITE_INK = "#ffffff";
+const DARK_INK = "#0a0b0d";
 
-/** 强调色预设：每种主题下各一组，保证文字和按钮都看得清。 */
-export const ACCENTS: Record<string, Record<ResolvedTheme, Shade>> = {
-  sky: {
-    dark: { accent: "#38bdf8", strong: "#0369a1" },
-    light: { accent: "#0369a1", strong: "#075985" },
-    paper: { accent: "#0369a1", strong: "#075985" },
-  },
-  blue: {
-    dark: { accent: "#5aa2ff", strong: "#2b74d9" },
-    light: { accent: "#1f6fe0", strong: "#1a5fc4" },
-    paper: { accent: "#43578b", strong: "#394c7d" },
-  },
-  purple: {
-    dark: { accent: "#a78bfa", strong: "#7557e8" },
-    light: { accent: "#6d43e0", strong: "#5b34c9" },
-    paper: { accent: "#69508b", strong: "#584174" },
-  },
-  green: {
-    dark: { accent: "#4cc38a", strong: "#23875a" },
-    light: { accent: "#1f8a57", strong: "#18754a" },
-    paper: { accent: "#39694d", strong: "#305b42" },
-  },
-  orange: {
-    dark: { accent: "#f0a04b", strong: "#b96a14" },
-    light: { accent: "#c26a0a", strong: "#a85a06" },
-    paper: { accent: "#955022", strong: "#82441d" },
-  },
-  pink: {
-    dark: { accent: "#f472b6", strong: "#c93d82" },
-    light: { accent: "#d6337f", strong: "#b8286b" },
-    paper: { accent: "#9a4761", strong: "#853b53" },
-  },
-};
+/** 色板和控件底色沿用 ShibaPlan 的原色，文字使用对应背景下的高对比色。 */
+export const ACCENTS = {
+  linear: { hex: "#5e6ad2", lightInk: "#40499b", darkInk: "#a5adff", onAccent: WHITE_INK },
+  indigo: { hex: "#4f46e5", lightInk: "#4338ca", darkInk: "#a5a0ff", onAccent: WHITE_INK },
+  violet: { hex: "#7c3aed", lightInk: "#6d28d9", darkInk: "#c4a5ff", onAccent: WHITE_INK },
+  sky: { hex: "#0284c7", lightInk: "#075985", darkInk: "#7dd3fc", onAccent: DARK_INK },
+  emerald: { hex: "#059669", lightInk: "#076046", darkInk: "#6ee7b7", onAccent: DARK_INK },
+  amber: { hex: "#f59e0b", lightInk: "#78430b", darkInk: "#fbbf24", onAccent: DARK_INK },
+  orange: { hex: "#ea580c", lightInk: "#8f3411", darkInk: "#fdba74", onAccent: DARK_INK },
+  rose: { hex: "#e11d48", lightInk: "#a81236", darkInk: "#fda4af", onAccent: WHITE_INK },
+  slate: { hex: "#52525b", lightInk: "#42424a", darkInk: "#bcbcc5", onAccent: WHITE_INK },
+} as const;
 
-export const ACCENT_NAMES = Object.keys(ACCENTS);
+type AccentName = keyof typeof ACCENTS;
+export const ACCENT_NAMES = Object.keys(ACCENTS) as AccentName[];
+const LEGACY_ACCENTS = new Map<string, AccentName>([
+  ["blue", "linear"],
+  ["purple", "violet"],
+  ["green", "emerald"],
+  ["pink", "rose"],
+]);
+
+export function resolveAccent(name: string): AccentName {
+  if (Object.hasOwn(ACCENTS, name)) return name as AccentName;
+  return LEGACY_ACCENTS.get(name) ?? DEFAULT_ACCENT;
+}
 
 const systemLight = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: light)") : null;
-let current: { theme: Theme; accent: string } = { theme: "paper", accent: DEFAULT_ACCENT };
+let current: { theme: Theme; accent: AccentName } = { theme: "paper", accent: DEFAULT_ACCENT };
 
 export function themeChoice({ theme, paperTheme }: ThemeSettings): Theme {
   return theme === "light" && paperTheme ? "paper" : theme;
 }
 
-export function resolveTheme(theme: Theme): ResolvedTheme {
+function resolveTheme(theme: Theme): ResolvedTheme {
   if (theme === "light" || theme === "dark" || theme === "paper") return theme;
   return systemLight?.matches ? "light" : "dark";
 }
 
 function paint() {
   const resolved = resolveTheme(current.theme);
-  const shade = (ACCENTS[current.accent] ?? ACCENTS[DEFAULT_ACCENT])[resolved];
+  const accent = ACCENTS[current.accent];
   const root = document.documentElement;
   root.dataset.theme = resolved;
-  root.style.setProperty("--accent", shade.accent);
-  root.style.setProperty("--accent-strong", shade.strong);
+  root.style.setProperty("--accent", accent.hex);
+  root.style.setProperty("--accent-ink", resolved === "dark" ? accent.darkInk : accent.lightInk);
+  root.style.setProperty("--on-accent", accent.onAccent);
 }
 
 export function applyTheme(settings: ThemeSettings & Pick<Settings, "accent">) {
   const theme = themeChoice(settings);
-  current = { theme, accent: settings.accent };
+  current = { theme, accent: resolveAccent(settings.accent) };
   paint();
   // 记在本机，下次启动在样式加载前就能定好主题，不闪一下
   try {

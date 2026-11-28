@@ -16,6 +16,7 @@ export type SortKey = "name" | "platform" | "size" | "added";
 export type PackageView = "list" | "grid" | "folder";
 
 export type InstalledView = "list" | "grid";
+export type InstalledSort = { column: "name" | "version" | "date" | "size"; asc: boolean };
 
 /** 顶栏搜索的范围：下拉结果里列哪些。本机的几处之外，还可以在 GitHub、Homebrew 上找。 */
 export const SEARCH_SCOPES = ["all", "library", "installed", "startup", "github", "homebrew"] as const;
@@ -56,6 +57,7 @@ interface Prefs {
   detailMoreOpen: boolean;
   /** 已安装软件用列表还是网格。 */
   installedView: InstalledView;
+  installedSort: InstalledSort;
   /** “启动与服务”页看的是启动项还是服务。 */
   startupTab: "startup" | "service";
   /** 收藏路径时把绝对路径自动换成变量的写法（`~`、`%APPDATA%`）。 */
@@ -113,6 +115,7 @@ export const usePrefs = create<Prefs>()(
       detailOpen: true,
       detailMoreOpen: false,
       installedView: "list",
+      installedSort: { column: "name", asc: true },
       startupTab: "startup",
       pathsConvert: true,
       searchScope: "all",
@@ -163,8 +166,7 @@ export const usePrefs = create<Prefs>()(
       name: "shibapack.ui",
       version: 3,
       migrate: (persisted, version) => {
-        const saved = persisted as Partial<Prefs> & { sidebarCollapsed?: boolean };
-        delete saved.sidebarCollapsed;
+        const saved = persisted as Partial<Prefs>;
         // 旧版会把默认的 180px 和其他界面偏好一起保存。
         if (version < 1 && saved.sidebarWidth === 180) saved.sidebarWidth = null;
         // 旧版按搜索范围菜单的顺序显示快捷图标。

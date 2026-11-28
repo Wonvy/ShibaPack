@@ -157,7 +157,7 @@ pub fn hash_folder(dir: &Path) -> Result<(u64, String)> {
     hash_folder_cancellable(dir, &|| false)
 }
 
-fn hash_folder_cancellable(dir: &Path, cancelled: &dyn Fn() -> bool) -> Result<(u64, String)> {
+pub(crate) fn hash_folder_cancellable(dir: &Path, cancelled: &dyn Fn() -> bool) -> Result<(u64, String)> {
     let mut files = Vec::new();
     for entry in walkdir::WalkDir::new(dir).follow_links(false) {
         checkpoint(cancelled)?;
@@ -183,6 +183,18 @@ fn hash_folder_cancellable(dir: &Path, cancelled: &dyn Fn() -> bool) -> Result<(
 /// 文件夹里所有文件加起来的大小（校验时用）。
 pub fn folder_size(dir: &Path) -> u64 {
     walkdir::WalkDir::new(dir).into_iter().filter_map(|e| e.ok()).filter(|e| e.file_type().is_file()).filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum()
+}
+
+pub(crate) fn folder_size_cancellable(dir: &Path, cancelled: &dyn Fn() -> bool) -> Result<u64> {
+    let mut size = 0;
+    for entry in walkdir::WalkDir::new(dir).follow_links(false) {
+        checkpoint(cancelled)?;
+        let entry = entry.map_err(std::io::Error::other)?;
+        if entry.file_type().is_file() {
+            size += entry.metadata().map_err(std::io::Error::other)?.len();
+        }
+    }
+    Ok(size)
 }
 
 /// 是不是 macOS 的应用（`.app` 文件夹）。它本身就是一个整体，导入时不往里面找安装包。
@@ -863,7 +875,7 @@ pub fn sha256_file(path: &Path) -> Result<String> {
     sha256_file_cancellable(path, &|| false)
 }
 
-fn sha256_file_cancellable(path: &Path, cancelled: &dyn Fn() -> bool) -> Result<String> {
+pub(crate) fn sha256_file_cancellable(path: &Path, cancelled: &dyn Fn() -> bool) -> Result<String> {
     checkpoint(cancelled)?;
     let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();

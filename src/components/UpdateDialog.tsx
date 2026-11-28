@@ -224,9 +224,9 @@ export function UpdateDialog() {
       {update.phase === "downloading" && (
         <div className="mt-2 h-1 overflow-hidden rounded-full bg-line">
           {percent === null ? (
-            <div className="h-full w-2/5 animate-slide bg-accent" />
+            <div className="h-full w-2/5 animate-slide bg-accent-fill" />
           ) : (
-            <div className="h-full bg-accent transition-[width] duration-200" style={{ width: `${percent}%` }} />
+            <div className="h-full bg-accent-fill transition-[width] duration-200" style={{ width: `${percent}%` }} />
           )}
         </div>
       )}

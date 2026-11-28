@@ -33,7 +33,7 @@ export function Button({ variant = "secondary", size = "md", busy, className, ch
         "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md font-medium whitespace-nowrap transition-colors",
         size === "sm" ? "h-6 px-2 text-[12px]" : "h-7 px-2.5 text-[13px]",
         "disabled:pointer-events-none disabled:opacity-50",
-        variant === "primary" && "bg-accent-strong text-white hover:brightness-110",
+        variant === "primary" && "bg-accent-fill text-on-accent hover:brightness-105",
         variant === "secondary" && "border border-line-strong bg-hover text-fg hover:bg-active",
         variant === "ghost" && "text-fg-2 hover:bg-hover hover:text-fg",
         variant === "danger" && "bg-danger text-white hover:brightness-110",
@@ -190,7 +190,7 @@ export function Checkbox({ checked, onChange, children }: { checked: boolean; on
         onClick={() => onChange(!checked)}
         className={cx(
           "mt-px flex size-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors",
-          checked ? "border-accent-strong bg-accent-strong text-white" : "border-line-strong bg-bg",
+          checked ? "border-accent-fill bg-accent-fill text-on-accent" : "border-line-strong bg-bg",
         )}
       >
         {checked && <Check size={12} strokeWidth={3} aria-hidden />}
@@ -216,7 +216,7 @@ export function Tick({ checked, disabled, label, onChange }: { checked: boolean 
       }}
       className={cx(
         "flex size-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors disabled:opacity-40",
-        checked ? "border-accent-strong bg-accent-strong text-white" : "border-line-strong bg-bg",
+          checked ? "border-accent-fill bg-accent-fill text-on-accent" : "border-line-strong bg-bg",
       )}
     >
       {checked === true && <Check size={12} strokeWidth={3} aria-hidden />}
@@ -236,10 +236,10 @@ export function Switch({ checked, onChange, label, disabled }: { checked: boolea
       onClick={() => onChange(!checked)}
       className={cx(
         "relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full transition-colors disabled:opacity-50",
-        checked ? "bg-accent-strong" : "bg-active ring-1 ring-line-strong ring-inset",
+        checked ? "bg-accent-fill" : "bg-active ring-1 ring-line-strong ring-inset",
       )}
     >
-      <span className={cx("inline-block size-3.5 rounded-full bg-white shadow-sm transition-transform", checked ? "translate-x-4" : "translate-x-0.5")} />
+      <span className={cx("inline-block size-3.5 rounded-full shadow-sm transition-transform", checked ? "translate-x-4 bg-on-accent" : "translate-x-0.5 bg-white")} />
     </button>
   );
 }

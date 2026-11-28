@@ -10,7 +10,7 @@ import { InstalledSoftwareIcon, SoftwareIcon } from "../components/SoftwareIcon"
 import { Button, ContextMenu, IconButton, type MenuEntry, Modal, cx } from "../components/ui";
 import { api } from "../lib/api";
 import { errorText } from "../lib/i18n";
-import { formatDate, formatSize, hasUpdate } from "../lib/library";
+import { formatDate, formatSize, hasUpdate, sortByInstallDate } from "../lib/library";
 import { useCleanup } from "../lib/cleanup";
 import { usePrefs } from "../lib/prefs";
 import { useStartup } from "../lib/startup";
@@ -418,7 +418,7 @@ function SoftwareStats() {
   );
 }
 
-/** 最近装的 6 个软件，点了去已安装里选中它。 */
+/** 最近装的 8 个软件，点了去已安装里选中它。 */
 function RecentInstalls() {
   const t = useT();
   const language = useLanguage();
@@ -429,7 +429,7 @@ function RecentInstalls() {
   const setPrefs = usePrefs((state) => state.set);
   const icons = view === "icons";
   const recent = useMemo(
-    () => [...(installed ?? [])].filter((app) => app.installedAt).sort((a, b) => b.installedAt.localeCompare(a.installedAt)).slice(0, 8),
+    () => sortByInstallDate((installed ?? []).filter((app) => Number.isFinite(Date.parse(app.installedAt))), false).slice(0, 8),
     [installed],
   );
   if (recent.length === 0) return null;

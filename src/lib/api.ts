@@ -59,6 +59,7 @@ import type {
   SubscribeResult,
   Suggestion,
   VerifyReport,
+  VerifyProgress,
   VersionEdit,
   Trace,
   TraceProgress,
@@ -84,7 +85,7 @@ type FileRef = { softwareId: string; versionId: string; fileId: string };
 export const api = {
   getStatus: () => call<Status>("get_status"),
   setRepoRoot: (path: string) => call<Status>("set_repo_root", { path }),
-  getLibrary: () => call<Library>("get_library"),
+  getLibrary: (revision?: number) => call<Library>("get_library", { revision }),
   /** 多选收藏或取消收藏，只存一次索引。 */
   setStarredMany: (ids: string[], starred: boolean) => call<Library>("set_starred_many", { ids, starred }),
   /** 把多个软件移到一个分类（null 是未分类），只存一次索引。 */
@@ -120,13 +121,16 @@ export const api = {
   listBackups: () => call<BackupInfo[]>("list_backups"),
   createBackup: () => call<BackupInfo[]>("create_backup"),
   restoreBackup: (name: string) => call<Library>("restore_backup", { name }),
-  verifyData: () => call<VerifyReport>("verify_data"),
+  verifyData: (deep?: boolean, job?: string, revision?: number) => call<VerifyReport>("verify_data", { deep, job, revision }),
+  cancelVerify: (job: string) => call<void>("cancel_verify", { job }),
+  relinkData: (files: FileRef[], replacement: string, revision: number, oldRoot?: string) =>
+    call<{ library: Library; linked: string[] }>("relink_data", { files, replacement, oldRoot, revision }),
   exportBackup: (dest: string) => call<void>("export_backup", { dest }),
   importBackup: (src: string) => call<Library>("import_backup", { src }),
   emptyTrash: () => call<Stats>("empty_trash"),
-  listInstalled: () => call<{ apps: InstalledApp[]; cachedIcons: Library["installedIcons"] | null }>("list_installed"),
+  listInstalled: (revision?: number) => call<{ apps: InstalledApp[]; cachedIcons: Library["installedIcons"] | null }>("list_installed", { revision }),
   measureInstalled: () => call<Record<string, number>>("measure_installed"),
-  matchInstalled: () => call<Record<string, string>>("match_installed"),
+  matchInstalled: (revision?: number) => call<Record<string, string>>("match_installed", { revision }),
   /** 卸载前先分析：软件的数据、快捷方式、设置在哪、多大（不含软件本身）。只读。 */
   analyzeUninstall: (id: string) => call<LeftoverScan>("analyze_uninstall", { id }),
   uninstallInstalled: (id: string) => call<void>("uninstall_installed", { id }),
@@ -250,16 +254,17 @@ export const api = {
    */
   aiExplainStartup: (ids: string[], mode: "cached" | "auto" | "refresh" | "hover") => call<Explanations>("ai_explain_startup_many", { ids, mode }),
   /** 让 AI 一批写简介（每次请求放 15 个），写好的一次存进索引。进度见 `onAiProgress`。 */
-  aiDescribeMany: (items: { name: string; publisher?: string }[]) => call<DescribeResult>("ai_describe_many", { items }),
+  aiDescribeMany: (items: { name: string; publisher?: string }[], revision?: number) => call<DescribeResult>("ai_describe_many", { items, revision }),
   aiHoverSummary: (name: string, publisher: string) => call<{ text: string; cached: boolean }>("ai_hover_summary", { name, publisher }),
-  fillIcons: () => call<FillResult>("fill_icons"),
-  fillFileInfo: () => call<FillResult>("fill_file_info"),
+  fillIcons: (revision?: number) => call<FillResult>("fill_icons", { revision }),
+  refreshIcon: (id: string, revision?: number) => call<{ icon: string; iconData: string | null } | null>("refresh_icon", { id, revision }),
+  fillFileInfo: (revision?: number) => call<FillResult>("fill_file_info", { revision }),
   inspectDrop: (paths: string[], includeChildren = false) => call<DropEntry[]>("inspect_drop", { paths, includeChildren }),
   previewImportCategories: (targets: ImportCategoryTarget[]) => call<ImportCategoryPreview[]>("preview_import_categories", { targets }),
   /** 联网找图标。返回图标的相对路径和缓存内容，没找到时是 null。 */
-  fetchIcon: (id: string) => call<{ icon: string; iconData: string | null } | null>("fetch_icon", { id }),
+  fetchIcon: (id: string, revision?: number) => call<{ icon: string; iconData: string | null } | null>("fetch_icon", { id, revision }),
   /** 按名字取简介（需要时顺带翻译）。`refresh` 为真时不管有没有都重新取。 */
-  fetchSummary: (name: string, refresh = false) => call<Library>("fetch_summary", { name, refresh }),
+  fetchSummary: (name: string, refresh = false, revision?: number) => call<Library>("fetch_summary", { name, refresh, revision }),
   selftestReport: (line: string, done = false) => call<void>("selftest_report", { line, done }),
   sourceLookup: (kind: SourceKind, reference: string) => call<Release>("source_lookup", { kind, reference }),
   sourceSearch: (query: string) => call<Candidate[]>("source_search", { query }),
@@ -270,8 +275,8 @@ export const api = {
   subscribe: (softwareId: string | null, name: string | null, kind: SourceKind, reference: string) =>
     call<SubscribeResult>("subscribe", { softwareId, name, kind, reference }),
   unsubscribe: (softwareId: string) => call<Library>("unsubscribe", { softwareId }),
-  checkUpdates: () => call<CheckResult>("check_updates"),
-  downloadAsset: (softwareId: string, url: string) => call<Library>("download_asset", { softwareId, url }),
+  checkUpdates: (revision?: number) => call<CheckResult>("check_updates", { revision }),
+  downloadAsset: (softwareId: string, url: string, revision?: number) => call<Library>("download_asset", { softwareId, url, revision }),
   cancelDownload: (url: string) => call<void>("cancel_download", { url }),
   tidyRoot: () => call<ImportResult>("tidy_root"),
   listLangPacks: () => call<LangPack[]>("list_lang_packs"),
@@ -292,11 +297,11 @@ export const api = {
   /** 和模型说一句话，返回它的回答。 */
   aiTest: (settings: AiSettings, key?: string) => call<string>("ai_test", { settings, key: key || null }),
   /** 让 AI 写简介并存进索引（按名字存）。`publisher` 给只装在本机的软件用。 */
-  aiDescribe: (name: string, publisher?: string) => call<Library>("ai_describe", { name, publisher: publisher || null }),
+  aiDescribe: (name: string, publisher?: string, revision?: number) => call<Library>("ai_describe", { name, publisher: publisher || null, revision }),
   /** 用 AI 推荐分类，只读。软件和分类都没变的直接用上次的建议，`refresh` 为真时全部重新问。进度见 `onAiProgress`。 */
   aiSuggestCategories: (softwareIds: string[], refresh = false) => call<AiSuggestions>("ai_suggest_categories", { softwareIds, refresh }),
   /** 自己写的简介（按名字存）；空字符串表示删掉。 */
-  setSummary: (name: string, text: string) => call<Library>("set_summary", { name, text }),
+  setSummary: (name: string, text: string, revision?: number) => call<Library>("set_summary", { name, text, revision }),
   /** 停下正在进行的 AI 分类。 */
   cancelAi: () => call<void>("cancel_ai"),
 };
@@ -312,10 +317,13 @@ export function assetUrl(path: string): string {
 
 // ── 系统对话框 ───────────────────────────────────────────────
 
-export async function pickFiles(): Promise<string[]> {
-  if (!isTauri) return (await import("./mock")).mockPickFiles();
+export async function pickFiles(multiple = true): Promise<string[]> {
+  if (!isTauri) {
+    const files = (await import("./mock")).mockPickFiles();
+    return multiple ? files : files.slice(0, 1);
+  }
   const { open } = await import("@tauri-apps/plugin-dialog");
-  const picked = await open({ multiple: true, directory: false });
+  const picked = await open({ multiple, directory: false });
   return picked ? (Array.isArray(picked) ? picked : [picked]) : [];
 }
 
@@ -368,6 +376,12 @@ export async function onImportProgress(handler: (progress: Progress) => void): P
   if (!isTauri) return (await import("./mock")).mockOnProgress(handler);
   const { listen } = await import("@tauri-apps/api/event");
   return listen<Progress>("import://progress", (event) => handler(event.payload));
+}
+
+export async function onVerifyProgress(handler: (progress: VerifyProgress) => void): Promise<() => void> {
+  if (!isTauri) return (await import("./mock")).mockOnVerifyProgress(handler);
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<VerifyProgress>("verify://progress", (event) => handler(event.payload));
 }
 
 /** 下载进度。 */

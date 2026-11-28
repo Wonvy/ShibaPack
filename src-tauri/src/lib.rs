@@ -16,7 +16,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -25,13 +25,18 @@ use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, 
 use tauri_plugin_opener::OpenerExt;
 
 mod cleanup_commands;
+mod disk_commands;
 mod import_commands;
 mod installed_commands;
+mod repo_metadata_commands;
+mod repo_repair_commands;
 
 use installed_commands::UninstallSession;
 
 struct AppState {
     repo: Mutex<Option<Repo>>,
+    repo_revision: AtomicU32,
+    verification: Mutex<Option<(String, Arc<AtomicBool>)>>,
     /// 启动时上次用的仓库没打开：（仓库路径，原因）。原因是 `missing`（文件夹不在，比如 NAS 没连上）
     /// 或者打开时的错误。选好仓库后清掉。
     open_failure: Mutex<Option<(String, String)>>,
@@ -52,7 +57,7 @@ struct AppState {
     /// 用户点了取消导入。
     import_cancel: AtomicBool,
     /// 正在下载或排队的文件（按下载地址）对应的“取消”开关。
-    cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    cancels: Mutex<HashMap<(u32, String), Arc<AtomicBool>>>,
     /// 应用自己的版本号（来自 package.json）。
     version: String,
     /// 正在进行的 AI 分类的“取消”开关。开始新的一次时把上一次的也关掉。
@@ -110,6 +115,7 @@ struct Bootstrap {
 struct Status {
     configured: bool,
     repo_root: Option<String>,
+    repo_revision: u32,
     /// 启动时索引损坏并做了恢复：恢复所用的备份文件名，空字符串表示没有可用备份。
     recovered: Option<String>,
     /// 上次用的仓库没打开时，它的路径和原因（见 `AppState::open_failure`）。
@@ -144,6 +150,7 @@ struct CheckProgress<'a> {
     current: usize,
     total: usize,
     name: &'a str,
+    repo_revision: u32,
 }
 
 #[derive(Clone, Serialize)]
@@ -156,6 +163,7 @@ struct DownloadProgress<'a> {
     total: Option<u64>,
     /// 这个文件的下载结束了（成功、失败或取消）。
     done: bool,
+    repo_revision: u32,
 }
 
 #[derive(Serialize)]
@@ -207,9 +215,23 @@ async fn blocking<T: Send + 'static>(app: AppHandle, run: impl FnOnce(&AppHandle
 
 /// 在仓库上做一件事。先读入别处对索引的改动；失败时内存里的索引退回原样（见 `Repo::transact`）。
 fn with_repo<T>(state: &State<AppState>, run: impl FnOnce(&mut Repo) -> shibapack_core::Result<T>) -> CmdResult<T> {
+    with_repo_revision(state, None, run)
+}
+
+fn with_repo_revision<T>(
+    state: &State<AppState>, revision: Option<u32>, run: impl FnOnce(&mut Repo) -> shibapack_core::Result<T>,
+) -> CmdResult<T> {
     let mut guard = state.repo.lock().map_err(|_| "internal".to_string())?;
+    validate_repo_revision(state, revision).map_err(|e| e.to_string())?;
     let repo = guard.as_mut().ok_or_else(|| "not_configured".to_string())?;
     repo.transact(run).map_err(|e| e.to_string())
+}
+
+fn validate_repo_revision(state: &State<AppState>, revision: Option<u32>) -> shibapack_core::Result<()> {
+    if revision.is_some_and(|revision| revision != state.repo_revision.load(Ordering::SeqCst)) {
+        return Err(shibapack_core::Error::Code("repo_changed"));
+    }
+    Ok(())
 }
 
 /// 短暂地占一下仓库做一件小事，不像 `with_repo` 那样先整份备份内存里的索引。用在导入这种
@@ -226,7 +248,16 @@ fn with_repo_quick<T>(
 }
 
 fn read_repo<T>(state: &State<AppState>, run: impl FnOnce(&Repo) -> shibapack_core::Result<T>) -> CmdResult<T> {
-    with_repo_quick(state, None, |repo| run(repo)).map_err(|e| e.to_string())
+    read_repo_revision(state, None, run)
+}
+
+fn read_repo_revision<T>(
+    state: &State<AppState>, revision: Option<u32>, run: impl FnOnce(&Repo) -> shibapack_core::Result<T>,
+) -> CmdResult<T> {
+    with_repo_quick(state, None, |repo| {
+        validate_repo_revision(state, revision)?;
+        run(repo)
+    }).map_err(|e| e.to_string())
 }
 
 /// 离开作用域时把开关放下，中途出错返回也一样。
@@ -240,7 +271,13 @@ impl Drop for ClearOnDrop<'_> {
 
 /// 做一次修改，然后把修改后的索引交回前端。
 fn mutate(state: &State<AppState>, run: impl FnOnce(&mut Repo) -> shibapack_core::Result<()>) -> CmdResult<Library> {
-    with_repo(state, |repo| {
+    mutate_revision(state, None, run)
+}
+
+fn mutate_revision(
+    state: &State<AppState>, revision: Option<u32>, run: impl FnOnce(&mut Repo) -> shibapack_core::Result<()>,
+) -> CmdResult<Library> {
+    with_repo_revision(state, revision, |repo| {
         run(repo)?;
         Ok(repo.lib.clone())
     })
@@ -253,6 +290,7 @@ fn status_of(state: &State<AppState>) -> Status {
     Status {
         configured: repo.is_some(),
         repo_root: repo.map(|r| r.root().to_string_lossy().to_string()),
+        repo_revision: state.repo_revision.load(Ordering::SeqCst),
         recovered: repo.and_then(|r| r.recovered.clone()),
         last_root: failure.as_ref().map(|(root, _)| root.clone()),
         open_error: failure.map(|(_, reason)| reason),
@@ -383,7 +421,15 @@ async fn set_repo_root(app: AppHandle, path: String) -> CmdResult<Status> {
         let json = serde_json::to_vec_pretty(&bootstrap).map_err(|e| e.to_string())?;
         fs::write(&state.config_file, json).map_err(|e| e.to_string())?;
         *guard = Some(repo);
+        let revision = state.repo_revision.fetch_add(1, Ordering::SeqCst);
         drop(guard);
+        if let Ok(cancels) = state.cancels.lock() {
+            for ((owner, _), cancel) in cancels.iter() {
+                if *owner == revision {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            }
+        }
         if let Ok(mut failure) = state.open_failure.lock() {
             *failure = None;
         }
@@ -396,9 +442,9 @@ async fn set_repo_root(app: AppHandle, path: String) -> CmdResult<Status> {
 }
 
 #[tauri::command]
-async fn get_library(app: AppHandle) -> CmdResult<Library> {
+async fn get_library(app: AppHandle, revision: Option<u32>) -> CmdResult<Library> {
     blocking(app, move |_app, state| {
-        read_repo(&state, |repo| Ok(repo.lib.clone()))
+        read_repo_revision(&state, revision, |repo| Ok(repo.lib.clone()))
     })
     .await
 }
@@ -602,14 +648,6 @@ async fn restore_backup(app: AppHandle, name: String) -> CmdResult<Library> {
 }
 
 #[tauri::command]
-async fn verify_data(app: AppHandle) -> CmdResult<VerifyReport> {
-    blocking(app, move |_app, state| {
-        read_repo(&state, |repo| Ok(repo.verify()))
-    })
-    .await
-}
-
-#[tauri::command]
 async fn export_backup(app: AppHandle, dest: String) -> CmdResult<()> {
     blocking(app, move |_app, state| {
         with_repo(&state, |repo| repo.export_to(Path::new(&dest)))
@@ -716,17 +754,6 @@ fn set_window_glass(window: tauri::WebviewWindow, enabled: bool) -> CmdResult<bo
 }
 
 // ── 磁盘分析 ─────────────────────────────────────────────────
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DiskLocation {
-    path: String,
-    name: String,
-    /// home：用户文件夹；disk：一块盘。
-    kind: String,
-    total: u64,
-    available: u64,
-}
 
 // ───────────────────────────── 安装监控 ─────────────────────────────
 
@@ -1075,269 +1102,6 @@ async fn trace_reveal(app: AppHandle, software_id: String, id: String, index: us
             path = path.parent().ok_or_else(|| "file_missing".to_string())?.to_path_buf();
         }
         app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
-    })
-    .await
-}
-
-/// 可以分析的地方：用户文件夹和每一块盘。
-#[tauri::command]
-async fn disk_locations(app: AppHandle) -> Vec<DiskLocation> {
-    blocking(app, move |app, _state| {
-        let mut out = Vec::new();
-        if let Ok(home) = app.path().home_dir() {
-            out.push(DiskLocation { name: home.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), path: home.to_string_lossy().to_string(), kind: "home".into(), total: 0, available: 0 });
-        }
-        for mount in shibapack_core::disk::mounts() {
-            if out.iter().any(|l: &DiskLocation| l.path == mount.path) {
-                continue;
-            }
-            out.push(DiskLocation { name: mount.name, path: mount.path, kind: "disk".into(), total: mount.total, available: mount.available });
-        }
-        out
-    })
-    .await
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DiskSummary {
-    root: String,
-    size: u64,
-    files: u64,
-    denied: u64,
-    denied_examples: Vec<String>,
-    elapsed_ms: u64,
-}
-
-/// 边扫边看时最大的文件留几个。
-const LARGEST_LIVE: usize = 200;
-
-/// 扫描中的样子（没在扫时是 null）：`path` 只能是根或第一层的文件夹，还没扫完的项带 `pending`。
-#[tauri::command]
-async fn disk_live_view(app: AppHandle, path: Vec<String>, min_ratio: f64) -> Option<shibapack_core::disk::ViewNode> {
-    blocking(app, move |_app, state| {
-        let live = state.disk_live.lock().ok()?.clone()?;
-        live.view(&path, min_ratio.clamp(0.0, 0.5))
-    })
-    .await
-}
-
-/// 扫描中到现在为止最大的文件（没在扫时是空的）。
-#[tauri::command]
-async fn disk_live_largest(app: AppHandle) -> Vec<LargeFile> {
-    blocking(app, move |_app, state| {
-        let Some(live) = state.disk_live.lock().ok().and_then(|slot| slot.clone()) else { return Vec::new() };
-        let root = live.root().to_path_buf();
-        large_files(&root, live.largest())
-    })
-    .await
-}
-
-/// 扫一个文件夹或一块盘（只读）。扫的时候发 `disk://progress`，界面可以用 `disk_live_view` 先看；停下了返回 `cancelled`。
-#[tauri::command]
-async fn disk_scan(app: AppHandle, root: String) -> CmdResult<DiskSummary> {
-    blocking(app, move |app, state| {
-        let root = PathBuf::from(&root);
-        if !root.is_dir() {
-            return Err("file_missing".into());
-        }
-        state.disk_cancel.store(false, Ordering::SeqCst);
-        let live = Arc::new(shibapack_core::disk::Live::new(&root, LARGEST_LIVE));
-        if let Ok(mut slot) = state.disk_live.lock() {
-            *slot = Some(Arc::clone(&live));
-        }
-        let scan = shibapack_core::disk::scan(
-            &root,
-            &state.disk_cancel,
-            &|progress| {
-                let _ = app.emit("disk://progress", progress);
-            },
-            Some(&live),
-        );
-        if let Ok(mut slot) = state.disk_live.lock() {
-            *slot = None;
-        }
-        let scan = scan.ok_or_else(|| "cancelled".to_string())?;
-        let summary = DiskSummary {
-            root: scan.root.to_string_lossy().to_string(),
-            size: scan.tree.size,
-            files: scan.tree.files,
-            denied: scan.denied,
-            denied_examples: scan.denied_examples.clone(),
-            elapsed_ms: scan.elapsed_ms,
-        };
-        if let Ok(mut slot) = state.disk.lock() {
-            *slot = Some(scan);
-        }
-        Ok(summary)
-    })
-    .await
-}
-
-#[tauri::command]
-fn disk_cancel(state: State<AppState>) {
-    state.disk_cancel.store(true, Ordering::SeqCst);
-}
-
-/// 从扫完的树里取一块给界面画：`path` 是相对扫描根的路径段，往下 `depth` 层，太小的合成“其他”。
-#[tauri::command]
-async fn disk_view(app: AppHandle, path: Vec<String>, depth: usize, min_ratio: f64) -> CmdResult<shibapack_core::disk::ViewNode> {
-    blocking(app, move |_app, state| {
-        let slot = state.disk.lock().map_err(|_| "internal".to_string())?;
-        let scan = slot.as_ref().ok_or_else(|| "not_found".to_string())?;
-        shibapack_core::disk::view(&scan.tree, &path, depth.min(8), min_ratio.clamp(0.0, 0.5)).ok_or_else(|| "not_found".to_string())
-    })
-    .await
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LargeFile {
-    /// 相对扫描根的路径段，定位、移到回收站都按它。
-    path: Vec<String>,
-    name: String,
-    size: u64,
-    /// 所在文件夹（用户文件夹写成 ~）。
-    folder: String,
-    /// 修改时间，从 1970 年起的毫秒（读不到时是 null）。
-    modified_ms: Option<u64>,
-}
-
-/// 磁盘分析：`path` 那个文件夹里（连同下面所有层）最大的 `limit` 个文件，从大到小。只从扫完的树里取，不重新扫。
-#[tauri::command]
-async fn disk_largest(app: AppHandle, path: Vec<String>, limit: usize) -> CmdResult<Vec<LargeFile>> {
-    blocking(app, move |_app, state| {
-        let (root, found) = {
-            let slot = state.disk.lock().map_err(|_| "internal".to_string())?;
-            let scan = slot.as_ref().ok_or_else(|| "not_found".to_string())?;
-            let found = shibapack_core::disk::largest_files(&scan.tree, &path, limit.min(1000)).ok_or_else(|| "not_found".to_string())?;
-            (scan.root.clone(), found)
-        };
-        Ok(large_files(&root, found))
-    })
-    .await
-}
-
-/// 给界面的大文件：所在文件夹（用户文件夹写成 ~）和修改时间。
-fn large_files(root: &Path, found: Vec<(Vec<String>, u64)>) -> Vec<LargeFile> {
-    let home = if cfg!(windows) { std::env::var_os("USERPROFILE") } else { std::env::var_os("HOME") }.map(PathBuf::from);
-    found
-        .into_iter()
-        .map(|(path, size)| {
-            let full = shibapack_core::disk::full_path(root, &path);
-            let modified_ms = fs::metadata(&full)
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as u64);
-            let folder = full.parent().map(|p| shibapack_core::disk::display_path(p, home.as_deref())).unwrap_or_default();
-            LargeFile { name: path.last().cloned().unwrap_or_default(), path, size, folder, modified_ms }
-        })
-        .collect()
-}
-
-/// 磁盘分析里文件夹（或大文件）是做什么的。`mode` 是 `cached`（只看缓存，不问 AI）或 `ask`（没记下的问 AI）。
-/// 缓存单独放在仓库的 `.shibapack/cache/ai-folders.json`。返回：路径段用 / 连起来 → 解释。
-#[tauri::command]
-async fn ai_explain_folders(app: AppHandle, paths: Vec<Vec<String>>, mode: String) -> CmdResult<HashMap<String, String>> {
-    blocking(app, move |_app, state| {
-        let home = if cfg!(windows) { std::env::var_os("USERPROFILE") } else { std::env::var_os("HOME") }.map(PathBuf::from);
-        // （界面上的键，缓存的键，问 AI 时给的事实）
-        let items: Vec<(String, String, String)> = {
-            let slot = state.disk.lock().map_err(|_| "internal".to_string())?;
-            let scan = slot.as_ref().ok_or_else(|| "not_found".to_string())?;
-            paths
-                .iter()
-                .filter_map(|path| {
-                    let facts = shibapack_core::disk::facts(&scan.root, &scan.tree, path, home.as_deref())?;
-                    let shown = shibapack_core::disk::display_path(&shibapack_core::disk::full_path(&scan.root, path), home.as_deref());
-                    Some((path.join("/"), shown, facts))
-                })
-                .collect()
-        };
-        let dir = cache_dir(&state)?;
-        let language = read_repo(&state, |repo| Ok(repo.lib.settings.language.clone()))?;
-        let key_of = |shown: &str| aicache::folder_key(std::env::consts::OS, shown, &language);
-        let mut out = HashMap::new();
-        let mut todo = Vec::new();
-        {
-            let _turn = state.ai_cache_turn.lock().unwrap_or_else(|e| e.into_inner());
-            let cache = aicache::FolderCache::load(&dir);
-            for item in &items {
-                match cache.folders.get(&key_of(&item.1)) {
-                    Some(hit) => {
-                        out.insert(item.0.clone(), hit.text.clone());
-                    }
-                    None => todo.push(item),
-                }
-            }
-        }
-        if mode != "ask" || todo.is_empty() {
-            return Ok(out);
-        }
-        let (service, library) = repo_ai(&state)?;
-        let questions: Vec<(String, String)> = todo.iter().map(|item| (item.0.clone(), item.2.clone())).collect();
-        let cancel = AtomicBool::new(false);
-        let answers = ai::explain_folders_many(&service, &library.settings.language, &questions, &cancel, &mut |_, _| {}).map_err(|e| e.code())?;
-        let at = shibapack_core::now();
-        let model = service.model().to_string();
-        let _turn = state.ai_cache_turn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut cache = aicache::FolderCache::load(&dir);
-        for (key, text) in answers {
-            let Some(item) = todo.iter().find(|item| item.0 == key) else { continue };
-            cache.folders.insert(key_of(&item.1), CachedText { text: text.clone(), model: model.clone(), at: at.clone() });
-            out.insert(key, text);
-        }
-        let _ = cache.save(&dir);
-        Ok(out)
-    })
-    .await
-}
-
-/// 扫过的树里某一项的完整路径（不在树里的不认）。
-fn disk_path(state: &State<AppState>, path: &[String]) -> CmdResult<(PathBuf, PathBuf)> {
-    let slot = state.disk.lock().map_err(|_| "internal".to_string())?;
-    let scan = slot.as_ref().ok_or_else(|| "not_found".to_string())?;
-    shibapack_core::disk::find(&scan.tree, path).ok_or_else(|| "not_found".to_string())?;
-    Ok((shibapack_core::disk::full_path(&scan.root, path), scan.root.clone()))
-}
-
-/// 在文件管理器里显示（`open` 为真时用默认程序打开）。
-#[tauri::command]
-async fn disk_reveal(app: AppHandle, path: Vec<String>, open: bool) -> CmdResult<()> {
-    blocking(app, move |app, state| {
-        let (full, _) = disk_path(&state, &path)?;
-        if !full.exists() {
-            return Err("file_missing".into());
-        }
-        if open {
-            app.opener().open_path(full.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
-        } else {
-            app.opener().reveal_item_in_dir(&full).map_err(|e| e.to_string())
-        }
-    })
-    .await
-}
-
-/// 某一项的完整路径，复制用。
-#[tauri::command]
-async fn disk_full_path(app: AppHandle, path: Vec<String>) -> CmdResult<String> {
-    blocking(app, move |_app, state| Ok(disk_path(&state, &path)?.0.to_string_lossy().to_string())).await
-}
-
-/// 移到回收站（废纸篓），并从树上去掉。系统文件夹、用户文件夹本身、应用程序、仓库这些不行，返回 `protected:<原因>`。
-#[tauri::command]
-async fn disk_trash(app: AppHandle, path: Vec<String>) -> CmdResult<u64> {
-    blocking(app, move |_app, state| {
-        let (full, root) = disk_path(&state, &path)?;
-        let repo = state.repo.lock().ok().and_then(|r| r.as_ref().map(|r| r.root().to_path_buf()));
-        if let Some(reason) = shibapack_core::disk::protected(&full, &root, repo.as_deref()) {
-            return Err(format!("disk_protected:{reason}"));
-        }
-        trash::delete(&full).map_err(|e| e.to_string())?;
-        let mut slot = state.disk.lock().map_err(|_| "internal".to_string())?;
-        let scan = slot.as_mut().ok_or_else(|| "not_found".to_string())?;
-        Ok(shibapack_core::disk::remove(&mut scan.tree, &path).unwrap_or(0))
     })
     .await
 }
@@ -1725,100 +1489,6 @@ async fn download_installer(app: AppHandle, version: String) -> CmdResult<String
     .await
 }
 
-// ── 图标与简介 ───────────────────────────────────────────────
-
-/// 给没有图标的软件补图标，一次最多 8 个，不拖慢别的操作。
-#[tauri::command]
-async fn fill_icons(app: AppHandle) -> CmdResult<FillResult> {
-    blocking(app, move |_app, state| {
-        let apps = state.installed.lock().map(|list| list.clone()).unwrap_or_default();
-        let mut tried = state.icon_tried.lock().map_err(|_| "internal".to_string())?;
-        with_repo(&state, |repo| {
-            let (changed, more) = repo.fill_icons(8, &mut tried, &apps)?;
-            Ok(FillResult { library: changed.then(|| repo.lib.clone()), more })
-        })
-    })
-    .await
-}
-
-/// 用安装包自带的属性补版本号和发布者（版本号是空的文件挪到读到的版本），一次最多读 8 个文件。
-/// 读过的记在仓库的缓存里，同一个文件不再读。
-#[tauri::command]
-async fn fill_file_info(app: AppHandle) -> CmdResult<FillResult> {
-    blocking(app, move |_app, state| {
-        with_repo(&state, |repo| {
-            let (changed, more) = repo.fill_file_info(8)?;
-            Ok(FillResult { library: changed.then(|| repo.lib.clone()), more })
-        })
-    })
-    .await
-}
-
-/// 联网给一个软件找图标。
-/// 返回图标的相对路径和缓存内容，没找到返回 null。网络不通时返回 `offline`。
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct IconUpdate {
-    icon: String,
-    icon_data: Option<Arc<str>>,
-}
-
-#[tauri::command]
-async fn fetch_icon(app: AppHandle, id: String) -> CmdResult<Option<IconUpdate>> {
-    blocking(app, move |_app, state| {
-        let (root, query) = read_repo(&state, |repo| Ok((repo.root().to_path_buf(), repo.web_icon_query(&id)?)))?;
-        let Some(query) = query else { return Ok(None) };
-        // 联网期间不占着仓库的锁
-        let found = webicon::fetch_web_icon(&query.homepage, query.github.as_deref(), query.the_svg_name.as_deref())
-            .map_err(|_| "offline".to_string())?;
-        with_repo(&state, |repo| {
-            if repo.root() != root {
-                return Ok(None);
-            }
-            let Some(icon) = repo.set_web_icon(&id, &query, found)? else { return Ok(None) };
-            let icon_data = repo.lib.software.iter().find(|software| software.id == id).and_then(|software| software.icon_data.clone());
-            Ok(Some(IconUpdate { icon, icon_data }))
-        })
-    })
-    .await
-}
-
-/// 联网取一个软件的简介并存进索引（按名字存）；简介不是界面语言、又开着自动翻译时，再翻译成界面语言。
-/// 已经有简介的只做翻译；`refresh` 为真时不管有没有都重新取。仓库里的软件和只装在这台电脑上的软件都用它。
-/// 网络不通时返回 `offline`（已经取到的简介照样存下）。
-#[tauri::command]
-async fn fetch_summary(app: AppHandle, name: String, refresh: Option<bool>) -> CmdResult<Library> {
-    blocking(app, move |_app, state| {
-        let name = name.trim().to_string();
-        if name.is_empty() {
-            return Err("not_found".into());
-        }
-        let (language, existing, translate) = read_repo(&state, |repo| {
-            let settings = &repo.lib.settings;
-            let existing = if refresh.unwrap_or(false) { None } else { repo.lib.summaries.get(&name).cloned() };
-            Ok((settings.language.clone(), existing, settings.translate_summaries))
-        })?;
-        // 联网期间不占着仓库的锁，别的操作照常进行
-        let (summary, mut library) = match existing {
-            Some(summary) => (Some(summary), None),
-            None => {
-                let found = summary::fetch_summary(&name, &language).map_err(|_| "offline".to_string())?;
-                let library = mutate(&state, |repo| repo.set_summary(&name, found.clone()))?;
-                (found, Some(library))
-            }
-        };
-        if let Some(summary) = summary.filter(|s| translate && summary::needs_translation(s, &language)) {
-            let text = summary::translate(&summary.text, &summary::summary_language(&summary), &language).map_err(|_| "offline".to_string())?;
-            library = Some(mutate(&state, |repo| repo.set_summary_translation(&name, &language, text))?);
-        }
-        match library {
-            Some(library) => Ok(library),
-            None => read_repo(&state, |repo| Ok(repo.lib.clone())),
-        }
-    })
-    .await
-}
-
 /// 开发用的自检：界面把检查结果一行行报回来，打印到终端，最后退出。
 /// 只有用 `SHIBAPACK_SELFTEST=<一个安装包的路径>` 启动时才起作用。
 #[tauri::command]
@@ -1902,9 +1572,10 @@ async fn unsubscribe(app: AppHandle, software_id: String) -> CmdResult<Library> 
 
 /// 检查所有关联了在线源的软件有没有新版本。进度通过 `sources://progress` 事件发给前端。
 #[tauri::command]
-async fn check_updates(app: AppHandle) -> CmdResult<CheckResult> {
+async fn check_updates(app: AppHandle, revision: Option<u32>) -> CmdResult<CheckResult> {
     blocking(app, move |app, state| {
-        let targets: Vec<(String, String, SourceKind, String)> = read_repo(&state, |repo| {
+        let revision = revision.unwrap_or_else(|| state.repo_revision.load(Ordering::SeqCst));
+        let targets: Vec<(String, String, SourceKind, String)> = read_repo_revision(&state, Some(revision), |repo| {
             let subscribed = repo.lib.software.iter().filter_map(|software| {
                 let subscription = software.subscription.as_ref()?;
                 Some((software.id.clone(), software.name.clone(), subscription.source, subscription.reference.clone()))
@@ -1915,7 +1586,8 @@ async fn check_updates(app: AppHandle) -> CmdResult<CheckResult> {
         let mut found = Vec::new();
         let (mut failed, mut rate_limited) = (0, false);
         for (i, (id, name, kind, reference)) in targets.iter().enumerate() {
-            let _ = app.emit("sources://progress", CheckProgress { current: i + 1, total, name });
+            validate_repo_revision(&state, Some(revision)).map_err(|e| e.to_string())?;
+            let _ = app.emit("sources://progress", CheckProgress { current: i + 1, total, name, repo_revision: revision });
             // GitHub 限流之后，走 GitHub 的两种源就不用再试了；Homebrew 不受影响
             if rate_limited && *kind != SourceKind::Homebrew {
                 failed += 1;
@@ -1930,9 +1602,9 @@ async fn check_updates(app: AppHandle) -> CmdResult<CheckResult> {
                 Err(_) => failed += 1,
             }
         }
-        let _ = app.emit("sources://progress", CheckProgress { current: total, total: 0, name: "" });
+        let _ = app.emit("sources://progress", CheckProgress { current: total, total: 0, name: "", repo_revision: revision });
         let checked = found.len();
-        let library = mutate(&state, |repo| {
+        let library = mutate_revision(&state, Some(revision), |repo| {
             for (id, release) in found {
                 repo.set_latest(&id, release);
             }
@@ -1945,10 +1617,11 @@ async fn check_updates(app: AppHandle) -> CmdResult<CheckResult> {
 
 /// 下载在线源上的一个安装包并收进仓库。进度通过 `download://progress` 事件发给前端。
 #[tauri::command]
-async fn download_asset(app: AppHandle, software_id: String, url: String) -> CmdResult<Library> {
+async fn download_asset(app: AppHandle, software_id: String, url: String, revision: Option<u32>) -> CmdResult<Library> {
     blocking(app, move |app, state| {
+        let revision = revision.unwrap_or_else(|| state.repo_revision.load(Ordering::SeqCst));
         // 只下载索引里记着的地址，不接受前端随便给一个
-        let (asset, version, dir) = read_repo(&state, |repo| {
+        let (asset, version, dir) = read_repo_revision(&state, Some(revision), |repo| {
             let software = repo.lib.software.iter().find(|s| s.id == software_id).ok_or(shibapack_core::Error::Code("not_found"))?;
             let release = software.subscription.as_ref().and_then(|s| s.latest.as_ref()).ok_or(shibapack_core::Error::Code("not_found"))?;
             let asset = release.assets.iter().find(|a| a.url == url).ok_or(shibapack_core::Error::Code("not_found"))?;
@@ -1956,11 +1629,13 @@ async fn download_asset(app: AppHandle, software_id: String, url: String) -> Cmd
         })?;
 
         let cancel = Arc::new(AtomicBool::new(false));
+        let key = (revision, url.clone());
         if let Ok(mut cancels) = state.cancels.lock() {
-            cancels.insert(url.clone(), cancel.clone());
+            validate_repo_revision(&state, Some(revision)).map_err(|e| e.to_string())?;
+            cancels.insert(key.clone(), cancel.clone());
         }
         let report = |received: u64, total: Option<u64>, done: bool| {
-            let _ = app.emit("download://progress", DownloadProgress { software_id: &software_id, url: &url, name: &asset.name, received, total, done });
+            let _ = app.emit("download://progress", DownloadProgress { software_id: &software_id, url: &url, name: &asset.name, received, total, done, repo_revision: revision });
         };
         report(0, asset.size, false);
 
@@ -1976,18 +1651,19 @@ async fn download_asset(app: AppHandle, software_id: String, url: String) -> Cmd
             })
         };
         if let Ok(mut cancels) = state.cancels.lock() {
-            cancels.remove(&url);
+            cancels.remove(&key);
         }
         report(0, None, true);
         let done = result.map_err(|e| e.code())?;
-        mutate(&state, |repo| repo.adopt_download(&software_id, &version, &done.path, &asset, done.sha256))
+        mutate_revision(&state, Some(revision), |repo| repo.adopt_download(&software_id, &version, &done.path, &asset, done.sha256))
     })
     .await
 }
 
 #[tauri::command]
 fn cancel_download(state: State<AppState>, url: String) {
-    if let Some(cancel) = state.cancels.lock().ok().and_then(|cancels| cancels.get(&url).cloned()) {
+    let key = (state.repo_revision.load(Ordering::SeqCst), url);
+    if let Some(cancel) = state.cancels.lock().ok().and_then(|cancels| cancels.get(&key).cloned()) {
         cancel.store(true, Ordering::Relaxed);
     }
 }
@@ -2077,7 +1753,11 @@ fn ai_service(settings: &AiSettings, key: Option<String>) -> CmdResult<ai::Servi
 
 /// 仓库设置里的 AI 服务，和此刻索引的一份副本。联网期间不占着仓库的锁。
 fn repo_ai(state: &State<AppState>) -> CmdResult<(ai::Service, Library)> {
-    let library = read_repo(state, |repo| Ok(repo.lib.clone()))?;
+    repo_ai_revision(state, None)
+}
+
+fn repo_ai_revision(state: &State<AppState>, revision: Option<u32>) -> CmdResult<(ai::Service, Library)> {
+    let library = read_repo_revision(state, revision, |repo| Ok(repo.lib.clone()))?;
     Ok((ai_service(&library.settings.ai, None)?, library))
 }
 
@@ -2129,14 +1809,14 @@ async fn ai_test(app: AppHandle, settings: AiSettings, key: Option<String>) -> C
 
 /// 自己写的简介：存进 `summaries`，来源记成 `manual`，之后不会被自动取的简介盖掉。`text` 为空时删掉简介。
 #[tauri::command]
-async fn set_summary(app: AppHandle, name: String, text: String) -> CmdResult<Library> {
+async fn set_summary(app: AppHandle, name: String, text: String, revision: Option<u32>) -> CmdResult<Library> {
     blocking(app, move |_app, state| {
         let name = name.trim().to_string();
         if name.is_empty() {
             return Err("not_found".into());
         }
         let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        mutate(&state, |repo| {
+        mutate_revision(&state, revision, |repo| {
             if text.is_empty() {
                 return repo.clear_summary(&name);
             }
@@ -2150,15 +1830,16 @@ async fn set_summary(app: AppHandle, name: String, text: String) -> CmdResult<Li
 /// 让 AI 给一个名字写简介并存进索引（简介按名字存，仓库里的软件和只装在本机的软件都用它）。
 /// `publisher` 给只装在本机、仓库里没有的软件用。
 #[tauri::command]
-async fn ai_describe(app: AppHandle, name: String, publisher: Option<String>) -> CmdResult<Library> {
+async fn ai_describe(app: AppHandle, name: String, publisher: Option<String>, revision: Option<u32>) -> CmdResult<Library> {
     blocking(app, move |_app, state| {
         let name = name.trim().to_string();
         if name.is_empty() {
             return Err("not_found".into());
         }
-        let (service, library) = repo_ai(&state)?;
+        let revision = revision.or_else(|| Some(state.repo_revision.load(Ordering::SeqCst)));
+        let (service, library) = repo_ai_revision(&state, revision)?;
         let summary = ai::describe(&service, &library, &name, publisher.as_deref().unwrap_or("")).map_err(|e| e.code())?;
-        mutate(&state, |repo| repo.set_summary(&name, Some(summary)))
+        mutate_revision(&state, revision, |repo| repo.set_summary(&name, Some(summary)))
     })
     .await
 }
@@ -2214,7 +1895,7 @@ struct DescribeResult {
 
 /// 让 AI 给一批软件写简介：凑成一批问（每次请求放 15 个），写好的一次存进索引。进度通过 `ai://progress` 发给界面。
 #[tauri::command]
-async fn ai_describe_many(app: AppHandle, items: Vec<DescribeTarget>) -> CmdResult<DescribeResult> {
+async fn ai_describe_many(app: AppHandle, items: Vec<DescribeTarget>, revision: Option<u32>) -> CmdResult<DescribeResult> {
     blocking(app, move |app, state| {
         let targets: Vec<(String, String)> =
             items.into_iter().map(|t| (t.name.trim().to_string(), t.publisher)).filter(|(name, _)| !name.is_empty()).collect();
@@ -2223,13 +1904,14 @@ async fn ai_describe_many(app: AppHandle, items: Vec<DescribeTarget>) -> CmdResu
             current.store(true, Ordering::SeqCst);
             *current = cancel.clone();
         }
-        let (service, library) = repo_ai(&state)?;
+        let revision = revision.or_else(|| Some(state.repo_revision.load(Ordering::SeqCst)));
+        let (service, library) = repo_ai_revision(&state, revision)?;
         let written = ai::describe_many(&service, &library, &targets, &cancel, &mut |done, total| {
             let _ = app.emit("ai://progress", AiProgress { done, total });
         })
         .map_err(|e| e.code())?;
         let count = written.len();
-        let library = mutate(&state, |repo| repo.set_summaries(written))?;
+        let library = mutate_revision(&state, revision, |repo| repo.set_summaries(written))?;
         Ok(DescribeResult { library, written: count, unknown: targets.len() - count })
     })
     .await
@@ -2318,6 +2000,20 @@ pub fn run() {
             }
         }));
     }
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_window_state::{Builder, StateFlags};
+        let mut window_state = Builder::new()
+            .with_filter(|label| label == "main")
+            .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED);
+        if let Some(config) = std::env::var_os("SHIBAPACK_CONFIG") {
+            let path = PathBuf::from(config).with_extension("window-state.json");
+            if let Ok(path) = std::path::absolute(path) {
+                window_state = window_state.with_filename(path.to_string_lossy());
+            }
+        }
+        builder = builder.plugin(window_state.build());
+    }
     builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -2357,6 +2053,8 @@ pub fn run() {
             let resuming = trace.is_some();
             app.manage(AppState {
                 repo: Mutex::new(repo),
+                repo_revision: AtomicU32::new(0),
+                verification: Mutex::new(None),
                 open_failure: Mutex::new(open_failure),
                 config_file,
                 icon_cache,
@@ -2433,7 +2131,9 @@ pub fn run() {
             list_backups,
             create_backup,
             restore_backup,
-            verify_data,
+            repo_repair_commands::verify_data,
+            repo_repair_commands::cancel_verify,
+            repo_repair_commands::relink_data,
             export_backup,
             import_backup,
             empty_trash,
@@ -2443,12 +2143,12 @@ pub fn run() {
             installed_commands::analyze_uninstall,
             system_overview,
             set_window_glass,
-            disk_locations,
-            disk_scan,
-            disk_cancel,
-            disk_largest,
-            disk_live_view,
-            disk_live_largest,
+            disk_commands::disk_locations,
+            disk_commands::disk_scan,
+            disk_commands::disk_cancel,
+            disk_commands::disk_largest,
+            disk_commands::disk_live_view,
+            disk_commands::disk_live_largest,
             trace_start,
             trace_status,
             trace_finish,
@@ -2459,11 +2159,11 @@ pub fn run() {
             get_trace,
             delete_trace,
             trace_reveal,
-            disk_view,
-            disk_reveal,
-            disk_full_path,
-            disk_trash,
-            ai_explain_folders,
+            disk_commands::disk_view,
+            disk_commands::disk_reveal,
+            disk_commands::disk_full_path,
+            disk_commands::disk_trash,
+            disk_commands::ai_explain_folders,
             system_sample,
             process_icons,
             end_process,
@@ -2492,12 +2192,13 @@ pub fn run() {
             cleanup_commands::cleanup_rescan,
             cleanup_commands::ai_explain_cleanup,
             ai_explain_startup_many,
-            fill_icons,
-            fill_file_info,
+            repo_metadata_commands::fill_icons,
+            repo_metadata_commands::refresh_icon,
+            repo_metadata_commands::fill_file_info,
             import_commands::inspect_drop,
             import_commands::preview_import_categories,
-            fetch_icon,
-            fetch_summary,
+            repo_metadata_commands::fetch_icon,
+            repo_metadata_commands::fetch_summary,
             selftest_report,
             source_lookup,
             source_search,

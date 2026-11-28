@@ -2,7 +2,7 @@
 
 /*
  * 设计令牌。组件里只用这里的变量，不写具体色值。
- * 强调色（--accent、--accent-strong）由 lib/theme.ts 按主题和预设写到 <html> 上。
+ * 强调色及文字对比色由 lib/theme.ts 按主题和预设写到 <html> 上。
  */
 :root,
 [data-theme="dark"] {
@@ -18,8 +18,9 @@
   --fg-2: #a4a7ae;
   --fg-3: #70747c;
   --fg-4: #4b4e55;
-  --accent: #5aa2ff;
-  --accent-strong: #2b74d9;
+  --accent: #0284c7;
+  --accent-ink: #7dd3fc;
+  --on-accent: #0a0b0d;
   --danger: #e5646a;
   --warning: #d9a03f;
   --success: #4cc38a;
@@ -43,8 +44,8 @@
   --fg-2: #5c5f67;
   --fg-3: #8a8d95;
   --fg-4: #b8bac0;
-  --accent: #1f6fe0;
-  --accent-strong: #1a5fc4;
+  --accent: #0284c7;
+  --accent-ink: #075985;
   --danger: #c93f46;
   --warning: #b07a16;
   --success: #1f8a57;
@@ -67,8 +68,8 @@
   --fg-2: #584d41;
   --fg-3: #6d6153;
   --fg-4: #827566;
-  --accent: #0369a1;
-  --accent-strong: #075985;
+  --accent: #0284c7;
+  --accent-ink: #075985;
   --danger: #a3383c;
   --warning: #845a17;
   --success: #356746;
@@ -137,8 +138,9 @@
   --color-fg-2: var(--fg-2);
   --color-fg-3: var(--fg-3);
   --color-fg-4: var(--fg-4);
-  --color-accent: var(--accent);
-  --color-accent-strong: var(--accent-strong);
+  --color-accent: var(--accent-ink);
+  --color-accent-fill: var(--accent);
+  --color-on-accent: var(--on-accent);
   --color-accent-soft: var(--accent-soft);
   --color-danger: var(--danger);
   --color-warning: var(--warning);

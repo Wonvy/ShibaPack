@@ -1,6 +1,7 @@
 //! 从文件里取图标，并把 Windows 的 ICO 转成跨平台 WebView 都能显示的 PNG。
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use pelite::resources::{group::GroupIcon, Name, Resources};
 use std::{
     fs,
     io::Read,
@@ -175,16 +176,37 @@ fn pe_icon(path: &Path, index: i32) -> Option<Vec<u8>> {
 fn pe_icon_bytes(bytes: &[u8], index: i32) -> Option<Vec<u8>> {
     let pe = pelite::PeFile::from_bytes(bytes).ok()?;
     let resources = pe.resources().ok()?;
-    let mut groups = resources.icons();
-    let (_, group) = if index < 0 {
-        groups.filter_map(Result::ok).find(|(name, _)| *name == pelite::resources::Name::Id(index.unsigned_abs()))?
+    let groups = resources.root().ok()?.get_dir(Name::GROUP_ICON).ok()?;
+    let group = if index < 0 {
+        groups.get_dir(Name::Id(index.unsigned_abs())).ok()?
     } else {
-        groups.nth(index as usize)?.ok()?
+        groups.entries().nth(index as usize)?.entry().ok()?.dir()?
     };
+    let bytes = group.first_data().ok()?.bytes().ok()?;
+    let ico = pack_pe_icon(resources, bytes)?;
+    // 至少要有文件头和一个图标条目。
+    (ico.len() > 22).then_some(ico)
+}
+
+fn pack_pe_icon(resources: Resources<'_>, bytes: &[u8]) -> Option<Vec<u8>> {
+    // 一些安装程序的图标组从奇数地址开始。解析器要求 2 字节对齐，只在这时复制图标组头。
+    let mut aligned;
+    let bytes = if bytes.as_ptr().align_offset(2) == 0 {
+        bytes
+    } else {
+        if bytes.len() as u64 > MAX_ICON_BYTES {
+            return None;
+        }
+        aligned = vec![0u8; bytes.len() + 1];
+        let start = aligned.as_ptr().align_offset(2);
+        let copied = &mut aligned[start..start + bytes.len()];
+        copied.copy_from_slice(bytes);
+        copied
+    };
+    let group = GroupIcon::new(resources, bytes).ok()?;
     let mut ico = Vec::new();
     group.write(&mut ico).ok()?;
-    // 至少要有文件头和一个图标条目
-    (ico.len() > 22).then_some(ico)
+    Some(ico)
 }
 
 #[cfg(test)]
@@ -258,6 +280,24 @@ mod tests {
         assert_eq!(preview_icon(&source), portable_icon(&extracted));
         let png = ico::IconImage::read_png(std::io::BufReader::new(fs::File::open(extracted).unwrap())).unwrap();
         assert_eq!(png.rgba_data(), image.rgba_data());
+    }
+
+    #[test]
+    fn repacks_a_pe_icon_group_at_an_odd_offset() {
+        #[repr(align(2))]
+        struct GroupBytes([u8; 21]);
+
+        let group = GroupBytes([
+            0, // Pad so the group starts at an odd address.
+            0, 0, 1, 0, 1, 0, // One icon entry.
+            32, 32, 0, 0, 1, 0, 32, 0, 64, 0, 0, 0, 1, 0,
+        ]);
+        let directory = pelite::image::IMAGE_DATA_DIRECTORY { VirtualAddress: 0, Size: 0 };
+        let resources = Resources::new(&[], &directory);
+        let packed = pack_pe_icon(resources, &group.0[1..]).unwrap();
+
+        assert_eq!(&packed[..18], &group.0[1..19]);
+        assert_eq!(&packed[18..], &22u32.to_le_bytes());
     }
 
     /// 用这台机器上真实的 exe 检查图标提取。找不到样本时跳过。

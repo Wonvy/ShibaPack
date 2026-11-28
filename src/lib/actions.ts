@@ -30,6 +30,35 @@ async function askDelete(title: string): Promise<boolean | null> {
   return ok ? checked : null;
 }
 
+const refreshingIcons = new Set<string>();
+
+export async function refreshSoftwareIcon(software: Software) {
+  const { status, attempt } = useApp.getState();
+  const root = status?.repoRoot;
+  if (!root) return;
+  const revision = status.repoRevision;
+  const key = JSON.stringify([revision, software.id]);
+  if (refreshingIcons.has(key)) return;
+  refreshingIcons.add(key);
+  try {
+    const update = await attempt(() => api.refreshIcon(software.id, revision));
+    const current = useApp.getState();
+    const library = current.library;
+    if (update === undefined || current.status?.repoRevision !== revision || !library?.software.some((item) => item.id === software.id)) return;
+    if (update) {
+      useApp.setState({
+        library: {
+          ...library,
+          software: library.software.map((item) => item.id === software.id ? { ...item, ...update } : item),
+        },
+      });
+    }
+    current.notify(translate(language(), update ? "icon.refreshed" : "icon.unavailable", { name: software.name }));
+  } finally {
+    refreshingIcons.delete(key);
+  }
+}
+
 export async function deleteSoftware(software: Software) {
   const withFiles = await askDelete(translate(language(), "del.software.title", { name: software.name }));
   if (withFiles !== null) await useApp.getState().apply(() => api.deleteSoftware(software.id, withFiles));

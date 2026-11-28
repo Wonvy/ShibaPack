@@ -1,6 +1,6 @@
 [package]
 name = "shibapack"
-version = "0.18.0"
+version = "0.19.0"
 edition = "2021"
 description = "ShibaPack 桌面外壳"
 
@@ -26,3 +26,4 @@ shibapack-core = { path = "../crates/core" }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2.5"

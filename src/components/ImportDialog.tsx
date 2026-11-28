@@ -463,9 +463,9 @@ function Running({ progress, stopping }: { progress: ReturnType<typeof useApp.ge
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-line">
         {known ? (
-          <div className="h-full rounded-full bg-accent transition-[width] duration-200" style={{ width: `${percent}%` }} />
+          <div className="h-full rounded-full bg-accent-fill transition-[width] duration-200" style={{ width: `${percent}%` }} />
         ) : (
-          <div className="h-full w-2/5 animate-slide rounded-full bg-accent" />
+          <div className="h-full w-2/5 animate-slide rounded-full bg-accent-fill" />
         )}
       </div>
     </div>

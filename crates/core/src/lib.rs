@@ -18,6 +18,7 @@ pub mod leftovers;
 pub mod model;
 pub mod ops;
 pub mod paths;
+pub mod repository_repair;
 pub mod sources;
 pub mod startup;
 pub mod store;

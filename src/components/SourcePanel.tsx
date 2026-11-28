@@ -121,7 +121,7 @@ function AssetRow({ software, release, asset }: { software: Software; release: R
             <X size={15} strokeWidth={1.75} />
           </IconButton>
           <div className="absolute inset-x-0 bottom-0 h-0.5 bg-line">
-            <div className="h-full bg-accent transition-[width] duration-200" style={{ width: `${percent ?? 0}%` }} />
+            <div className="h-full bg-accent-fill transition-[width] duration-200" style={{ width: `${percent ?? 0}%` }} />
           </div>
         </>
       ) : owned ? (

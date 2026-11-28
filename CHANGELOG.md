@@ -8,6 +8,18 @@ One section per version, titled `## <version>`, with a Chinese and an English pa
 `.github/workflows/release.yml` puts that section into the GitHub Release notes and `latest.json`; the update window
 in ShibaPack (opened from the version number in the bottom-right corner) shows the part that matches the interface language.
 
+## 0.19.1
+
+### 中文
+
+- 按 ShibaPlan 调整纸张主题的底色、纹理和强调色色板。常规窗口显示五列，窄窗口自动切换为三列。
+- 可输入 HEX 色值或使用拾色器预览并保存自定义强调色。点击「恢复默认」可回到晴空蓝 `#0284C7`。
+
+### English
+
+- Matched the Paper theme's background, texture, and accent palette layout to ShibaPlan. The palette uses five columns and switches to three in narrower windows.
+- Preview and save a custom accent with a HEX value or the color picker. Restore default resets the accent to Sky Blue (`#0284C7`).
+
 ## 0.19.0
 
 ### 中文

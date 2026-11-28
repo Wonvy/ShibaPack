@@ -4,7 +4,7 @@ import type { Settings, Theme } from "./types";
 
 type ResolvedTheme = Exclude<Theme, "system">;
 type ThemeSettings = Pick<Settings, "theme" | "paperTheme">;
-const DEFAULT_ACCENT = "sky";
+export const DEFAULT_ACCENT = "sky";
 const WHITE_INK = "#ffffff";
 const DARK_INK = "#0a0b0d";
 
@@ -22,6 +22,8 @@ export const ACCENTS = {
 } as const;
 
 type AccentName = keyof typeof ACCENTS;
+type HexColor = `#${string}`;
+type Accent = AccentName | HexColor;
 export const ACCENT_NAMES = Object.keys(ACCENTS) as AccentName[];
 const LEGACY_ACCENTS = new Map<string, AccentName>([
   ["blue", "linear"],
@@ -30,13 +32,45 @@ const LEGACY_ACCENTS = new Map<string, AccentName>([
   ["pink", "rose"],
 ]);
 
-export function resolveAccent(name: string): AccentName {
+export function normalizeHex(input: string): HexColor | null {
+  const raw = input.trim().replace(/^#/, "").toLowerCase();
+  if (/^[0-9a-f]{6}$/.test(raw)) return `#${raw}`;
+  if (/^[0-9a-f]{3}$/.test(raw)) return `#${[...raw].map((digit) => digit.repeat(2)).join("")}`;
+  return null;
+}
+
+export function resolveAccent(name: string): Accent {
   if (Object.hasOwn(ACCENTS, name)) return name as AccentName;
-  return LEGACY_ACCENTS.get(name) ?? DEFAULT_ACCENT;
+  const legacy = LEGACY_ACCENTS.get(name);
+  if (legacy) return legacy;
+  const hex = normalizeHex(name);
+  const preset = hex && ACCENT_NAMES.find((id) => ACCENTS[id].hex === hex);
+  return preset || hex || DEFAULT_ACCENT;
+}
+
+function isPreset(accent: Accent): accent is AccentName {
+  return Object.hasOwn(ACCENTS, accent);
+}
+
+export function accentHex(accent: Accent): HexColor {
+  return isPreset(accent) ? ACCENTS[accent].hex : accent;
+}
+
+function whiteContrast(hex: HexColor): number {
+  const channels = [1, 3, 5].map((offset) => {
+    const srgb = Number.parseInt(hex.slice(offset, offset + 2), 16) / 255;
+    return srgb <= 0.04045 ? srgb / 12.92 : ((srgb + 0.055) / 1.055) ** 2.4;
+  });
+  const luminance = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+  return 1.05 / (luminance + 0.05);
+}
+
+export function swatchInk(hex: HexColor): string {
+  return whiteContrast(hex) >= 3 ? WHITE_INK : DARK_INK;
 }
 
 const systemLight = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: light)") : null;
-let current: { theme: Theme; accent: AccentName } = { theme: "paper", accent: DEFAULT_ACCENT };
+let current: { theme: Theme; accent: Accent } = { theme: "paper", accent: DEFAULT_ACCENT };
 
 export function themeChoice({ theme, paperTheme }: ThemeSettings): Theme {
   return theme === "light" && paperTheme ? "paper" : theme;
@@ -49,12 +83,14 @@ function resolveTheme(theme: Theme): ResolvedTheme {
 
 function paint() {
   const resolved = resolveTheme(current.theme);
-  const accent = ACCENTS[current.accent];
+  const preset = isPreset(current.accent) ? ACCENTS[current.accent] : null;
+  const hex = accentHex(current.accent);
+  const ink = resolved === "dark" ? preset?.darkInk : preset?.lightInk;
   const root = document.documentElement;
   root.dataset.theme = resolved;
-  root.style.setProperty("--accent", accent.hex);
-  root.style.setProperty("--accent-ink", resolved === "dark" ? accent.darkInk : accent.lightInk);
-  root.style.setProperty("--on-accent", accent.onAccent);
+  root.style.setProperty("--accent", hex);
+  root.style.setProperty("--accent-ink", ink ?? `color-mix(in srgb, ${hex} 40%, ${resolved === "dark" ? WHITE_INK : DARK_INK})`);
+  root.style.setProperty("--on-accent", preset?.onAccent ?? (whiteContrast(hex) >= 4.5 ? WHITE_INK : "#000000"));
 }
 
 export function applyTheme(settings: ThemeSettings & Pick<Settings, "accent">) {

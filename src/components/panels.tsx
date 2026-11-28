@@ -1,18 +1,19 @@
 // 首次启动的引导页、设置对话框。
 
-import { ArchiveRestore, Check, FolderInput, FolderOpen, Globe, HardDrive, Info, type LucideIcon, ScrollText, SlidersHorizontal, Sparkles, TriangleAlert } from "lucide-react";
+import { ArchiveRestore, FolderInput, FolderOpen, Globe, HardDrive, Info, type LucideIcon, ScrollText, SlidersHorizontal, Sparkles, TriangleAlert } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useState } from "react";
 import { api, hostPlatform, isTauri, pickJsonFile, pickSavePath } from "../lib/api";
 import { usePrefs } from "../lib/prefs";
 import { type Key, effectivePack, errorText, languages } from "../lib/i18n";
 import { useApp, useLanguage, useT } from "../lib/store";
-import { ACCENTS, ACCENT_NAMES, resolveAccent, themeChoice } from "../lib/theme";
+import { themeChoice } from "../lib/theme";
 import { checkForUpdate, startUpdate } from "../lib/updater";
 import type { Theme } from "../lib/types";
 
 /** 设置里“导入文件时”的三种做法：复制进仓库、移动进仓库、只记录位置。 */
 type ImportMode = "copy" | "move" | "indexed";
 import { AiSettingsForm } from "./AiSettings";
+import { AccentPalette } from "./AccentPalette";
 import { FailureLogPage } from "./FailureLog";
 import { BackupPage, RepoLocation, StoragePage } from "./StorageSettings";
 import { Logo } from "./chrome";
@@ -160,7 +161,6 @@ function GeneralPage() {
   const notify = useApp((state) => state.notify);
   const useLangPacks = useApp((state) => state.useLangPacks);
   const theme = themeChoice(settings);
-  const selectedAccent = resolveAccent(settings.accent);
   const glass = usePrefs((state) => state.glass);
   const setPrefs = usePrefs((state) => state.set);
   // 毛玻璃只有桌面版的 macOS 和 Windows 有（Windows 要 11）
@@ -205,36 +205,7 @@ function GeneralPage() {
           ]}
         />
       </Row>
-      <Row
-        label={t("settings.accent")}
-        below={(
-          <div role="group" aria-label={t("settings.accent")} className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {ACCENT_NAMES.map((name) => {
-              const label = t(`accent.${name}`);
-              const { hex, onAccent } = ACCENTS[name];
-              const selected = selectedAccent === name;
-              return (
-                <button
-                  key={name}
-                  type="button"
-                  aria-pressed={selected}
-                  onClick={() => { if (!selected) void save({ accent: name }); }}
-                  title={`${label} · ${hex}`}
-                  className={cx(
-                    "flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] transition-colors",
-                    selected ? "bg-active font-medium text-fg" : "bg-hover text-fg-2 hover:bg-active",
-                  )}
-                >
-                  <span aria-hidden className="grid size-4 shrink-0 place-items-center rounded-full" style={{ backgroundColor: hex, color: onAccent }}>
-                    {selected && <Check size={12} strokeWidth={2.5} />}
-                  </span>
-                  <span className="truncate">{label}</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-      />
+      <AccentPalette />
       <Row label={t("settings.glass")} hint={t(theme === "paper" ? "settings.glassPaper" : glassSupported ? "settings.glassHint" : "settings.glassUnsupported")}>
         <Switch checked={glass && canUseGlass} disabled={!canUseGlass} label={t("settings.glass")} onChange={(on) => setPrefs({ glass: on })} />
       </Row>
